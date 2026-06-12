@@ -52,7 +52,10 @@ const CFG = {
     CONFIG:            'Config',
     PRODUCTION_ORDERS: 'ProductionOrders',
     PALLET_MASTER:     'PalletMaster',
-    MOQ_CONFIG:        'MOQ_Config',
+    MOQ_CONFIG:        'MOQ_Config',          // deprecated — kept for migration
+    MATERIAL_MASTER:   'MaterialMaster',       // Phase 2.5
+    PRINT_QUEUE:       'PrintQueue',           // Phase 2.5
+    OPERATION_LOG:     'OperationLog',         // Phase 2.5 scaffold
     INSPECTION_LOTS:   'InspectionLots',
     EVENT_LOG:         'EventLog',
     ERROR_LOG:         'ErrorLog'
@@ -90,8 +93,23 @@ const CFG = {
     ],
 
     MOQ_CONFIG: [
-      'Material', 'MaterialName', 'MaterialType', // SEMI / FG
+      'Material', 'MaterialName', 'MaterialType', // SEMI / FG — deprecated
       'MOQ_Per_Pallet', 'Unit', 'MaxPalletQty', 'Remark'
+    ],
+
+    MATERIAL_MASTER: [
+      'Material', 'MaterialName', 'OrderType', 'ProductGroup', 'MOQ_Per_Pallet',
+      'Unit', 'MaxPalletQty', 'Status', 'Remark'
+    ],
+
+    PRINT_QUEUE: [
+      'QueueID', 'Material', 'RequestedQty', 'AllocatedQty', 'Status',
+      'RequestedBy', 'RequestedAt', 'ProcessedAt', 'Detail'
+    ],
+
+    OPERATION_LOG: [
+      'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
+      'GoodQty', 'ScrapQty', 'Operator', 'Role', 'Result', 'LoggedAt', 'Source'
     ],
 
     INSPECTION_LOTS: [

@@ -16,15 +16,29 @@
 
 ## Phase Status
 - Phase 1 COMPLETE: Config.gs, SheetSetup.gs, SapClient.gs, ProductionOrders.gs
-- Phase 2 COMPLETE: MOQConfigSetup.gs, PalletGen.gs, LabelPrint.gs
+- Phase 2 COMPLETE: MOQConfigSetup.gs, PalletGen.gs, LabelPrint.gs (deprecated A5 flow)
+- Phase 2.5 COMPLETE: MaterialMaster.gs, PrintEngine.gs, PalletSheet.gs, OperationLog.gs
 - Phase 3 PENDING: Mobile scanner Web App (doGet), Goods Receipt POST to SAP
 - Phase 4 PENDING: QC Inspection UI, Inspection Lot PATCH to SAP QM
 - Phase 5 PENDING: SAP writeback (Order Confirmation, Stock)
 
+## Phase 2.5 Details
+- MaterialMaster sheet: preserve-on-sync rule — existing rows never modified
+  - syncMaterialMaster(): reads PO sheet, inserts NEW materials, migrates from MOQ_Config
+  - getMaterialMap(): returns only rows where MOQ_Per_Pallet > 0
+- PrintEngine FIFO allocation + progressive printing (ทยอยพิมพ์):
+  - allocatePallets(requests): FIFO by startDate+MO, remainingQty = TotalQty−existingPM
+  - PrintQueue sheet tracks every allocation request for audit
+- PalletSheet.gs: A4 one-page Pallet Tracking Sheet with routing confirmation table
+  - Compact CSS: ≤10 ops 9pt/3mm padding; 11-15 ops 8pt/1.6mm; 16-20 ops 7pt/0.8mm
+- OperationLog.gs: scaffold for Phase 3 — append-only, no SAP write (intermediate ops)
+- FINAL OPERATION ONLY is confirmed in SAP (Phase 3). All other ops in OperationLog.
+
 ## Key Field Mapping
 - Production Order key field = ManufacturingOrder (NOT ProductionOrder)
 - QR Payload format = PALLET|{PalletID}|{ManufacturingOrder}|{Material}|{Batch}|{Qty}
-- PalletID format = {ManufacturingOrder}-P001, P002, ...
+- PalletID format (Phase 2.5) = PL-{ManufacturingOrder}-L{nn} (e.g. PL-1000035048-L01)
+- PalletID format (Phase 2, deprecated) = {ManufacturingOrder}-P{nnn}
 - Status lifecycle = CREATED → PRINTED → SCANNED → QC_PASS / QC_HOLD / QC_REJECT
 
 ## SAP OData Services

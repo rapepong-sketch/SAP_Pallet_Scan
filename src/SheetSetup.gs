@@ -9,15 +9,19 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🏭 Pallet Tracker')
-    .addItem('🔧 Setup Sheets',              'setupSheets')
-    .addItem('🔌 Test SAP Connection',        'testSapConnection')
-    .addItem('📥 Pull Production Orders',     'pullProductionOrders')
-    .addItem('🗑️  Clear Old Orders',          'clearOldOrders')
+    .addItem('🔧 Setup Sheets',                              'setupSheets')
+    .addItem('🔌 Test SAP Connection',                       'testSapConnection')
+    .addItem('📥 Pull Production Orders',                    'pullProductionOrders')
+    .addItem('🗑️  Clear Old Orders',                         'clearOldOrders')
     .addSeparator()
-    .addItem('⚙️ Setup MOQ Config',          'setupMoqConfig')
-    .addItem('📦 Generate Pallets (ALL)',     'generatePallets')
-    .addItem('📦 Generate Pallets (1 Order)', 'generatePalletsForOrder')
-    .addItem('🖨️  Print Pallet Labels',       'printLabelsDialog')
+    .addItem('🔄 Sync Material Master',                      'syncMaterialMaster')
+    .addItem('🖨️ สั่งพิมพ์ใบติดตามพาเลท (Multi-Material)',  'printRequestDialog')
+    .addItem('🖨️ พิมพ์ซ้ำ (ใส่ MO หรือ PalletID)',          'reprintDialog')
+    .addSeparator()
+    .addItem('⚙️ Setup MOQ Config (deprecated)',             'setupMoqConfig')
+    .addItem('📦 Generate Pallets (deprecated)',             'generatePallets')
+    .addItem('📦 Generate Pallets 1 Order (deprecated)',     'generatePalletsForOrder')
+    .addItem('🖨️  Print Old Labels (deprecated)',            'printLabelsDialog')
     .addToUi();
 }
 

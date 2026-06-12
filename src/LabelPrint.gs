@@ -1,11 +1,13 @@
 /**
- * LabelPrint.gs — Phase 2
- * สร้าง HTML pallet labels (A5 — 2 ใบต่อ A4) พร้อม QR code → popup สำหรับสั่งพิมพ์/Save PDF
+ * LabelPrint.gs — Phase 2 (DEPRECATED as of Phase 2.5)
+ * ======================================================
+ * เดิม: A5 pallet labels (2 ใบต่อ A4)
+ * ใช้แทนด้วย: PalletSheet.gs (A4 one-page Pallet Tracking Sheet)
+ *
+ * ยังคงไฟล์นี้ไว้เพื่อ backward compatibility — เมนู "Print Old Labels" ยังเรียกได้
  *
  * NOTE: chart.googleapis.com QR API ถูก Google ปิดไปแล้ว
- *       → ใช้ CFG.QR_API (default: api.qrserver.com) — เปลี่ยนได้ใน Config.gs:
- *       CFG.QR_API = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='
- *       fallback:    'https://quickchart.io/qr?size=150&text='
+ *       → ใช้ CFG.QR_API (default: api.qrserver.com)
  */
 
 var QR_API_DEFAULT = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=';

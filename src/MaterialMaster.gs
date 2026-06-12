@@ -1,0 +1,179 @@
+/**
+ * MaterialMaster.gs — Phase 2.5
+ * ==============================
+ * จัดการ MaterialMaster sheet: sync จาก ProductionOrders + migrate จาก MOQ_Config
+ *
+ * PRESERVE RULE (critical): แถวที่มีอยู่แล้ว ห้ามแก้ไขค่าใด ๆ
+ *   ยกเว้น Status: ถ้า Status ว่างและ MOQ_Per_Pallet มีค่า → set CONFIRMED
+ */
+
+const MM_SHEET = 'MaterialMaster';
+const MM_HEADERS = [
+  'Material', 'MaterialName', 'OrderType', 'ProductGroup', 'MOQ_Per_Pallet',
+  'Unit', 'MaxPalletQty', 'Status', 'Remark'
+];
+// Column indices (1-based) for targeted updates
+const MM_COL = { MAT:1, NAME:2, ORDER_TYPE:3, PROD_GROUP:4, MOQ:5, UNIT:6, MAX_QTY:7, STATUS:8, REMARK:9 };
+
+// ============================================================================
+// Sheet bootstrap
+// ============================================================================
+
+function ensureMaterialMasterSheet_() {
+  const ss = getSpreadsheet_();
+  let sh = ss.getSheetByName(MM_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(MM_SHEET);
+    sh.getRange(1, 1, 1, MM_HEADERS.length)
+      .setValues([MM_HEADERS])
+      .setFontWeight('bold')
+      .setBackground('#1a4e8a')
+      .setFontColor('#ffffff');
+    sh.setFrozenRows(1);
+    sh.setColumnWidth(1, 200);
+  }
+  return sh;
+}
+
+// ============================================================================
+// Main sync
+// ============================================================================
+
+/**
+ * Sync MaterialMaster from ProductionOrders.
+ * Rules:
+ *  1. NEVER modify existing rows (MOQ, ProductGroup, MaxPalletQty, Remark untouched)
+ *  2. Insert materials not already present (Status=NEW, MOQ empty)
+ *  3. Existing rows with MOQ>0 + blank Status → set Status=CONFIRMED
+ *  4. Migrate from MOQ_Config once (skip duplicates, leave MOQ_Config in place)
+ */
+function syncMaterialMaster() {
+  const t0 = Date.now();
+  const ss = getSpreadsheet_();
+  const sh = ensureMaterialMasterSheet_();
+
+  // ---- Build PO material map -----------------------------------------------
+  const poSheet = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  const poMaterialMap = {}; // { material: { orderType, unit } }
+  if (poSheet && poSheet.getLastRow() > 1) {
+    const data = poSheet.getDataRange().getValues();
+    const hdr = data[0];
+    const idx = {};
+    hdr.forEach((h, i) => { idx[h] = i; });
+    for (let r = 1; r < data.length; r++) {
+      const mat = String(data[r][idx.Material] || '').trim();
+      if (!mat || poMaterialMap[mat]) continue;
+      poMaterialMap[mat] = {
+        orderType: String(data[r][idx.ManufacturingOrderType] || '').trim(),
+        unit:      String(data[r][idx.ProductionUnit] || '').trim()
+      };
+    }
+  }
+
+  // ---- Load existing MaterialMaster rows ------------------------------------
+  const existingRows = {}; // { material: rowNum (1-based) }
+  const lastRow = sh.getLastRow();
+  if (lastRow > 1) {
+    const vals = sh.getRange(2, 1, lastRow - 1, MM_HEADERS.length).getValues();
+    vals.forEach((row, i) => {
+      const mat = String(row[0] || '').trim();
+      if (mat) existingRows[mat] = i + 2;
+    });
+  }
+
+  // ---- Step 1: Migrate from MOQ_Config (once, skip duplicates) --------------
+  let migrated = 0;
+  const moqSheet = ss.getSheetByName(CFG.SHEETS.MOQ_CONFIG);
+  if (moqSheet && moqSheet.getLastRow() > 1) {
+    const moqData = moqSheet.getRange(2, 1, moqSheet.getLastRow() - 1, 7).getValues();
+    moqData.forEach(row => {
+      const mat = String(row[0] || '').trim();
+      if (!mat || existingRows[mat]) return;
+      const moq = Number(row[3]) || 0;
+      const poInfo = poMaterialMap[mat] || {};
+      const mmRow = [
+        mat,
+        String(row[1] || '').trim(),
+        poInfo.orderType || String(row[2] || '').trim(), // orderType from PO or MOQ_Config type
+        '',
+        moq,
+        String(row[4] || '').trim() || poInfo.unit || '',
+        Number(row[5]) || 0,
+        moq > 0 ? 'CONFIRMED' : 'NEW',
+        String(row[6] || '').trim()
+      ];
+      sh.appendRow(mmRow);
+      existingRows[mat] = sh.getLastRow();
+      migrated++;
+    });
+  }
+
+  // ---- Step 2: Insert new materials from ProductionOrders -------------------
+  let inserted = 0;
+  const toInsert = [];
+  Object.keys(poMaterialMap).forEach(mat => {
+    if (existingRows[mat]) return;
+    const po = poMaterialMap[mat];
+    toInsert.push([mat, '', po.orderType, '', '', po.unit, '', 'NEW', '⚠️ ต้องแก้ไข MOQ']);
+  });
+  if (toInsert.length) {
+    const startRow = sh.getLastRow() + 1;
+    sh.getRange(startRow, 1, toInsert.length, MM_HEADERS.length).setValues(toInsert);
+    // Add cell notes to Material column for new rows
+    toInsert.forEach((_, i) => {
+      sh.getRange(startRow + i, MM_COL.MAT).setNote('เพิ่มจาก sync — กรุณากำหนด MOQ');
+      existingRows[toInsert[i][0]] = startRow + i;
+    });
+    inserted = toInsert.length;
+  }
+
+  // ---- Step 3: Update Status=CONFIRMED for rows with MOQ>0 + blank Status ---
+  let confirmed = 0;
+  const currentLastRow = sh.getLastRow();
+  if (currentLastRow > 1) {
+    const allVals = sh.getRange(2, 1, currentLastRow - 1, MM_HEADERS.length).getValues();
+    allVals.forEach((row, i) => {
+      const moq = Number(row[MM_COL.MOQ - 1]) || 0;
+      const status = String(row[MM_COL.STATUS - 1] || '').trim();
+      if (moq > 0 && status === '') {
+        sh.getRange(i + 2, MM_COL.STATUS).setValue('CONFIRMED');
+        confirmed++;
+      }
+    });
+  }
+
+  const summary = `migrated=${migrated} inserted=${inserted} confirmed=${confirmed} skipped=${Object.keys(existingRows).length - migrated - inserted}`;
+  logEvent('MM_SYNC', '-', 'OK', Date.now() - t0, summary);
+  SpreadsheetApp.getUi().alert(`✅ Sync MaterialMaster เสร็จ\n${summary}`);
+}
+
+// ============================================================================
+// Read API
+// ============================================================================
+
+/**
+ * Returns usable material map (only rows where MOQ_Per_Pallet > 0).
+ * @return {Object} { 'MATCODE': { name, orderType, productGroup, moq, unit, maxQty, status } }
+ */
+function getMaterialMap() {
+  const sh = getSpreadsheet_().getSheetByName(MM_SHEET);
+  if (!sh || sh.getLastRow() < 2) return {};
+
+  const data = sh.getRange(2, 1, sh.getLastRow() - 1, MM_HEADERS.length).getValues();
+  const map = {};
+  data.forEach(row => {
+    const mat = String(row[0] || '').trim();
+    const moq = Number(row[4]) || 0;
+    if (!mat || moq <= 0) return;
+    map[mat] = {
+      name:         String(row[1] || '').trim(),
+      orderType:    String(row[2] || '').trim(),
+      productGroup: String(row[3] || '').trim(),
+      moq:          moq,
+      unit:         String(row[5] || '').trim(),
+      maxQty:       Number(row[6]) || 0,
+      status:       String(row[7] || '').trim()
+    };
+  });
+  return map;
+}
