@@ -41,6 +41,7 @@ function pullProductionOrders() {
   try {
     const params = {
       '$filter': buildPoFilter_(),
+      '$orderby': 'MfgOrderPlannedStartDate desc', // ดึง orders ล่าสุดก่อน
       '$expand': 'to_ProductionOrderOperation,to_ProductionOrderItem,to_ProductionOrderStatus',
       '$select': PO_SELECT_.join(',')
     };
@@ -74,17 +75,28 @@ function pullProductionOrders() {
 // Helpers
 // ============================================================================
 
-/** Plant filter + optional date window (OData V2 datetime literal) */
+/** Plant filter + optional date window + order type filter (OData V2 datetime literal) */
 function buildPoFilter_() {
-  // OData V2: boolean literal must be unquoted lowercase 'true'
-  // However SAP Gateway rejects Edm.Boolean in $filter on this entity.
-  // Strategy: filter Plant + date server-side; filter Released client-side via OrderIsReleased flag.
   let f = "Plant eq '" + CFG.PLANT + "'";
+
+  // Date window — must cover 2026 orders (Basic start date 2026-01 to 2026-11)
   if (CFG.PULL_DAYS_BACK > 0) {
     const since = new Date(Date.now() - CFG.PULL_DAYS_BACK * 24 * 3600 * 1000);
     const lit = Utilities.formatDate(since, 'UTC', "yyyy-MM-dd'T'00:00:00");
     f += " and MfgOrderPlannedStartDate ge datetime'" + lit + "'";
   }
+
+  // Order type filter — include PDFG (Finished Goods) + PDSM (Semi-finished)
+  const types = CFG.ORDER_TYPES || [];
+  if (types.length === 1) {
+    f += " and ManufacturingOrderType eq '" + types[0] + "'";
+  } else if (types.length > 1) {
+    const typeParts = types.map(function(t) {
+      return "ManufacturingOrderType eq '" + t + "'";
+    });
+    f += " and (" + typeParts.join(' or ') + ")";
+  }
+
   return f;
 }
 

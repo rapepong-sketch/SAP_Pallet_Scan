@@ -22,8 +22,11 @@ const CFG = {
   SHEET_ID: '1NZmKOuYAmpu1csjd83kNgZXSjCz5lVk7odIyDxJoKRk',
 
   // ---- Pull behaviour ----------------------------------------------------
-  PULL_DAYS_BACK: 0,    // 0 = ไม่ filter วันที่ — ดึงทั้งหมด (PO ใน tenant อยู่ปี 2025 ต้นปี)
+  PULL_DAYS_BACK: 180,  // ดึง 180 วันย้อนหลัง = ครอบ 2026 ทั้งปี (export จริงมี 2026-01 ถึง 2026-11)
   PAGE_SIZE: 200,       // OData $top ต่อ page (pagination ผ่าน __next)
+  // Order types to include — PDFG=Finished Goods, PDSM=Semi-finished
+  // Set to [] to pull all types
+  ORDER_TYPES: ['PDFG', 'PDSM'],
   MAX_RETRIES: 3,       // retry ต่อ 1 SAP call
   RETRY_BASE_MS: 1000,  // backoff: 1s, 2s, 4s
 
