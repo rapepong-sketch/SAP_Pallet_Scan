@@ -39,14 +39,26 @@ function pullProductionOrders() {
   const t0 = Date.now();
 
   try {
+    const filterStr = buildPoFilter_();
+    console.log('[DEBUG] $filter = ' + filterStr);
+    console.log('[DEBUG] PULL_DAYS_BACK = ' + CFG.PULL_DAYS_BACK);
+    console.log('[DEBUG] ORDER_TYPES = ' + JSON.stringify(CFG.ORDER_TYPES));
+
     const params = {
-      '$filter': buildPoFilter_(),
-      '$orderby': 'MfgOrderPlannedStartDate desc', // ดึง orders ล่าสุดก่อน
+      '$filter': filterStr,
+      '$orderby': 'MfgOrderPlannedStartDate desc',
       '$expand': 'to_ProductionOrderOperation,to_ProductionOrderItem,to_ProductionOrderStatus',
       '$select': PO_SELECT_.join(',')
     };
 
     const raw = sapGetAllResults(endpoint, params, fn);
+    console.log('[DEBUG] raw fetched = ' + raw.length);
+    if (raw.length > 0) {
+      const s = raw[0];
+      console.log('[DEBUG] first order = ' + s.ManufacturingOrder +
+        ' | type=' + s.ManufacturingOrderType +
+        ' | startDate=' + s.MfgOrderPlannedStartDate);
+    }
     const released = raw.filter(isReleasedOrder_);
     const rows = released.map(mapPoToRow_);
 
@@ -54,6 +66,13 @@ function pullProductionOrders() {
       logEvent(fn, endpoint, 'DRY_RUN', Date.now() - t0,
         'fetched=' + raw.length + ' released=' + released.length + ' — sheet NOT written');
       console.log('[DRY_RUN] fetched=' + raw.length + ', released=' + released.length);
+      // Show date range of fetched orders
+      const dates = raw.map(function(r){ return r.MfgOrderPlannedStartDate || ''; })
+                       .filter(Boolean).sort();
+      if (dates.length) console.log('[DRY_RUN] date range: ' + dates[0] + ' ~ ' + dates[dates.length-1]);
+      // Show order number range
+      const orders = raw.map(function(r){ return r.ManufacturingOrder || ''; }).sort();
+      if (orders.length) console.log('[DRY_RUN] order range: ' + orders[0] + ' ~ ' + orders[orders.length-1]);
       console.log('[DRY_RUN] sample rows:\n' + JSON.stringify(rows.slice(0, 3), null, 2));
       return released.length;
     }
