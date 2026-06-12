@@ -23,7 +23,7 @@ const CFG = {
 
   // ---- Pull behaviour ----------------------------------------------------
   PULL_DAYS_BACK: 180,  // ดึง 180 วันย้อนหลัง = ครอบ 2026 ทั้งปี (export จริงมี 2026-01 ถึง 2026-11)
-  PAGE_SIZE: 200,       // OData $top ต่อ page (pagination ผ่าน __next)
+  PAGE_SIZE: 500,       // OData $top ต่อ page — 500×4 pages = 2000 records ครอบ 1732 orders
   // Order types to include — PDFG=Finished Goods, PDSM=Semi-finished
   // Set to [] to pull all types
   ORDER_TYPES: ['PDFG', 'PDSM'],

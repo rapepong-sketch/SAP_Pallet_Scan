@@ -148,24 +148,60 @@ function sapGet(path, params, fnName) {
 }
 
 /**
- * GET ทุก page — ตาม __next link จนหมด (กัน infinite loop ที่ 50 pages)
- * @return {Array} รวม d.results ทุกหน้า
+ * GET ทุก page — ตาม __next link จนหมด
+ * Fallback: ถ้า SAP ไม่ส่ง __next ใช้ $skip offset แทน (server-driven vs client-driven paging)
+ * กัน infinite loop ที่ MAX_PAGES = 200 pages (200 records/page × 200 pages = 40,000 records max)
  */
 function sapGetAllResults(path, params, fnName) {
   const fn = fnName || 'sapGetAllResults';
-  const p = Object.assign({ '$top': String(CFG.PAGE_SIZE) }, params || {});
+  const MAX_PAGES = 200;
+  const pageSize = CFG.PAGE_SIZE;
+
+  // First page — ขอ inline count เพื่อรู้จำนวนจริง
+  const p = Object.assign(
+    { '$top': String(pageSize), '$inlinecount': 'allpages' },
+    params || {}
+  );
+
   let results = [];
   let data = sapGet(path, p, fn);
   let guard = 0;
 
-  while (guard++ < 50) {
+  while (guard++ < MAX_PAGES) {
     const d = data.d || {};
-    results = results.concat(d.results || []);
-    if (!d.__next) break;
-    // __next เป็น absolute URL พร้อม query ครบแล้ว — ยิงตรง ไม่เติม params ซ้ำ
-    const resp = sapRequest_('get', d.__next, null, null, null, fn + '[next]');
-    data = JSON.parse(resp.getContentText() || '{}');
+    const pageResults = d.results || [];
+    results = results.concat(pageResults);
+
+    const totalCount = parseInt(d.__count || '0', 10);
+    if (totalCount > 0 && guard === 1) {
+      console.log('[sapGetAllResults] totalCount=' + totalCount +
+                  ' pageSize=' + pageSize +
+                  ' estimatedPages=' + Math.ceil(totalCount / pageSize));
+    }
+
+    // SAP ส่ง __next → ใช้ server-driven paging (preferred)
+    if (d.__next) {
+      const resp = sapRequest_('get', d.__next, null, null, null, fn + '[next' + guard + ']');
+      data = JSON.parse(resp.getContentText() || '{}');
+      continue;
+    }
+
+    // ไม่มี __next: ถ้าได้ครบ pageSize → ยังมีหน้าถัดไป ใช้ $skip
+    if (pageResults.length < pageSize) break; // หน้าสุดท้ายแล้ว
+
+    // Client-driven paging ด้วย $skip
+    const skip = guard * pageSize;
+    const skipParams = Object.assign({}, params || {}, {
+      '$top': String(pageSize),
+      '$skip': String(skip),
+      '$inlinecount': 'allpages'
+    });
+    console.log('[sapGetAllResults] $skip fallback page=' + (guard+1) + ' skip=' + skip +
+                ' collected=' + results.length);
+    data = sapGet(path, skipParams, fn + '[skip' + guard + ']');
   }
+
+  console.log('[sapGetAllResults] done: total collected=' + results.length);
   return results;
 }
 
