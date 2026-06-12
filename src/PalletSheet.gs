@@ -103,20 +103,29 @@ function reprintDialog() {
 // ============================================================================
 
 function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
-  const po        = poMap[String(p.ManufacturingOrder)] || {};
-  const ops       = parseOps_(po.operations || '');
-  const opCount   = ops.length;
+  const po  = poMap[String(p.ManufacturingOrder)] || {};
+
+  // Ops: lazy-fetch from SAP (CacheService 30 min — same MO across pallets is instant)
+  const ops      = fetchOperationsForMO_(p.ManufacturingOrder);
+  const opCount  = ops.length;
   const compactCls = opCount <= 10 ? '' : opCount <= 15 ? ' compact-11' : ' compact-16';
-  const finalIdx  = opCount - 1;
+  const finalIdx = opCount - 1;
+
+  // ManufacturingOrder: stored value, fallback parse from PalletID
+  const mo = p.ManufacturingOrder ||
+    (String(p.PalletID || '').match(/^PL-(\d+)-L/) || [])[1] || '?';
 
   // Parse seq from PalletID (new format PL-...-L{nn})
   const mSeq  = String(p.PalletID || '').match(/L(\d+)$/);
   const seq   = mSeq ? parseInt(mSeq[1], 10) : (p.PalletSeq || 1);
   const total = p.TotalPallets || '?';
 
-  const matName  = p.MaterialName || (mmMap[p.Material] || {}).name || '';
-  const dueDate  = po.startDate ? fmtDate_(po.startDate) : '—';
-  const totalQty = po.totalQty  ? String(po.totalQty) : '—';
+  const matName     = p.MaterialName || (mmMap[p.Material] || {}).name || '';
+  const dueDate     = po.startDate ? fmtDate_(po.startDate) : '—';
+  const totalQtyVal = p.TotalQuantity || po.totalQty || 0;
+  const totalQty    = totalQtyVal > 0
+    ? String(totalQtyVal) + ' ' + (p.Unit || po.unit || '').trim()
+    : '—';
 
   // Header block
   let h = `<div class="sheet${compactCls}">`;
@@ -124,12 +133,12 @@ function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
   h += `<div class="hdr-block">`;
   h += `<div class="hdr-info">`;
   h += `<div class="company-row">`;
-  h += `<span class="company-name">โรงงาน PJ Wood Furniture Co., Ltd.</span>`;
+  h += `<span class="company-name">${esc_(CFG.FACTORY_NAME)}</span>`;
   h += `<span class="doc-title">Pallet Tracking Sheet</span>`;
   h += `</div>`;
   h += `<div class="mat-code">${esc_(p.Material)}</div>`;
   h += `<div class="mat-name">${esc_(matName)}</div>`;
-  h += `<div class="sap-order">SAP Order: ${esc_(p.ManufacturingOrder)}</div>`;
+  h += `<div class="sap-order">SAP Order: ${esc_(mo)}</div>`;
   h += `<div class="pallet-info">Pallet ID: <b>${esc_(p.PalletID)}</b>&nbsp;|&nbsp;พาเลทที่: <b>${seq}/${total}</b>&nbsp;|&nbsp;พิมพ์: PC&nbsp;|&nbsp;${timestamp}</div>`;
   h += `</div>`;
   h += `<div class="hdr-qr"><img src="${buildPsQrUrl_(p.QRPayload)}" width="110" height="110" alt="QR"></div>`;
@@ -141,8 +150,8 @@ function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
   h += `<tr>`;
   h += `<td><b>${seq}/${total}</b></td>`;
   h += `<td><b>${esc_(String(p.QtyPerPallet))}</b> ${esc_(p.Unit || '')}</td>`;
-  h += `<td>${totalQty}</td>`;
-  h += `<td>${esc_(p.ManufacturingOrder)}</td>`;
+  h += `<td>${esc_(totalQty)}</td>`;
+  h += `<td>${esc_(mo)}</td>`;
   h += `<td>${dueDate}</td>`;
   h += `</tr></table>`;
 
@@ -165,15 +174,15 @@ function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
   h += `</tr>`;
 
   if (ops.length === 0) {
-    h += `<tr><td colspan="11" style="text-align:center;color:#999;font-style:italic;padding:4mm">— ไม่มีข้อมูล Operation — Sync ProductionOrders ก่อน —</td></tr>`;
+    h += `<tr><td colspan="11" style="text-align:center;color:#999;font-style:italic;padding:4mm">— ไม่พบ Operation ใน SAP — ตรวจสอบ Comm Arrangement —</td></tr>`;
   } else {
     ops.forEach((op, i) => {
-      const isFinal = (i === finalIdx);
-      const rowCls  = isFinal ? ' class="row-final"' : '';
+      const isFinal   = (i === finalIdx);
+      const rowCls    = isFinal ? ' class="row-final"' : '';
       const finalMark = isFinal ? ` <span class="final-mark">★ Final OP — Confirm SAP</span>` : '';
       h += `<tr${rowCls}>`;
       h += `<td class="c-no">${esc_(op.opNo)}</td>`;
-      h += `<td class="c-name">${esc_(op.text || op.opNo)}${finalMark}</td>`;
+      h += `<td class="c-name">${esc_(op.opText || op.text || op.opNo)}${finalMark}</td>`;
       h += `<td class="c-res">${esc_(op.workCenter)}</td>`;
       h += `<td class="c-num"></td><td class="c-num"></td>`;
       h += `<td class="c-time"></td><td class="c-sig"></td>`;
@@ -316,6 +325,7 @@ function getPalletRowsByIds_(palletIds, ss) {
       Unit:                String(data[r][idx.Unit] || '').trim(),
       PalletSeq:           Number(data[r][idx.PalletSeq]) || 0,
       TotalPallets:        Number(data[r][idx.TotalPallets]) || 0,
+      TotalQuantity:       Number(data[r][idx.TotalQuantity]) || 0,
       Status:              String(data[r][idx.Status] || '').trim(),
       QRPayload:           String(data[r][idx.QRPayload] || '').trim()
     });

@@ -34,6 +34,9 @@
 - OperationLog.gs: scaffold for Phase 3 — append-only, no SAP write (intermediate ops)
 - FINAL OPERATION ONLY is confirmed in SAP (Phase 3). All other ops in OperationLog.
 
+## Factory
+- Factory display name = 'PJ Chonburi' (not PJ Wood) — set in CFG.FACTORY_NAME, used in PalletSheet.gs
+
 ## Key Field Mapping
 - Production Order key field = ManufacturingOrder (NOT ProductionOrder)
 - QR Payload format = PALLET|{PalletID}|{ManufacturingOrder}|{Material}|{Batch}|{Qty}

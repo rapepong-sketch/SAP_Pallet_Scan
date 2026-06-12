@@ -227,7 +227,8 @@ function allocatePallets(requests) {
           'CREATED',
           qrPayload,
           now,
-          '', '', ''
+          '', '', '',
+          po.TotalQuantity || 0   // TotalQuantity of MO — for label display
         ]);
 
         palletIds.push(palletId);

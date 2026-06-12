@@ -9,11 +9,13 @@
  */
 
 var PM_SHEET = 'PalletMaster';
+// Must stay in sync with CFG.HEADERS.PALLET_MASTER — setupSheets() uses CFG, ensurePalletMasterSheet_ uses this
 var PM_HEADERS = [
   'PalletID', 'ManufacturingOrder', 'Material', 'MaterialName', 'Batch',
   'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
   'WorkCenter', 'Plant', 'StorageLocation', 'ProductionDate',
-  'Status', 'QRPayload', 'CreatedAt', 'PrintedAt', 'ScannedAt', 'QCResult'
+  'Status', 'QRPayload', 'CreatedAt', 'PrintedAt', 'ScannedAt', 'QCResult',
+  'TotalQuantity'   // Phase 2.5: MO total qty — added at end to avoid shifting existing columns
 ];
 
 // Status lifecycle: CREATED → PRINTED → SCANNED(GR) → QC_PASS/QC_HOLD/QC_REJECT
@@ -25,6 +27,14 @@ function ensurePalletMasterSheet_() {
     sh.getRange(1, 1, 1, PM_HEADERS.length).setValues([PM_HEADERS])
       .setFontWeight('bold').setBackground('#0b8043').setFontColor('#ffffff');
     sh.setFrozenRows(1);
+  } else {
+    // Add TotalQuantity column header if this is an older sheet without it
+    var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    if (hdr.indexOf('TotalQuantity') === -1) {
+      var col = sh.getLastColumn() + 1;
+      sh.getRange(1, col).setValue('TotalQuantity')
+        .setFontWeight('bold').setBackground('#0b8043').setFontColor('#ffffff');
+    }
   }
   return sh;
 }
@@ -65,7 +75,8 @@ function splitOrderToPallets_(po, moqCfg, existingIds) {
       firstWc, po.Plant, po.StorageLocation, po.MfgOrderPlannedStartDate || '',
       'CREATED',
       buildQrPayload_(palletId, po.ManufacturingOrder, po.Material, po.Batch, qty),
-      now, '', '', ''
+      now, '', '', '',
+      Number(po.TotalQuantity) || 0  // TotalQuantity of MO — Phase 2.5
     ]);
     existingIds[palletId] = true;
   }

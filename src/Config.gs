@@ -18,6 +18,9 @@ const CFG = {
   SAP_BASE_URL: 'https://my417293-api.s4hana.cloud.sap',
   PLANT: '1100',
 
+  // ---- Factory identity --------------------------------------------------
+  FACTORY_NAME: 'PJ Chonburi',
+
   // ---- Google Sheet ------------------------------------------------------
   SHEET_ID: '1NZmKOuYAmpu1csjd83kNgZXSjCz5lVk7odIyDxJoKRk',
   QR_API:   'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=',
@@ -80,16 +83,19 @@ const CFG = {
       'Operations',                 // "0010:WC|text; 0020:WC|text"
       'StatusCodes',                // จาก to_ProductionOrderStatus
       'IsReleased',                 // direct boolean flag from header
-      'LastSyncAt'
+      'LastSyncAt',
+      'OperationsJSON'              // Phase 2.5: JSON array for routing table (lazy-fetch cache)
     ],
 
     PALLET_MASTER: [
-      'PalletID',                   // {PO}-P{seq} — key (idempotency, QR payload)
-      'ProductionOrder', 'Material', 'MaterialName', 'Batch',
+      // Must match PM_HEADERS in PalletGen.gs exactly — setupSheets() uses this to write header row
+      'PalletID',                   // PL-{MO}-L{nn} — key (idempotency, QR payload)
+      'ManufacturingOrder',         // SAP MO number
+      'Material', 'MaterialName', 'Batch',
       'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
-      'WorkCenter', 'ProductionDate', 'QRPayload',
-      'LabelPrintedAt', 'ScanStatus', 'ScannedAt', 'ScannedBy',
-      'GRMaterialDocument', 'QCStatus', 'InspectionLot', 'UpdatedAt'
+      'WorkCenter', 'Plant', 'StorageLocation', 'ProductionDate',
+      'Status', 'QRPayload', 'CreatedAt', 'PrintedAt', 'ScannedAt', 'QCResult',
+      'TotalQuantity'               // Phase 2.5: MO total qty for label display
     ],
 
     MOQ_CONFIG: [

@@ -193,6 +193,16 @@ function mapPoToRow_(po) {
       (op.MfgOrderOperationText ? '|' + op.MfgOrderOperationText : '');
   }).join('; ');
 
+  // OperationsJSON: structured array for routing table (lazy-fetch cache — Phase 2.5)
+  const opsJson = JSON.stringify(ops.map(function(op) {
+    return {
+      opNo:        String(op.ManufacturingOrderOperation || '').trim(),
+      opText:      String(op.MfgOrderOperationText || '').trim(),
+      workCenter:  String(op.WorkCenter || '').trim(),
+      workCenterDesc: ''
+    };
+  }));
+
   // Batch: เอาตัวแรกที่มีค่า (FG header item) — ถ้าหลาย batch รวมเป็น list
   const batches = [];
   items.forEach(function (it) {
@@ -218,7 +228,8 @@ function mapPoToRow_(po) {
     operations,
     statusCodes,
     true,        // IsReleased — ผ่าน filter แล้ว
-    new Date()   // LastSyncAt
+    new Date(),  // LastSyncAt
+    opsJson      // OperationsJSON — Phase 2.5
   ];
 }
 
@@ -319,6 +330,55 @@ function clearOldOrders() {
   }
   logEvent('clearOldOrders', '-', 'OK', 0, 'deleted ' + toDelete.length + ' old rows (2025/1000000xxx series)');
   console.log('clearOldOrders: deleted ' + toDelete.length + ' rows');
+}
+
+/**
+ * Lazy-fetch operations for a single MO from SAP.
+ * Uses CacheService (30 min TTL) — second call for same MO within a print session is instant.
+ * Called by PalletSheet.gs buildOneSheetHtml_ to populate the routing confirmation table.
+ *
+ * @param {string} mo — ManufacturingOrder number e.g. '1000036044'
+ * @return {Array<{opNo,opText,workCenter,workCenterDesc}>}
+ */
+function fetchOperationsForMO_(mo) {
+  if (!mo) return [];
+
+  const cacheKey = 'OPS_' + mo;
+  const cache    = CacheService.getScriptCache();
+  const cached   = cache.get(cacheKey);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) { /* fall through to SAP */ }
+  }
+
+  const path   = CFG.ENDPOINTS.PRODUCTION_ORDERS + "('" + mo + "')";
+  const params = {
+    '$expand': 'to_ProductionOrderOperation',
+    '$select': [
+      'ManufacturingOrder',
+      'to_ProductionOrderOperation/ManufacturingOrderOperation',
+      'to_ProductionOrderOperation/MfgOrderOperationText',
+      'to_ProductionOrderOperation/WorkCenter'
+    ].join(',')
+  };
+
+  try {
+    const data   = sapGet(path, params, 'fetchOperationsForMO_');
+    const d      = data.d || {};
+    const rawOps = (d.to_ProductionOrderOperation || {}).results || [];
+    const ops    = rawOps.map(function(op) {
+      return {
+        opNo:          String(op.ManufacturingOrderOperation || '').trim(),
+        opText:        String(op.MfgOrderOperationText || '').trim(),
+        workCenter:    String(op.WorkCenter || '').trim(),
+        workCenterDesc: ''
+      };
+    });
+    cache.put(cacheKey, JSON.stringify(ops), 1800); // 30 min
+    return ops;
+  } catch (e) {
+    logError('fetchOperationsForMO_', path, e.message, 'MO=' + mo);
+    return [];
+  }
 }
 
 /**
