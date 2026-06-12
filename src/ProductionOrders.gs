@@ -76,22 +76,24 @@ function pullProductionOrders() {
 
 /** Plant filter + optional date window (OData V2 datetime literal) */
 function buildPoFilter_() {
-  // Plant = ProductionPlant in _2_SRV header (Plant also valid per EDMX)
+  // OData V2: boolean literal must be unquoted lowercase 'true'
+  // However SAP Gateway rejects Edm.Boolean in $filter on this entity.
+  // Strategy: filter Plant + date server-side; filter Released client-side via OrderIsReleased flag.
   let f = "Plant eq '" + CFG.PLANT + "'";
   if (CFG.PULL_DAYS_BACK > 0) {
     const since = new Date(Date.now() - CFG.PULL_DAYS_BACK * 24 * 3600 * 1000);
     const lit = Utilities.formatDate(since, 'UTC', "yyyy-MM-dd'T'00:00:00");
     f += " and MfgOrderPlannedStartDate ge datetime'" + lit + "'";
   }
-  // Server-side released filter using direct boolean field
-  f += " and OrderIsReleased eq true";
   return f;
 }
 
-/** Released filter is now handled server-side via OrderIsReleased eq true.
- *  This function kept as safety net — passes all records through. */
+/**
+ * Client-side released check — uses OrderIsReleased boolean field from header.
+ * SAP Gateway does not support Edm.Boolean in server-side $filter on this entity.
+ */
 function isReleasedOrder_(po) {
-  return true;
+  return po.OrderIsReleased === true || po.OrderIsReleased === 'true';
 }
 
 /** Flatten 1 PO (header + expands) → 1 row ตาม CFG.HEADERS.PRODUCTION_ORDERS */
