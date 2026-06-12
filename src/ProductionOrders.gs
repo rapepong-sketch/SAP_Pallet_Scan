@@ -78,10 +78,19 @@ function pullProductionOrders() {
     }
 
     const stats = upsertProductionOrders_(rows);
+
+    // ลบ stale rows — rows ที่มีอยู่แล้วแต่ไม่ผ่าน isReleasedOrder_ filter อีกต่อไป
+    // (เช่น orders ที่ถูก CNF/DLV/TECO ไปแล้วหลังจาก pull ครั้งก่อน)
+    const activeKeys = {};
+    rows.forEach(function(r) { activeKeys[String(r[0])] = true; });
+    const staleCount = removeStaleOrders_(activeKeys);
+
     logEvent(fn, endpoint, 'OK', Date.now() - t0,
       'fetched=' + raw.length + ' released=' + released.length +
-      ' inserted=' + stats.inserted + ' updated=' + stats.updated);
-    console.log('Done: inserted=' + stats.inserted + ', updated=' + stats.updated);
+      ' inserted=' + stats.inserted + ' updated=' + stats.updated +
+      ' staleRemoved=' + staleCount);
+    console.log('Done: inserted=' + stats.inserted + ', updated=' + stats.updated +
+                ', staleRemoved=' + staleCount);
     return released.length;
 
   } catch (e) {
@@ -240,6 +249,31 @@ function upsertProductionOrders_(rows) {
     sh.getRange(sh.getLastRow() + 1, 1, toAppend.length, width).setValues(toAppend);
   }
   return { inserted: toAppend.length, updated: updated };
+}
+
+/**
+ * ลบ rows ที่ key (ManufacturingOrder) ไม่อยู่ใน activeKeys set
+ * ใช้หลัง upsert เพื่อลบ stale orders (CNF/DLV/TECO ไปแล้วนับจาก pull ครั้งก่อน)
+ * @param {Object} activeKeys — { "2000004325": true, ... }
+ * @return {number} จำนวน rows ที่ลบ
+ */
+function removeStaleOrders_(activeKeys) {
+  const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
+  const lastRow = sh.getLastRow();
+  if (lastRow <= 1) return 0;
+
+  const keys = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+  const toDelete = [];
+  keys.forEach(function(r, i) {
+    const k = String(r[0]).replace('.0', '').trim();
+    if (k && !activeKeys[k]) toDelete.push(i + 2);
+  });
+
+  // ลบจากล่างขึ้นบน
+  for (let i = toDelete.length - 1; i >= 0; i--) {
+    sh.deleteRow(toDelete[i]);
+  }
+  return toDelete.length;
 }
 
 /**
