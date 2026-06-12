@@ -184,3 +184,27 @@ function upsertProductionOrders_(rows) {
   }
   return { inserted: toAppend.length, updated: updated };
 }
+
+/**
+ * Debug — ดูค่า OrderIsReleased + MfgOrderPlannedStartDate จริงจาก SAP
+ * รัน 1 ครั้งเพื่อตรวจสอบ แล้วลบทิ้ง
+ */
+function debugOrderStatus() {
+  const params = {
+    '$top': '10',
+    '$select': 'ManufacturingOrder,Material,Plant,OrderIsReleased,MfgOrderPlannedStartDate',
+    '$filter': "Plant eq '" + CFG.PLANT + "'"
+  };
+  const data = sapGet(CFG.ENDPOINTS.PRODUCTION_ORDERS, params, 'debugOrderStatus');
+  const results = (data.d || {}).results || [];
+  console.log('Total returned: ' + results.length);
+  results.forEach(function(r) {
+    console.log(
+      'PO=' + r.ManufacturingOrder +
+      ' | Material=' + r.Material +
+      ' | OrderIsReleased=' + r.OrderIsReleased +
+      ' (type=' + typeof r.OrderIsReleased + ')' +
+      ' | StartDate=' + r.MfgOrderPlannedStartDate
+    );
+  });
+}
