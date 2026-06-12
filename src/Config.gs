@@ -12,7 +12,7 @@
 const CFG = {
 
   // ---- Safety gate -------------------------------------------------------
-  DRY_RUN: true, // เปลี่ยนเป็น false เมื่อผ่าน Test Gate ข้อ 3 แล้วเท่านั้น
+  DRY_RUN: false, // Phase 1 Test Gate ผ่านแล้ว — fetched=200 released=186
 
   // ---- SAP tenant --------------------------------------------------------
   SAP_BASE_URL: 'https://my417293-api.s4hana.cloud.sap',
