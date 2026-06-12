@@ -39,6 +39,33 @@ function ensurePalletMasterSheet_() {
   return sh;
 }
 
+function ensurePalletMasterColumns_() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName(PM_SHEET);
+  if (!sh) return;
+
+  var required = [
+    'PalletID', 'ManufacturingOrder', 'Material', 'MaterialName', 'Batch',
+    'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
+    'WorkCenter', 'Plant', 'StorageLocation', 'ProductionDate',
+    'TotalQuantity',
+    'Status', 'QRPayload', 'CreatedAt', 'PrintedAt', 'ScannedAt', 'QCResult'
+  ];
+
+  var existing = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+
+  required.forEach(function(col) {
+    if (existing.indexOf(col) === -1) {
+      var newCol = sh.getLastColumn() + 1;
+      sh.getRange(1, newCol).setValue(col)
+        .setFontWeight('bold')
+        .setBackground('#0b8043')
+        .setFontColor('#ffffff');
+      Logger.log('Added column: ' + col + ' at position ' + newCol);
+    }
+  });
+}
+
 function getExistingPalletIds_(sh) {
   var ids = {};
   if (sh.getLastRow() > 1) {
@@ -88,6 +115,7 @@ function splitOrderToPallets_(po, moqCfg, existingIds) {
  * @param {string=} orderFilter — ระบุ MO เดียว (optional); ไม่ระบุ = ทุก order ที่มี MOQ config
  */
 function generatePallets(orderFilter) {
+  ensurePalletMasterColumns_();
   var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
   var poSheet = ss.getSheetByName('ProductionOrders');
   if (!poSheet || poSheet.getLastRow() < 2) throw new Error('ProductionOrders sheet ว่าง — รัน Phase 1 sync ก่อน');

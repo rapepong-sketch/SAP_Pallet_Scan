@@ -134,6 +134,7 @@ function getExistingPmSummary_() {
  *   Total: 4 pallets, shortfall=0
  */
 function allocatePallets(requests) {
+  ensurePalletMasterColumns_();
   const t0 = Date.now();
   const materialMap = getMaterialMap();
   const poList      = getReleasedPoData_();
