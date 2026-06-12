@@ -103,18 +103,19 @@ function reprintDialog() {
 // ============================================================================
 
 function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
-  const po  = poMap[String(p.ManufacturingOrder)] || {};
+  // mo MUST be resolved before ops-fetch and poMap lookup — fallback extracts MO from PalletID
+  // so the sheet still renders correctly even when ManufacturingOrder column was renamed/empty.
+  const mo = p.ManufacturingOrder ||
+    (String(p.PalletID || '').match(/^PL-(\d+)-L/) || [])[1] || '?';
+
+  const po  = poMap[String(mo)] || {};
 
   // Ops: lazy-fetch from SAP (CacheService 30 min — same MO across pallets is instant)
-  Logger.log('Fetching ops for MO: ' + p.ManufacturingOrder + ' (PalletID: ' + p.PalletID + ')');
-  const ops      = fetchOperationsForMO_(p.ManufacturingOrder);
+  Logger.log('fetchOps: mo="' + mo + '" p.ManufacturingOrder="' + p.ManufacturingOrder + '" PalletID=' + p.PalletID);
+  const ops      = fetchOperationsForMO_(mo !== '?' ? mo : '');
   const opCount  = ops.length;
   const compactCls = opCount <= 10 ? '' : opCount <= 15 ? ' compact-11' : ' compact-16';
   const finalIdx = opCount - 1;
-
-  // ManufacturingOrder: stored value, fallback parse from PalletID
-  const mo = p.ManufacturingOrder ||
-    (String(p.PalletID || '').match(/^PL-(\d+)-L/) || [])[1] || '?';
 
   // Parse seq from PalletID (new format PL-...-L{nn})
   const mSeq  = String(p.PalletID || '').match(/L(\d+)$/);

@@ -264,6 +264,30 @@ function generatePallets(orderFilter) {
   return { dryRun: false, created: allRows.length, summary: summary };
 }
 
+// ============================================================================
+// Debug utilities
+// ============================================================================
+
+/** Run from Editor → paste full output to confirm column names and data. */
+function debugPalletMasterSchema() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName('PalletMaster');
+  if (!sh) { Logger.log('PalletMaster sheet NOT FOUND'); return; }
+
+  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  Logger.log('PalletMaster lastRow=' + sh.getLastRow() +
+             ' lastCol=' + sh.getLastColumn());
+  Logger.log('PalletMaster headers: ' + JSON.stringify(headers));
+
+  if (sh.getLastRow() > 1) {
+    var row1 = sh.getRange(2, 1, 1, sh.getLastColumn()).getValues()[0];
+    Logger.log('Row 1 data: ' + JSON.stringify(row1));
+    headers.forEach(function(h, i) {
+      Logger.log('  [' + i + '] ' + h + ' = "' + row1[i] + '"');
+    });
+  }
+}
+
 /** สะดวกเรียกจากเมนู: gen เฉพาะ order เดียว */
 function generatePalletsForOrder() {
   var ui = SpreadsheetApp.getUi();

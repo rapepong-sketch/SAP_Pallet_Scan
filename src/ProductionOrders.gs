@@ -341,13 +341,18 @@ function clearOldOrders() {
  * @return {Array<{opNo,opText,workCenter,workCenterDesc}>}
  */
 function fetchOperationsForMO_(mo) {
-  if (!mo) return [];
+  Logger.log('fetchOperationsForMO_ called with: [' + mo + '] type=' + typeof mo);
+  if (!mo) { Logger.log('fetchOperationsForMO_: empty mo → return []'); return []; }
 
   const cacheKey = 'OPS_' + mo;
   const cache    = CacheService.getScriptCache();
   const cached   = cache.get(cacheKey);
   if (cached) {
-    try { return JSON.parse(cached); } catch (e) { /* fall through to SAP */ }
+    Logger.log('fetchOperationsForMO_: cache HIT key=' + cacheKey +
+               ' value_start=' + cached.substring(0, 80));
+    try { return JSON.parse(cached); } catch (e) { Logger.log('cache parse fail, fall through'); }
+  } else {
+    Logger.log('fetchOperationsForMO_: cache MISS, calling SAP');
   }
 
   const path   = CFG.ENDPOINTS.PRODUCTION_ORDERS + "('" + mo + "')";
@@ -360,11 +365,14 @@ function fetchOperationsForMO_(mo) {
       'to_ProductionOrderOperation/WorkCenter'
     ].join(',')
   };
+  Logger.log('fetchOperationsForMO_: path=' + path);
 
   try {
     const data   = sapGet(path, params, 'fetchOperationsForMO_');
     const d      = data.d || {};
     const rawOps = (d.to_ProductionOrderOperation || {}).results || [];
+    Logger.log('fetchOperationsForMO_: rawOps.length=' + rawOps.length +
+               ' d keys=' + Object.keys(d).join(','));
     const ops    = rawOps.map(function(op) {
       return {
         opNo:          String(op.ManufacturingOrderOperation || '').trim(),
@@ -377,8 +385,55 @@ function fetchOperationsForMO_(mo) {
     return ops;
   } catch (e) {
     logError('fetchOperationsForMO_', path, e.message, 'MO=' + mo);
+    Logger.log('fetchOperationsForMO_: EXCEPTION ' + e.message);
     return [];
   }
+}
+
+/**
+ * Debug/test: clears cache for a given MO, then calls fetchOperationsForMO_
+ * with raw HTTP logging so you can see exactly what SAP returns.
+ * Run from Editor — pass a real MO number.
+ */
+function testFetchOpsDebug(mo) {
+  mo = String(mo || '1000035048');
+  Logger.log('=== testFetchOpsDebug MO=' + mo + ' ===');
+
+  // Clear any stale cache for this MO
+  const cacheKey = 'OPS_' + mo;
+  CacheService.getScriptCache().remove(cacheKey);
+  Logger.log('Cleared cache: ' + cacheKey);
+
+  // Raw HTTP call so we can log status + body
+  const path   = CFG.ENDPOINTS.PRODUCTION_ORDERS + "('" + mo + "')";
+  const params = {
+    '$expand': 'to_ProductionOrderOperation',
+    '$select': [
+      'ManufacturingOrder',
+      'to_ProductionOrderOperation/ManufacturingOrderOperation',
+      'to_ProductionOrderOperation/MfgOrderOperationText',
+      'to_ProductionOrderOperation/WorkCenter'
+    ].join(','),
+    '$format': 'json'
+  };
+  const url = buildSapUrl_(path, params);
+  Logger.log('URL: ' + url);
+
+  const creds = getSapCredentials_();
+  const resp = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: {
+      'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+      'Accept': 'application/json'
+    },
+    muteHttpExceptions: true
+  });
+  Logger.log('Response code: ' + resp.getResponseCode());
+  Logger.log('Response body (first 800): ' + resp.getContentText().substring(0, 800));
+
+  const ops = fetchOperationsForMO_(mo);
+  Logger.log('fetchOperationsForMO_ result: ' + ops.length + ' ops');
+  ops.forEach(function(op, i) { Logger.log('  [' + i + '] ' + JSON.stringify(op)); });
 }
 
 /**
