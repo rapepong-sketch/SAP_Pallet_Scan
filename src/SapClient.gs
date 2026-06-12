@@ -283,10 +283,11 @@ function probeServiceMetadata() {
     code === 200 ? 'EDMX length=' + body.length : body.slice(0, 300));
   console.log('HTTP ' + code);
   if (code === 200) {
-    // Print entity names and their navigation properties for quick review
-    const entityMatches = body.match(/EntityType Name="[^"]+"/g) || [];
-    const navMatches    = body.match(/NavigationProperty Name="[^"]+"/g) || [];
-    console.log('=== EntityTypes ===\n' + entityMatches.join('\n'));
+    const entityTypeMatches = body.match(/EntityType Name="[^"]+"/g) || [];
+    const entitySetMatches  = body.match(/EntitySet Name="[^"]+"/g) || [];
+    const navMatches        = body.match(/NavigationProperty Name="[^"]+"/g) || [];
+    console.log('=== EntityTypes ===\n'  + entityTypeMatches.join('\n'));
+    console.log('=== EntitySets ===\n'   + entitySetMatches.join('\n'));
     console.log('=== NavigationProperties ===\n' + navMatches.join('\n'));
   }
   return code;
