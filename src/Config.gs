@@ -22,7 +22,7 @@ const CFG = {
   SHEET_ID: '1NZmKOuYAmpu1csjd83kNgZXSjCz5lVk7odIyDxJoKRk',
 
   // ---- Pull behaviour ----------------------------------------------------
-  PULL_DAYS_BACK: 30,   // ดึง PO ที่ PlannedStartDate ย้อนหลังกี่วัน (0 = ไม่ filter วันที่)
+  PULL_DAYS_BACK: 0,    // 0 = ไม่ filter วันที่ — ดึงทั้งหมด (PO ใน tenant อยู่ปี 2025 ต้นปี)
   PAGE_SIZE: 200,       // OData $top ต่อ page (pagination ผ่าน __next)
   MAX_RETRIES: 3,       // retry ต่อ 1 SAP call
   RETRY_BASE_MS: 1000,  // backoff: 1s, 2s, 4s

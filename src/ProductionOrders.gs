@@ -89,11 +89,23 @@ function buildPoFilter_() {
 }
 
 /**
- * Client-side released check — uses OrderIsReleased boolean field from header.
- * SAP Gateway does not support Edm.Boolean in server-side $filter on this entity.
+ * Client-side released check.
+ * OrderIsReleased header field returns "" (empty string) on this tenant — unusable.
+ * Use to_ProductionOrderStatus expand: check StatusCode REL or I0002,
+ * or fallback to OrderIsReleased non-empty as secondary signal.
  */
 function isReleasedOrder_(po) {
-  return po.OrderIsReleased === true || po.OrderIsReleased === 'true';
+  // Primary: check expanded status collection
+  const sts = (po.to_ProductionOrderStatus && po.to_ProductionOrderStatus.results) || [];
+  if (sts.length > 0) {
+    return sts.some(function(s) {
+      const code = (s.StatusCode || '').toUpperCase();
+      const name = (s.StatusShortName || s.StatusName || '').toUpperCase();
+      return code === 'I0002' || code === 'REL' || name === 'REL';
+    });
+  }
+  // Fallback: if expand returned nothing, accept all (avoids filtering out valid orders)
+  return true;
 }
 
 /** Flatten 1 PO (header + expands) → 1 row ตาม CFG.HEADERS.PRODUCTION_ORDERS */
