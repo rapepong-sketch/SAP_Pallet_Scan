@@ -58,9 +58,9 @@ const CFG = {
     CONFIG: ['Key', 'Value', 'Description'],
 
     PRODUCTION_ORDERS: [
-      'ProductionOrder',            // A: key (idempotency)
+      'ManufacturingOrder',         // A: key (idempotency) — real field name
       'Material',
-      'MaterialName',
+      'ManufacturingOrderType',     // replaces MaterialName (not in entity)
       'TotalQuantity',
       'ProductionUnit',
       'MfgOrderPlannedStartDate',
@@ -71,7 +71,7 @@ const CFG = {
       'WorkCenters',                // unique list จาก to_ProductionOrderOperation
       'Operations',                 // "0010:WC|text; 0020:WC|text"
       'StatusCodes',                // จาก to_ProductionOrderStatus
-      'IsReleased',
+      'IsReleased',                 // direct boolean flag from header
       'LastSyncAt'
     ],
 

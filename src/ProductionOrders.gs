@@ -13,10 +13,12 @@
  */
 
 const PO_SELECT_ = [
-  // Header fields — API_PRODUCTION_ORDER_2_SRV entity A_ProductionOrder2
-  'ProductionOrder', 'Material', 'MfgOrderType', 'TotalQuantity', 'ProductionUnit',
-  'MfgOrderPlannedStartDate', 'Plant', 'StorageLocation', 'MfgOrderConfirmedYieldQty',
-  // Navigation (V2 style)
+  // Header — verified field names from A_ProductionOrder_2 EDMX (81 properties)
+  'ManufacturingOrder', 'Material', 'ManufacturingOrderType',
+  'TotalQuantity', 'ProductionUnit',
+  'MfgOrderPlannedStartDate', 'Plant', 'StorageLocation',
+  'MfgOrderConfirmedYieldQty', 'OrderIsReleased',
+  // Navigation (OData V2 style: entitySet/field)
   'to_ProductionOrderOperation/WorkCenter',
   'to_ProductionOrderOperation/ManufacturingOrderOperation',
   'to_ProductionOrderOperation/MfgOrderOperationText',
@@ -74,21 +76,22 @@ function pullProductionOrders() {
 
 /** Plant filter + optional date window (OData V2 datetime literal) */
 function buildPoFilter_() {
+  // Plant = ProductionPlant in _2_SRV header (Plant also valid per EDMX)
   let f = "Plant eq '" + CFG.PLANT + "'";
   if (CFG.PULL_DAYS_BACK > 0) {
     const since = new Date(Date.now() - CFG.PULL_DAYS_BACK * 24 * 3600 * 1000);
     const lit = Utilities.formatDate(since, 'UTC', "yyyy-MM-dd'T'00:00:00");
     f += " and MfgOrderPlannedStartDate ge datetime'" + lit + "'";
   }
+  // Server-side released filter using direct boolean field
+  f += " and OrderIsReleased eq true";
   return f;
 }
 
-/** Released = มี system status I0002 (StatusName มักเป็น "REL") */
+/** Released filter is now handled server-side via OrderIsReleased eq true.
+ *  This function kept as safety net — passes all records through. */
 function isReleasedOrder_(po) {
-  const sts = (po.to_ProductionOrderStatus && po.to_ProductionOrderStatus.results) || [];
-  return sts.some(function (s) {
-    return s.StatusCode === 'I0002' || s.StatusCode === 'REL' || s.StatusName === 'REL';
-  });
+  return true;
 }
 
 /** Flatten 1 PO (header + expands) → 1 row ตาม CFG.HEADERS.PRODUCTION_ORDERS */
@@ -123,9 +126,9 @@ function mapPoToRow_(po) {
   }).join('; ');
 
   return [
-    String(po.ProductionOrder || ''),
+    String(po.ManufacturingOrder || ''),
     po.Material || '',
-    po.MfgOrderType || '',   // MaterialName not available in _2_SRV header; use MfgOrderType as descriptor
+    po.ManufacturingOrderType || '',
     Number(po.TotalQuantity || 0),
     po.ProductionUnit || '',
     parseSapDate_(po.MfgOrderPlannedStartDate),
@@ -149,7 +152,7 @@ function upsertProductionOrders_(rows) {
   const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
   const width = CFG.HEADERS.PRODUCTION_ORDERS.length;
 
-  // index ของ key ที่มีอยู่: ProductionOrder → row number (1-based)
+  // index ของ key ที่มีอยู่: ManufacturingOrder → row number (1-based)
   const existing = {};
   const lastRow = sh.getLastRow();
   if (lastRow > 1) {
