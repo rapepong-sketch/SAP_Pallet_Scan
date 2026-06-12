@@ -89,23 +89,31 @@ function buildPoFilter_() {
 }
 
 /**
- * Client-side released check.
- * OrderIsReleased header field returns "" (empty string) on this tenant — unusable.
- * Use to_ProductionOrderStatus expand: check StatusCode REL or I0002,
- * or fallback to OrderIsReleased non-empty as secondary signal.
+ * Active order filter — tenant status lifecycle:
+ *   CRTD → REL → CNF → DLV → TECO
+ * SAP removes I0002(REL) once order progresses to CNF/DLV/TECO.
+ * Accept orders that have any "active production" status:
+ *   I0002 REL  — Released (not yet confirmed)
+ *   I0009 CNF  — Confirmed / partially confirmed
+ *   I0012 DLV  — Delivered
+ *   I0045 TECO — Technically Completed
+ * Reject orders that are only CRTD (created, not yet released)
+ * or have deletion flag I0043 DLFL.
  */
 function isReleasedOrder_(po) {
-  // Primary: check expanded status collection
+  const ACCEPT = { I0002:1, I0009:1, I0012:1, I0045:1 };
+  const REJECT = { I0043:1 }; // DLFL = marked for deletion
+
   const sts = (po.to_ProductionOrderStatus && po.to_ProductionOrderStatus.results) || [];
-  if (sts.length > 0) {
-    return sts.some(function(s) {
-      const code = (s.StatusCode || '').toUpperCase();
-      const name = (s.StatusShortName || s.StatusName || '').toUpperCase();
-      return code === 'I0002' || code === 'REL' || name === 'REL';
-    });
-  }
-  // Fallback: if expand returned nothing, accept all (avoids filtering out valid orders)
-  return true;
+
+  // ถ้า expand ไม่มีข้อมูล — รับทั้งหมด (กัน false negative)
+  if (sts.length === 0) return true;
+
+  // มี deletion flag → ตัดทิ้ง
+  if (sts.some(function(s) { return REJECT[s.StatusCode]; })) return false;
+
+  // มีอย่างน้อย 1 active status → รับ
+  return sts.some(function(s) { return ACCEPT[s.StatusCode]; });
 }
 
 /** Flatten 1 PO (header + expands) → 1 row ตาม CFG.HEADERS.PRODUCTION_ORDERS */
