@@ -12,7 +12,7 @@
 const CFG = {
 
   // ---- Safety gate -------------------------------------------------------
-  DRY_RUN: true,  // reset to safe mode during filter debugging
+  DRY_RUN: false, // ✅ PDFG filter verified — writing to sheet
 
   // ---- SAP tenant --------------------------------------------------------
   SAP_BASE_URL: 'https://my417293-api.s4hana.cloud.sap',
@@ -24,9 +24,11 @@ const CFG = {
   // ---- Pull behaviour ----------------------------------------------------
   PULL_DAYS_BACK: 180,  // ดึง 180 วันย้อนหลัง = ครอบ 2026 ทั้งปี (export จริงมี 2026-01 ถึง 2026-11)
   PAGE_SIZE: 500,       // OData $top ต่อ page — 500×4 pages = 2000 records ครอบ 1732 orders
-  // Order types to include — PDFG=Finished Goods, PDSM=Semi-finished
-  // Set to [] to pull all types
-  ORDER_TYPES: ['PDFG', 'PDSM'],
+  // Order types to include
+  // PDFG = Finished Goods (สินค้าสำเร็จรูป) — ใช้สำหรับ Pallet Label
+  // PDSM = Semi-finished (ชิ้นส่วนประกอบ) — include ถ้าต้องการ
+  // เริ่มด้วย PDFG เท่านั้น เพื่อให้ตรงกับ 594 orders ใน export
+  ORDER_TYPES: ['PDFG'],
   MAX_RETRIES: 3,       // retry ต่อ 1 SAP call
   RETRY_BASE_MS: 1000,  // backoff: 1s, 2s, 4s
 
