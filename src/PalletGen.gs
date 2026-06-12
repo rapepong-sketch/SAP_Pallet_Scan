@@ -44,6 +44,18 @@ function ensurePalletMasterColumns_() {
   var sh = ss.getSheetByName(PM_SHEET);
   if (!sh) return;
 
+  var existing = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+
+  // Rename legacy 'ProductionOrder' header → 'ManufacturingOrder' (preserves data in that column)
+  existing.forEach(function(h, i) {
+    if (h === 'ProductionOrder') {
+      sh.getRange(1, i + 1).setValue('ManufacturingOrder')
+        .setFontWeight('bold').setBackground('#0b8043').setFontColor('#ffffff');
+      Logger.log('Renamed column: ProductionOrder → ManufacturingOrder at position ' + (i + 1));
+      existing[i] = 'ManufacturingOrder';
+    }
+  });
+
   var required = [
     'PalletID', 'ManufacturingOrder', 'Material', 'MaterialName', 'Batch',
     'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
@@ -51,8 +63,6 @@ function ensurePalletMasterColumns_() {
     'TotalQuantity',
     'Status', 'QRPayload', 'CreatedAt', 'PrintedAt', 'ScannedAt', 'QCResult'
   ];
-
-  var existing = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
 
   required.forEach(function(col) {
     if (existing.indexOf(col) === -1) {
@@ -64,6 +74,84 @@ function ensurePalletMasterColumns_() {
       Logger.log('Added column: ' + col + ' at position ' + newCol);
     }
   });
+}
+
+/**
+ * One-time backfill — populate TotalQuantity, MaterialName, Batch, QRPayload
+ * for PalletMaster rows where TotalQuantity is empty.
+ * Respects CFG.DRY_RUN.
+ */
+function backfillPalletMaster() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var pmSh = ss.getSheetByName(PM_SHEET);
+  if (!pmSh || pmSh.getLastRow() < 2) { Logger.log('backfillPalletMaster: PalletMaster ว่าง'); return; }
+
+  var poSh = ss.getSheetByName('ProductionOrders');
+  if (!poSh || poSh.getLastRow() < 2) { Logger.log('backfillPalletMaster: ProductionOrders ว่าง'); return; }
+
+  // Build PO lookup
+  var poData = poSh.getDataRange().getValues();
+  var poIdx = {};
+  poData[0].forEach(function(h, i) { poIdx[h] = i; });
+  var poMap = {};
+  for (var pr = 1; pr < poData.length; pr++) {
+    var moVal = String(poData[pr][poIdx.ManufacturingOrder] || '').trim();
+    if (!moVal) continue;
+    poMap[moVal] = {
+      TotalQuantity: Number(poData[pr][poIdx.TotalQuantity]) || 0,
+      Batch:         String(poData[pr][poIdx.Batch] || '').trim(),
+      Material:      String(poData[pr][poIdx.Material] || '').trim()
+    };
+  }
+
+  var mmMap = getMaterialMap();
+
+  var pmData = pmSh.getDataRange().getValues();
+  var pmIdx = {};
+  pmData[0].forEach(function(h, i) { pmIdx[h] = i; });
+
+  var count = 0;
+  var backfilled = 0;
+
+  for (var r = 1; r < pmData.length; r++) {
+    var row = pmData[r];
+    var tqCurrent = row[pmIdx.TotalQuantity];
+    if (tqCurrent !== '' && tqCurrent !== null && Number(tqCurrent) > 0) continue;
+
+    var mo = String(row[pmIdx.ManufacturingOrder] || '').trim();
+    if (!mo) { Logger.log('backfillPalletMaster: row ' + (r + 1) + ' ManufacturingOrder ว่าง — skip'); continue; }
+
+    var po = poMap[mo];
+    if (!po) { Logger.log('backfillPalletMaster: MO ' + mo + ' ไม่พบใน ProductionOrders'); continue; }
+
+    var mat      = String(row[pmIdx.Material] || '').trim() || po.Material;
+    var matName  = (mmMap[mat] && mmMap[mat].name) ? mmMap[mat].name : '';
+    var palletId = String(row[pmIdx.PalletID] || '').trim();
+    var palletQty = Number(row[pmIdx.QtyPerPallet]) || 0;
+    var newQr    = 'PALLET|' + palletId + '|' + mo + '|' + mat + '|' + (po.Batch || '') + '|' + palletQty;
+
+    count++;
+    Logger.log('backfillPalletMaster: row ' + (r + 1) + ' ' + palletId +
+      ' MO=' + mo + ' TotalQty=' + po.TotalQuantity +
+      ' Batch="' + po.Batch + '" MatName="' + matName + '" QR=' + newQr);
+
+    if (!CFG.DRY_RUN) {
+      if (pmIdx.MaterialName >= 0 && !String(row[pmIdx.MaterialName] || '').trim()) {
+        pmSh.getRange(r + 1, pmIdx.MaterialName + 1).setValue(matName);
+      }
+      pmSh.getRange(r + 1, pmIdx.Batch        + 1).setValue(po.Batch || '');
+      pmSh.getRange(r + 1, pmIdx.TotalQuantity + 1).setValue(po.TotalQuantity);
+      pmSh.getRange(r + 1, pmIdx.QRPayload     + 1).setValue(newQr);
+      backfilled++;
+    }
+  }
+
+  if (CFG.DRY_RUN) {
+    Logger.log('backfillPalletMaster: [DRY_RUN] would backfill ' + count + ' rows');
+  } else {
+    Logger.log('backfillPalletMaster: backfilled ' + backfilled + ' rows');
+    logEvent('BACKFILL_PM', '-', 'OK', 0, 'backfilled ' + backfilled + ' PalletMaster rows');
+  }
 }
 
 function getExistingPalletIds_(sh) {

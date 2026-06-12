@@ -106,6 +106,7 @@ function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
   const po  = poMap[String(p.ManufacturingOrder)] || {};
 
   // Ops: lazy-fetch from SAP (CacheService 30 min — same MO across pallets is instant)
+  Logger.log('Fetching ops for MO: ' + p.ManufacturingOrder + ' (PalletID: ' + p.PalletID + ')');
   const ops      = fetchOperationsForMO_(p.ManufacturingOrder);
   const opCount  = ops.length;
   const compactCls = opCount <= 10 ? '' : opCount <= 15 ? ' compact-11' : ' compact-16';
@@ -400,6 +401,16 @@ function parseOps_(str) {
 function buildPsQrUrl_(payload) {
   return 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=' +
     encodeURIComponent(String(payload || ''));
+}
+
+/**
+ * Safe column index lookup — throws if column is absent so callers fail loudly
+ * rather than silently reading the wrong position.
+ */
+function getColIndex_(headers, name) {
+  const idx = headers.indexOf(name);
+  if (idx === -1) throw new Error('Column not found in PalletMaster: ' + name);
+  return idx;
 }
 
 /** HTML-escape helper */
