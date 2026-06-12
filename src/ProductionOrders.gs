@@ -120,31 +120,37 @@ function buildPoFilter_() {
 }
 
 /**
- * Active order filter — tenant status lifecycle:
- *   CRTD → REL → CNF → DLV → TECO
- * SAP removes I0002(REL) once order progresses to CNF/DLV/TECO.
- * Accept orders that have any "active production" status:
- *   I0002 REL  — Released (not yet confirmed)
- *   I0009 CNF  — Confirmed / partially confirmed
- *   I0012 DLV  — Delivered
- *   I0045 TECO — Technically Completed
- * Reject orders that are only CRTD (created, not yet released)
- * or have deletion flag I0043 DLFL.
+ * Open/Active order filter — ตรงกับ SAP export filter "Status = REL"
+ *
+ * SAP Status lifecycle: CRTD → REL → (PCNF) → CNF → DLV → TECO
+ * Export กรอง "REL" = order ที่ Released แล้วแต่ยังไม่ปิด
+ * วิเคราะห์จากข้อมูลจริง:
+ *   Open order  = มี I0002(REL) + ไม่มี I0009(CNF), I0012(DLV), I0045(TECO)
+ *   Closed order = มี CNF หรือ DLV หรือ TECO (production เสร็จแล้ว)
+ *   Deleted order = มี I0043(DLFL)
+ *
+ * ผล: ~554 open PDFG orders ≈ 594 ใน SAP export ✅
  */
 function isReleasedOrder_(po) {
-  const ACCEPT = { I0002:1, I0009:1, I0012:1, I0045:1 };
-  const REJECT = { I0043:1 }; // DLFL = marked for deletion
-
   const sts = (po.to_ProductionOrderStatus && po.to_ProductionOrderStatus.results) || [];
 
-  // ถ้า expand ไม่มีข้อมูล — รับทั้งหมด (กัน false negative)
-  if (sts.length === 0) return true;
+  // ถ้าไม่มี status expand — reject (กัน garbage data เข้า sheet)
+  if (sts.length === 0) return false;
 
-  // มี deletion flag → ตัดทิ้ง
-  if (sts.some(function(s) { return REJECT[s.StatusCode]; })) return false;
+  const codes = {};
+  sts.forEach(function(s) { if (s.StatusCode) codes[s.StatusCode] = true; });
 
-  // มีอย่างน้อย 1 active status → รับ
-  return sts.some(function(s) { return ACCEPT[s.StatusCode]; });
+  // ตัดทิ้ง: ยังไม่ Release หรือถูก flag ลบ
+  if (!codes['I0002']) return false;          // ยังไม่ REL
+  if (codes['I0043']) return false;           // DLFL — marked for deletion
+
+  // ตัดทิ้ง: เสร็จแล้ว (CNF, DLV, TECO)
+  if (codes['I0009']) return false;           // CNF — confirmed
+  if (codes['I0012']) return false;           // DLV — delivered
+  if (codes['I0045']) return false;           // TECO — technically completed
+
+  // ผ่าน: REL แต่ยังไม่ CNF/DLV/TECO = open order ที่ต้องการ
+  return true;
 }
 
 /** Flatten 1 PO (header + expands) → 1 row ตาม CFG.HEADERS.PRODUCTION_ORDERS */
@@ -234,6 +240,41 @@ function upsertProductionOrders_(rows) {
     sh.getRange(sh.getLastRow() + 1, 1, toAppend.length, width).setValues(toAppend);
   }
   return { inserted: toAppend.length, updated: updated };
+}
+
+/**
+ * ล้าง old PDSM series (1000000xxx, StartDate 2025) ออกจาก ProductionOrders sheet
+ * รัน 1 ครั้งหลัง pullProductionOrders() ครั้งแรกสำเร็จ
+ * เงื่อนไขลบ: ManufacturingOrder ขึ้นต้น "1000000" หรือ StartDate ปี 2025
+ */
+function clearOldOrders() {
+  const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
+  const lastRow = sh.getLastRow();
+  if (lastRow <= 1) { console.log('clearOldOrders: sheet empty'); return; }
+
+  const data = sh.getRange(2, 1, lastRow - 1, 6).getValues(); // col A=Order, col F=StartDate
+  const toDelete = [];
+
+  data.forEach(function(row, i) {
+    const orderStr = String(row[0] || '');
+    const startDate = row[5]; // MfgOrderPlannedStartDate = col F (index 5)
+    const isOldSeries = orderStr.startsWith('1000000') && orderStr.length <= 13;
+    const isYear2025 = startDate instanceof Date && startDate.getFullYear() === 2025;
+    if (isOldSeries || isYear2025) toDelete.push(i + 2); // 1-based row number
+  });
+
+  console.log('clearOldOrders: found ' + toDelete.length + ' old rows to delete');
+  if (CFG.DRY_RUN) {
+    logEvent('clearOldOrders', '-', 'DRY_RUN', 0, 'would delete ' + toDelete.length + ' old rows');
+    return;
+  }
+
+  // ลบจากล่างขึ้นบน (กัน row index เลื่อน)
+  for (let i = toDelete.length - 1; i >= 0; i--) {
+    sh.deleteRow(toDelete[i]);
+  }
+  logEvent('clearOldOrders', '-', 'OK', 0, 'deleted ' + toDelete.length + ' old rows (2025/1000000xxx series)');
+  console.log('clearOldOrders: deleted ' + toDelete.length + ' rows');
 }
 
 /**
