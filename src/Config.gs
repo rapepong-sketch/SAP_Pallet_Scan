@@ -39,7 +39,7 @@ const CFG = {
   },
 
   ENDPOINTS: {
-    PRODUCTION_ORDERS: '/sap/opu/odata/sap/API_PRODUCTION_ORDER_2_SRV/A_ProductionOrder'
+    PRODUCTION_ORDERS: '/sap/opu/odata/sap/API_PRODUCTION_ORDER_2_SRV/A_ProductionOrder_2'
   },
 
   // ---- Sheet names ---------------------------------------------------------
