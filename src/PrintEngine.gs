@@ -141,7 +141,7 @@ function allocatePallets(requests) {
 
   const pqSheet = ensurePrintQueueSheet_();
   const now     = new Date();
-  const email   = Session.getActiveUser().getEmail();
+  const email   = getActiveUserSafe_();
   const tsStr   = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyyMMddHHmmss');
 
   const allNewPmRows = [];

@@ -143,3 +143,13 @@ function getSapCredentials_() {
     client: p.getProperty('SAP_CLIENT') || '' // S/4HANA Cloud มักไม่บังคับ แต่รองรับไว้
   };
 }
+
+/** Returns active user email, or 'unknown' if the scope is unavailable. */
+function getActiveUserSafe_() {
+  try {
+    var email = Session.getActiveUser().getEmail();
+    return email || 'unknown';
+  } catch (e) {
+    return 'unknown';
+  }
+}
