@@ -293,6 +293,36 @@ function probeServiceMetadata() {
   return code;
 }
 
+/**
+ * Probe fields of A_ProductionOrder_2 entity from $metadata XML
+ * Run once to get exact Property names before fixing PO_SELECT_
+ */
+function probeEntityFields() {
+  const creds = getSapCredentials_();
+  const url = CFG.SAP_BASE_URL + CFG.SERVICES.PRODUCTION_ORDERS + '$metadata';
+  const resp = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: {
+      'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+      'Accept': 'application/xml'
+    },
+    muteHttpExceptions: true
+  });
+  const body = resp.getContentText();
+
+  // Extract A_ProductionOrder_2Type entity block only
+  const entityBlock = body.match(
+    /EntityType Name="A_ProductionOrder_2Type"[\s\S]*?<\/EntityType>/
+  );
+  if (!entityBlock) {
+    console.log('A_ProductionOrder_2Type block not found');
+    return;
+  }
+  const props = entityBlock[0].match(/Property Name="[^"]+"/g) || [];
+  console.log('=== A_ProductionOrder_2 Properties (' + props.length + ') ===');
+  console.log(props.join('\n'));
+}
+
 /** แปลง OData V2 date "/Date(1718150400000)/" → JS Date (null-safe) */
 function parseSapDate_(v) {
   if (!v) return '';
@@ -302,9 +332,15 @@ function parseSapDate_(v) {
 
 /** สำหรับ Test Gate: ping SAP ด้วย GET เบา ๆ ($top=1) เช็ก credential + connectivity */
 function testSapConnection() {
+  // Use $top=1 with NO $select first — confirms EntitySet reachable
   const data = sapGet(CFG.ENDPOINTS.PRODUCTION_ORDERS,
-    { '$top': '1', '$select': 'ProductionOrder,Plant' }, 'testSapConnection');
-  const n = ((data.d || {}).results || []).length;
-  console.log('SAP connection OK — sample rows: ' + n);
+    { '$top': '1' }, 'testSapConnection');
+  const results = (data.d || {}).results || [];
+  const n = results.length;
+  if (n > 0) {
+    console.log('SAP connection OK — sample row keys: ' + Object.keys(results[0]).join(', '));
+  } else {
+    console.log('SAP connection OK — 0 rows returned (check Plant filter or date range)');
+  }
   return n;
 }
