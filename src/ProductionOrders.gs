@@ -129,37 +129,47 @@ function buildPoFilter_() {
 }
 
 /**
- * Open/Active order filter — ตรงกับ SAP export filter "Status = REL"
+ * Open/Active order filter — รองรับ PDFG และ PDSM
  *
- * SAP Status lifecycle: CRTD → REL → (PCNF) → CNF → DLV → TECO
- * Export กรอง "REL" = order ที่ Released แล้วแต่ยังไม่ปิด
- * วิเคราะห์จากข้อมูลจริง:
- *   Open order  = มี I0002(REL) + ไม่มี I0009(CNF), I0012(DLV), I0045(TECO)
- *   Closed order = มี CNF หรือ DLV หรือ TECO (production เสร็จแล้ว)
- *   Deleted order = มี I0043(DLFL)
+ * PDFG (Finished Goods) status pattern:
+ *   Open  = I0002(REL) + ไม่มี I0009(CNF) / I0012(DLV) / I0045(TECO)
+ *   Closed = มี CNF หรือ DLV หรือ TECO
  *
- * ผล: ~554 open PDFG orders ≈ 594 ใน SAP export ✅
+ * PDSM (Semi-finished) status pattern:
+ *   Open  = มี I0002(REL) ไม่มี I0009(CNF) / I0045(TECO)
+ *           หรือ มี StatusShortName="REL" (MACM type orders ไม่มี I0002 ตรงๆ)
+ *   Closed = มี CNF หรือ TECO
+ *   Note: PDSM ไม่มี TECO แต่มี CNF เมื่อเสร็จ
+ *
+ * ตัดทิ้ง: DLFL (I0043), CRTD only (ไม่มี I0002 และไม่มี REL shortname)
  */
 function isReleasedOrder_(po) {
   const sts = (po.to_ProductionOrderStatus && po.to_ProductionOrderStatus.results) || [];
-
-  // ถ้าไม่มี status expand — reject (กัน garbage data เข้า sheet)
   if (sts.length === 0) return false;
 
   const codes = {};
-  sts.forEach(function(s) { if (s.StatusCode) codes[s.StatusCode] = true; });
+  const shortNames = {};
+  sts.forEach(function(s) {
+    if (s.StatusCode)      codes[s.StatusCode] = true;
+    if (s.StatusShortName) shortNames[s.StatusShortName.trim().toUpperCase()] = true;
+  });
 
-  // ตัดทิ้ง: ยังไม่ Release หรือถูก flag ลบ
-  if (!codes['I0002']) return false;          // ยังไม่ REL
-  if (codes['I0043']) return false;           // DLFL — marked for deletion
+  // ตัดทิ้งเสมอ: deletion flag
+  if (codes['I0043']) return false; // DLFL
 
-  // ตัดทิ้ง: เสร็จแล้ว (CNF, DLV, TECO)
-  if (codes['I0009']) return false;           // CNF — confirmed
-  if (codes['I0012']) return false;           // DLV — delivered
-  if (codes['I0045']) return false;           // TECO — technically completed
+  // ตัดทิ้งเสมอ: closed statuses
+  if (codes['I0045']) return false; // TECO
+  if (codes['I0009']) return false; // CNF (fully confirmed)
+  if (codes['I0012']) return false; // DLV (delivered)
 
-  // ผ่าน: REL แต่ยังไม่ CNF/DLV/TECO = open order ที่ต้องการ
-  return true;
+  // ผ่าน: มี I0002 (REL code) — ครอบ PDFG และ PDSM บางส่วน
+  if (codes['I0002']) return true;
+
+  // ผ่าน fallback: PDSM ที่ Released ผ่าน StatusShortName="REL"
+  // (MACM orders ไม่มี I0002 แต่มี ShortName REL)
+  if (shortNames['REL']) return true;
+
+  return false; // CRTD หรือ status อื่นที่ไม่รู้จัก
 }
 
 /** Flatten 1 PO (header + expands) → 1 row ตาม CFG.HEADERS.PRODUCTION_ORDERS */
