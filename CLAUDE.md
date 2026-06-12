@@ -68,3 +68,35 @@ sap_pallet_tracker/
 
 ## Verification Pattern
 ทุก Phase: เขียนโค้ด → user ทดสอบ → ส่ง log/screenshot → ยืนยัน → ค่อยไป Phase ถัดไป
+# SAP Pallet Tracking System — CLAUDE.md
+
+## Project
+- GAS project in src/ — push to SAP_Pallet_Scan Apps Script via `clasp push`
+- SAP tenant: https://my417293-api.s4hana.cloud.sap | Plant: 1100
+- Google Sheet ID: 1NZmKOuYAmpu1csjd83kNgZXSjCz5lVk7odIyDxJoKRk
+
+## Rules (ห้ามละเมิด)
+- DRY_RUN gate ทุก write operation — ห้าม hardcode `DRY_RUN = false`
+- ห้าม hardcode credential ใดๆ — ใช้ `PropertiesService.getScriptProperties()` เท่านั้น
+- Idempotency key ทุก insert = PalletID (PalletGen) หรือ ManufacturingOrder (PO sync)
+- Log ทุก operation ลง EventLog sheet ด้วย `logEvent(type, status, detail)`
+- ไฟล์ .gs ต้องมี JSDoc header บอก phase + หน้าที่
+
+## Phase Status
+- ✅ Phase 1: Config, SheetSetup, SapClient, ProductionOrders (sync 2,711 orders)
+- ✅ Phase 2: MOQConfigSetup, PalletGen, LabelPrint
+- 🔲 Phase 3: Mobile scanner (Web App doGet), Goods Receipt POST
+- 🔲 Phase 4: QC Inspection UI, Inspection Lot PATCH
+- 🔲 Phase 5: SAP writeback (Confirmation, Stock)
+
+## Key field mapping
+- PO key = `ManufacturingOrder` (ไม่ใช่ ProductionOrder)
+- QR Payload = `PALLET|{PalletID}|{MO}|{Material}|{Batch}|{Qty}`
+- PalletID = `{MO}-P001`, `{MO}-P002`, ...
+- QR API = api.qrserver.com (chart.googleapis.com ปิดแล้ว — ห้ามใช้)
+
+## Deploy
+```bash
+clasp push          # push src/ → Apps Script
+clasp open          # เปิด editor ตรวจ
+```

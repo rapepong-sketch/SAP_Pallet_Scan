@@ -1,0 +1,147 @@
+/**
+ * PalletGen.gs — Phase 2
+ * Split TotalQuantity ของแต่ละ Production Order ตาม MOQ_Per_Pallet → PalletMaster
+ *
+ * PalletID    = {ManufacturingOrder}-P{seq}  (P001, P002, ...)
+ * QR Payload  = PALLET|{PalletID}|{ManufacturingOrder}|{Material}|{Batch}|{Qty}
+ * Idempotent  : ข้าม PalletID ที่มีอยู่แล้วใน PalletMaster
+ * Safety      : เคารพ CFG.DRY_RUN — โหมด dry run แค่ log ไม่เขียนชีต
+ */
+
+var PM_SHEET = 'PalletMaster';
+var PM_HEADERS = [
+  'PalletID', 'ManufacturingOrder', 'Material', 'MaterialName', 'Batch',
+  'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
+  'WorkCenter', 'Plant', 'StorageLocation', 'ProductionDate',
+  'Status', 'QRPayload', 'CreatedAt', 'PrintedAt', 'ScannedAt', 'QCResult'
+];
+
+// Status lifecycle: CREATED → PRINTED → SCANNED(GR) → QC_PASS/QC_HOLD/QC_REJECT
+
+function ensurePalletMasterSheet_() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName(PM_SHEET) || ss.insertSheet(PM_SHEET);
+  if (sh.getLastRow() === 0) {
+    sh.getRange(1, 1, 1, PM_HEADERS.length).setValues([PM_HEADERS])
+      .setFontWeight('bold').setBackground('#0b8043').setFontColor('#ffffff');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function getExistingPalletIds_(sh) {
+  var ids = {};
+  if (sh.getLastRow() > 1) {
+    sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues()
+      .forEach(function (r) { if (r[0]) ids[String(r[0]).trim()] = true; });
+  }
+  return ids;
+}
+
+function buildQrPayload_(palletId, mo, material, batch, qty) {
+  return ['PALLET', palletId, mo, material, batch || '', qty].join('|');
+}
+
+/**
+ * สร้าง pallets สำหรับ MO เดียว — คืน array ของ rows (ยังไม่เขียนชีต)
+ */
+function splitOrderToPallets_(po, moqCfg, existingIds) {
+  var total = Number(po.TotalQuantity) || 0;
+  var moq = moqCfg.moq;
+  if (total <= 0 || moq <= 0) return { rows: [], skipped: 0, reason: total <= 0 ? 'ZERO_QTY' : 'NO_MOQ' };
+
+  var totalPallets = Math.ceil(total / moq);
+  var rows = [], skipped = 0;
+  var now = new Date();
+  var firstWc = String(po.WorkCenters || '').split(',')[0].trim();
+
+  for (var seq = 1; seq <= totalPallets; seq++) {
+    var palletId = po.ManufacturingOrder + '-P' + ('000' + seq).slice(-3);
+    if (existingIds[palletId]) { skipped++; continue; }
+    var qty = (seq < totalPallets) ? moq : (total - moq * (totalPallets - 1)); // ใบสุดท้าย = เศษ
+    rows.push([
+      palletId, po.ManufacturingOrder, po.Material, moqCfg.name || '', po.Batch || '',
+      qty, moqCfg.unit || po.ProductionUnit, seq, totalPallets,
+      firstWc, po.Plant, po.StorageLocation, po.MfgOrderPlannedStartDate || '',
+      'CREATED',
+      buildQrPayload_(palletId, po.ManufacturingOrder, po.Material, po.Batch, qty),
+      now, '', '', ''
+    ]);
+    existingIds[palletId] = true;
+  }
+  return { rows: rows, skipped: skipped, reason: '' };
+}
+
+/**
+ * Main entry — generate pallets จาก ProductionOrders sheet
+ * @param {string=} orderFilter — ระบุ MO เดียว (optional); ไม่ระบุ = ทุก order ที่มี MOQ config
+ */
+function generatePallets(orderFilter) {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var poSheet = ss.getSheetByName('ProductionOrders');
+  if (!poSheet || poSheet.getLastRow() < 2) throw new Error('ProductionOrders sheet ว่าง — รัน Phase 1 sync ก่อน');
+
+  var pmSheet = ensurePalletMasterSheet_();
+  var existingIds = getExistingPalletIds_(pmSheet);
+  var moqMap = getMoqMap();
+  if (!Object.keys(moqMap).length) throw new Error('MOQ_Config ว่าง — รัน setupMoqConfig() และใส่ค่า MOQ ก่อน');
+
+  // อ่าน ProductionOrders เป็น objects ตาม header
+  var data = poSheet.getDataRange().getValues();
+  var hdr = data[0];
+  var idx = {};
+  hdr.forEach(function (h, i) { idx[h] = i; });
+
+  var allRows = [], stats = { orders: 0, pallets: 0, skippedExisting: 0, noMoq: {} };
+
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r];
+    var po = {
+      ManufacturingOrder: String(row[idx.ManufacturingOrder]).trim(),
+      Material: String(row[idx.Material]).trim(),
+      TotalQuantity: row[idx.TotalQuantity],
+      ProductionUnit: row[idx.ProductionUnit],
+      Batch: row[idx.Batch],
+      WorkCenters: row[idx.WorkCenters],
+      Plant: row[idx.Plant],
+      StorageLocation: row[idx.StorageLocation],
+      MfgOrderPlannedStartDate: row[idx.MfgOrderPlannedStartDate]
+    };
+    if (orderFilter && po.ManufacturingOrder !== String(orderFilter)) continue;
+
+    var cfg = moqMap[po.Material];
+    if (!cfg || !cfg.moq) { stats.noMoq[po.Material] = true; continue; }
+
+    var res = splitOrderToPallets_(po, cfg, existingIds);
+    if (res.rows.length || res.skipped) stats.orders++;
+    stats.pallets += res.rows.length;
+    stats.skippedExisting += res.skipped;
+    allRows = allRows.concat(res.rows);
+  }
+
+  var noMoqList = Object.keys(stats.noMoq);
+  var summary = 'Orders=' + stats.orders + ' NewPallets=' + allRows.length +
+    ' SkippedExisting=' + stats.skippedExisting +
+    (noMoqList.length ? ' | Materials ไม่มี MOQ config: ' + noMoqList.length + ' (' + noMoqList.slice(0, 10).join(', ') + (noMoqList.length > 10 ? '...' : '') + ')' : '');
+
+  if (CFG.DRY_RUN) {
+    logEvent('PALLET_GEN', 'DRY_RUN', summary);
+    Logger.log('[DRY_RUN] ' + summary);
+    return { dryRun: true, wouldCreate: allRows.length, summary: summary };
+  }
+
+  if (allRows.length) {
+    pmSheet.getRange(pmSheet.getLastRow() + 1, 1, allRows.length, PM_HEADERS.length).setValues(allRows);
+  }
+  logEvent('PALLET_GEN', 'OK', summary);
+  return { dryRun: false, created: allRows.length, summary: summary };
+}
+
+/** สะดวกเรียกจากเมนู: gen เฉพาะ order เดียว */
+function generatePalletsForOrder() {
+  var ui = SpreadsheetApp.getUi();
+  var resp = ui.prompt('Generate Pallets', 'ใส่เลข Manufacturing Order:', ui.ButtonSet.OK_CANCEL);
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+  var result = generatePallets(resp.getResponseText().trim());
+  ui.alert(result.summary);
+}
