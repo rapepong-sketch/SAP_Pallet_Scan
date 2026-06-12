@@ -152,6 +152,48 @@ function syncMaterialMaster() {
 // ============================================================================
 
 /**
+ * Returns MOQ info for a single material — used by the print dialog for live preview.
+ * Returns null when the material is not found, Status ≠ CONFIRMED, or MOQ = 0.
+ * Also returns remainingQty (sum of unprinted qty across all open MOs) for warn logic.
+ *
+ * @param {string} material
+ * @return {{moq, unit, name, status, remainingQty}|null}
+ */
+function getMoqForMaterial(material) {
+  const sh = getSpreadsheet_().getSheetByName(MM_SHEET);
+  if (!sh || sh.getLastRow() < 2) return null;
+
+  const data = sh.getRange(2, 1, sh.getLastRow() - 1, MM_HEADERS.length).getValues();
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    if (String(row[0] || '').trim() !== material) continue;
+
+    const moq    = Number(row[MM_COL.MOQ - 1]) || 0;
+    const status = String(row[MM_COL.STATUS - 1] || '').trim();
+    if (status !== 'CONFIRMED' || moq <= 0) return null;
+
+    // Compute unprinted qty across open MOs for this material
+    const poList    = getReleasedPoData_();
+    const pmSummary = getExistingPmSummary_();
+    let remainingQty = 0;
+    poList.filter(po => po.Material === material).forEach(po => {
+      const pmInfo = pmSummary[po.ManufacturingOrder] || { sumQty: 0 };
+      const rem    = po.TotalQuantity - pmInfo.sumQty;
+      if (rem > 0) remainingQty += rem;
+    });
+
+    return {
+      moq:          moq,
+      unit:         String(row[MM_COL.UNIT - 1] || '').trim(),
+      name:         String(row[MM_COL.NAME - 1] || '').trim(),
+      status:       status,
+      remainingQty: remainingQty
+    };
+  }
+  return null;
+}
+
+/**
  * Returns usable material map (only rows where MOQ_Per_Pallet > 0).
  * @return {Object} { 'MATCODE': { name, orderType, productGroup, moq, unit, maxQty, status } }
  */
