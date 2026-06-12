@@ -198,25 +198,34 @@ function upsertProductionOrders_(rows) {
 }
 
 /**
- * Debug — ดูค่า OrderIsReleased + MfgOrderPlannedStartDate จริงจาก SAP
- * รัน 1 ครั้งเพื่อตรวจสอบ แล้วลบทิ้ง
+ * Debug — ดู StatusCode จริงจาก to_ProductionOrderStatus expand
+ * รัน 1 ครั้ง แล้วลบทิ้ง
  */
 function debugOrderStatus() {
   const params = {
-    '$top': '10',
-    '$select': 'ManufacturingOrder,Material,Plant,OrderIsReleased,MfgOrderPlannedStartDate',
-    '$filter': "Plant eq '" + CFG.PLANT + "'"
+    '$top': '5',
+    '$filter': "Plant eq '" + CFG.PLANT + "'",
+    '$expand': 'to_ProductionOrderStatus',
+    '$select': [
+      'ManufacturingOrder',
+      'Material',
+      'OrderIsReleased',
+      'to_ProductionOrderStatus/StatusCode',
+      'to_ProductionOrderStatus/StatusShortName'
+    ].join(',')
   };
   const data = sapGet(CFG.ENDPOINTS.PRODUCTION_ORDERS, params, 'debugOrderStatus');
   const results = (data.d || {}).results || [];
-  console.log('Total returned: ' + results.length);
+  console.log('Returned: ' + results.length + ' orders');
   results.forEach(function(r) {
+    const sts = (r.to_ProductionOrderStatus && r.to_ProductionOrderStatus.results) || [];
+    const stsList = sts.map(function(s) {
+      return '[' + s.StatusCode + '|' + s.StatusShortName + ']';
+    }).join(' ');
     console.log(
       'PO=' + r.ManufacturingOrder +
-      ' | Material=' + r.Material +
-      ' | OrderIsReleased=' + r.OrderIsReleased +
-      ' (type=' + typeof r.OrderIsReleased + ')' +
-      ' | StartDate=' + r.MfgOrderPlannedStartDate
+      ' | OrderIsReleased="' + r.OrderIsReleased + '"' +
+      ' | Statuses=' + (stsList || '(empty)')
     );
   });
 }
