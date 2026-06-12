@@ -20,6 +20,7 @@ const CFG = {
 
   // ---- Google Sheet ------------------------------------------------------
   SHEET_ID: '1NZmKOuYAmpu1csjd83kNgZXSjCz5lVk7odIyDxJoKRk',
+  QR_API:   'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=',
 
   // ---- Pull behaviour ----------------------------------------------------
   PULL_DAYS_BACK: 180,  // ดึง 180 วันย้อนหลัง = ครอบ 2026 ทั้งปี (export จริงมี 2026-01 ถึง 2026-11)

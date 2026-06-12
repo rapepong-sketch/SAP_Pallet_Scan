@@ -1,102 +1,37 @@
-# SAP_Pallet_Tracker — Project Instructions for Claude Code
-
-## Project Overview
-ระบบใบติดตามพาเลท (Pallet Tracking System) ดึงข้อมูลจาก SAP S/4HANA Cloud 100%
-- พิมพ์ใบติดตามพาเลท แยกตาม MOQ ต่อ Material
-- Scan QR ผ่านมือถือเพื่อ confirm การส่งผลผลิต (Production) และบันทึกผล QC
-- Writeback สถานะกลับเข้า SAP (Goods Movement / Inspection Lot Usage Decision)
-- Platform: Google Apps Script (GAS) + Google Sheets เป็น middleware/UI
-- Pattern เดียวกับโปรเจค SAP_Sales_Order_Hub: phased architecture, dry-run default, safety gates, idempotent
-
-## Tech Stack & Constraints
-- Google Apps Script (V8 runtime) — ห้ามใช้ arrow function ใน IIFE (GAS quirk)
-- HTML Service สำหรับ Mobile Web App — ใช้ `<?!= ?>` สำหรับ unescaped template output
-- clasp CLI สำหรับ local development
-- SAP OData V2/V4 APIs ผ่าน UrlFetchApp + Basic Auth (Communication User)
-- ทุก write operation ต้องมี DRY_RUN flag (default = true)
-- ทุก batch call ต้อง idempotent — เช็ค duplicate ก่อนสร้างเสมอ
-- Logging ทุก API call ลง Log sheet พร้อม timestamp + payload + response
-
-## Architecture (Phased)
-- Phase 1: Config + SAP connection test (read-only)
-- Phase 2: ดึง Production Order + BOM + Routing ลง Sheets
-- Phase 3: MOQ split logic + สร้าง Pallet records + พิมพ์ Label (PDF + QR)
-- Phase 4: Mobile Web App — scan confirm production
-- Phase 5: QC Module — checklist + result recording
-- Phase 6: SAP Writeback (Goods Receipt + Usage Decision) — gated, dry-run first
-- Phase 7: Dashboard + Lark notifications
-
-## File Structure
-```
-sap_pallet_tracker/
-├── CLAUDE.md                  # this file
-├── docs/
-│   ├── CONFIG_CHECKLIST.md    # ข้อมูลที่ต้องเตรียมก่อนเริ่ม
-│   ├── DATA_SOURCES.md        # SAP API mapping
-│   └── ARCHITECTURE.md        # design doc (สร้างใน Phase 1)
-├── src/
-│   ├── 00_Config.js           # CONFIG object, sheet names, flags
-│   ├── 01_SapClient.js        # OData client (auth, GET/POST/PATCH, retry)
-│   ├── 02_ProductionOrder.js  # ดึง Production Order
-│   ├── 03_BomRouting.js       # ดึง BOM + Routing
-│   ├── 04_PalletEngine.js     # MOQ split, pallet ID generation
-│   ├── 05_LabelPrint.js       # PDF label + QR code
-│   ├── 06_MobileApp.js        # doGet router + scan endpoints
-│   ├── 07_QcModule.js         # QC checklist + result
-│   ├── 08_Writeback.js        # SAP writeback (gated)
-│   ├── 09_Dashboard.js        # summary + charts
-│   ├── 10_LarkNotify.js       # Lark webhook
-│   ├── 99_Utils.js            # logging, retry, idempotency helpers
-│   └── html/
-│       ├── scan.html          # mobile scan page
-│       └── qc.html            # QC checklist page
-└── appsscript.json
-```
-
-## Coding Rules
-1. ทุกไฟล์ JS ใช้ JSDoc ครบทุก function
-2. CONFIG อยู่ที่เดียว (00_Config.js) — ไม่ hardcode URL/credential ในไฟล์อื่น
-3. Credentials เก็บใน Script Properties เท่านั้น (SAP_BASE_URL, SAP_USER, SAP_PASS, LARK_WEBHOOK)
-4. Pallet ID format: `{OrderNo}-{Seq3digit}` เช่น `1000123-001`
-5. ทุก writeback function ต้องผ่าน safety gate: `if (CONFIG.DRY_RUN) { log only }`
-6. Status flow ของ pallet: `CREATED → PRINTED → PRODUCED → QC_PASS / QC_HOLD / QC_REJECT → POSTED_TO_SAP`
-7. ห้าม transition ข้าม status — validate ทุกครั้ง
-
-## Before Writing Code
-อ่าน docs/CONFIG_CHECKLIST.md และยืนยันว่าข้อมูล config ครบก่อน
-ถ้าข้อมูลไม่ครบ ให้ถาม user ก่อนเริ่ม Phase นั้น ๆ
-
-## Verification Pattern
-ทุก Phase: เขียนโค้ด → user ทดสอบ → ส่ง log/screenshot → ยืนยัน → ค่อยไป Phase ถัดไป
 # SAP Pallet Tracking System — CLAUDE.md
 
 ## Project
-- GAS project in src/ — push to SAP_Pallet_Scan Apps Script via `clasp push`
+- GAS project in src/ — deploy via `clasp push`
 - SAP tenant: https://my417293-api.s4hana.cloud.sap | Plant: 1100
 - Google Sheet ID: 1NZmKOuYAmpu1csjd83kNgZXSjCz5lVk7odIyDxJoKRk
+- Script ID: 1XWzndOUMBb5UvpAD-6OYLXdPdSzWyi5AqWPF8FjLExfnhJ3g3TCZsS7Y
 
-## Rules (ห้ามละเมิด)
-- DRY_RUN gate ทุก write operation — ห้าม hardcode `DRY_RUN = false`
-- ห้าม hardcode credential ใดๆ — ใช้ `PropertiesService.getScriptProperties()` เท่านั้น
-- Idempotency key ทุก insert = PalletID (PalletGen) หรือ ManufacturingOrder (PO sync)
-- Log ทุก operation ลง EventLog sheet ด้วย `logEvent(type, status, detail)`
-- ไฟล์ .gs ต้องมี JSDoc header บอก phase + หน้าที่
+## Coding Rules (never violate)
+- DRY_RUN gate on every write operation — never hardcode DRY_RUN = false
+- Never hardcode credentials — use PropertiesService.getScriptProperties() only
+- Idempotency key for every insert = PalletID (PalletGen) or ManufacturingOrder (PO sync)
+- Log every operation to EventLog sheet via logEvent(type, status, detail)
+- Every .gs file must have a JSDoc header with phase number and purpose
+- QR API = api.qrserver.com — Google Charts (chart.googleapis.com) is shut down, never use it
 
 ## Phase Status
-- ✅ Phase 1: Config, SheetSetup, SapClient, ProductionOrders (sync 2,711 orders)
-- ✅ Phase 2: MOQConfigSetup, PalletGen, LabelPrint
-- 🔲 Phase 3: Mobile scanner (Web App doGet), Goods Receipt POST
-- 🔲 Phase 4: QC Inspection UI, Inspection Lot PATCH
-- 🔲 Phase 5: SAP writeback (Confirmation, Stock)
+- Phase 1 COMPLETE: Config.gs, SheetSetup.gs, SapClient.gs, ProductionOrders.gs
+- Phase 2 COMPLETE: MOQConfigSetup.gs, PalletGen.gs, LabelPrint.gs
+- Phase 3 PENDING: Mobile scanner Web App (doGet), Goods Receipt POST to SAP
+- Phase 4 PENDING: QC Inspection UI, Inspection Lot PATCH to SAP QM
+- Phase 5 PENDING: SAP writeback (Order Confirmation, Stock)
 
-## Key field mapping
-- PO key = `ManufacturingOrder` (ไม่ใช่ ProductionOrder)
-- QR Payload = `PALLET|{PalletID}|{MO}|{Material}|{Batch}|{Qty}`
-- PalletID = `{MO}-P001`, `{MO}-P002`, ...
-- QR API = api.qrserver.com (chart.googleapis.com ปิดแล้ว — ห้ามใช้)
+## Key Field Mapping
+- Production Order key field = ManufacturingOrder (NOT ProductionOrder)
+- QR Payload format = PALLET|{PalletID}|{ManufacturingOrder}|{Material}|{Batch}|{Qty}
+- PalletID format = {ManufacturingOrder}-P001, P002, ...
+- Status lifecycle = CREATED → PRINTED → SCANNED → QC_PASS / QC_HOLD / QC_REJECT
 
-## Deploy
-```bash
-clasp push          # push src/ → Apps Script
-clasp open          # เปิด editor ตรวจ
-```
+## SAP OData Services
+- Production Orders: API_PRODUCTION_ORDER_2_SRV / A_ProductionOrder_2
+- Goods Movement: API_MATERIAL_DOCUMENT_SRV (Phase 3) — needs SAP_COM_0109
+- Order Confirmation: API_PROD_ORDER_CONFIRMATION_2_SRV (Phase 3) — needs SAP_COM_0104
+- Inspection Lot: API_INSPECTIONLOT_SRV (Phase 4) — needs SAP_COM_0190
+
+## Deploy Command
+clasp push   # always run from project root after any code change

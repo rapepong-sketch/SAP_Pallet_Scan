@@ -5,6 +5,22 @@
  *         InspectionLots, EventLog, ErrorLog
  */
 
+/** สร้าง custom menu เมื่อเปิด Spreadsheet */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('🏭 Pallet Tracker')
+    .addItem('🔧 Setup Sheets',              'setupSheets')
+    .addItem('🔌 Test SAP Connection',        'testSapConnection')
+    .addItem('📥 Pull Production Orders',     'pullProductionOrders')
+    .addItem('🗑️  Clear Old Orders',          'clearOldOrders')
+    .addSeparator()
+    .addItem('⚙️ Setup MOQ Config',          'setupMoqConfig')
+    .addItem('📦 Generate Pallets (ALL)',     'generatePallets')
+    .addItem('📦 Generate Pallets (1 Order)', 'generatePalletsForOrder')
+    .addItem('🖨️  Print Pallet Labels',       'printLabelsDialog')
+    .addToUi();
+}
+
 let _ss_ = null;
 
 /** เปิด spreadsheet ครั้งเดียวต่อ execution */
