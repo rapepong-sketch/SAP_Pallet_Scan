@@ -241,6 +241,14 @@ function upsertProductionOrders_(rows) {
   const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
   const width = CFG.HEADERS.PRODUCTION_ORDERS.length;
 
+  // Force WorkCenters column to plain text BEFORE writing — prevents Sheets
+  // from auto-parsing codes like "0408-02" as Date objects on future reads.
+  const wcColNum = CFG.HEADERS.PRODUCTION_ORDERS.indexOf('WorkCenters') + 1;
+  if (wcColNum > 0) {
+    sh.getRange(1, wcColNum, Math.max(sh.getLastRow() + rows.length, 2), 1)
+      .setNumberFormat('@');
+  }
+
   // index ของ key ที่มีอยู่: ManufacturingOrder → row number (1-based)
   const existing = {};
   const lastRow = sh.getLastRow();

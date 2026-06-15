@@ -22,6 +22,10 @@ function onOpen() {
     .addItem('📦 Generate Pallets (deprecated)',             'generatePallets')
     .addItem('📦 Generate Pallets 1 Order (deprecated)',     'generatePalletsForOrder')
     .addItem('🖨️  Print Old Labels (deprecated)',            'printLabelsDialog')
+    .addSeparator()
+    .addItem('🔧 [Admin] Reset PalletMaster Data',          'hardResetPalletMaster')
+    .addItem('🔧 [Admin] Rebuild PM Header',                'rebuildPalletMasterHeader')
+    .addItem('🔧 [Admin] Debug PM Schema',                  'debugPalletMasterSchema')
     .addToUi();
 }
 

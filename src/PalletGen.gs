@@ -13,33 +13,34 @@ var PM_SHEET = 'PalletMaster';
 // Matches actual PalletMaster sheet column order (27 cols, 0-indexed).
 // NEVER reorder — use buildPalletRow_() to write rows by name, not by position.
 var PM_HEADERS = [
-  'PalletID',            // 0
-  'ManufacturingOrder',  // 1
-  'Material',            // 2
-  'MaterialName',        // 3
-  'Batch',               // 4
-  'QtyPerPallet',        // 5
-  'Unit',                // 6
-  'PalletSeq',           // 7
-  'TotalPallets',        // 8
-  'WorkCenter',          // 9
-  'ProductionDate',      // 10
-  'QRPayload',           // 11
-  'LabelPrintedAt',      // 12
-  'ScanStatus',          // 13
-  'ScannedAt',           // 14
-  'ScannedBy',           // 15
-  'GRMaterialDocument',  // 16
-  'QCStatus',            // 17
-  'InspectionLot',       // 18
-  'UpdatedAt',           // 19
-  'Plant',               // 20
-  'StorageLocation',     // 21
-  'TotalQuantity',       // 22
-  'Status',              // 23
-  'CreatedAt',           // 24
-  'PrintedAt',           // 25
-  'QCResult'             // 26
+  'PalletID',             // 0
+  'ManufacturingOrder',   // 1
+  'Material',             // 2
+  'MaterialName',         // 3
+  'Batch',                // 4
+  'QtyPerPallet',         // 5
+  'Unit',                 // 6
+  'PalletSeq',            // 7
+  'TotalPallets',         // 8
+  'WorkCenter',           // 9
+  'ProductionDate',       // 10
+  'TotalQuantity',        // 11
+  'Plant',                // 12
+  'StorageLocation',      // 13
+  'QRPayload',            // 14
+  'Status',               // 15
+  'CreatedAt',            // 16
+  'PrintedAt',            // 17
+  'ScannedAt',            // 18
+  'ScannedBy',            // 19
+  'ScanStatus',           // 20
+  'GRMaterialDocument',   // 21
+  'QCStatus',             // 22
+  'QCResult',             // 23
+  'InspectionLot',        // 24
+  'LabelPrintedAt',       // 25
+  'UpdatedAt',            // 26
+  'QCResultNote'          // 27
 ];
 
 /**
@@ -53,6 +54,21 @@ function buildPalletRow_(values) {
   });
 }
 
+/**
+ * Reconstruct a work center code string from a Date object.
+ * Google Sheets auto-parses single WC codes like "0408-02" as dates
+ * (year=408, month=Feb). JS Date.getMonth() is 0-indexed so Feb=1, +1=2.
+ * This function reverses the parse: year zero-padded to 4 digits + "-" + month.
+ *   "0408-02" → stored as Date(year=408, month=1) → getFullYear()=408, getMonth()+1=2 → "0408-02"
+ *   "0703-02" → stored as Date(year=703, month=1) → getFullYear()=703, getMonth()+1=2 → "0703-02"
+ */
+function dateToWorkCenter_(d) {
+  if (!(d instanceof Date)) return String(d || '').trim();
+  var year  = d.getFullYear();
+  var month = d.getMonth() + 1; // getMonth() is 0-indexed
+  return ('0000' + year).slice(-4) + '-' + ('00' + month).slice(-2);
+}
+
 // Status lifecycle: CREATED → PRINTED → SCANNED(GR) → QC_PASS/QC_HOLD/QC_REJECT
 
 function ensurePalletMasterSheet_() {
@@ -62,14 +78,6 @@ function ensurePalletMasterSheet_() {
     sh.getRange(1, 1, 1, PM_HEADERS.length).setValues([PM_HEADERS])
       .setFontWeight('bold').setBackground('#0b8043').setFontColor('#ffffff');
     sh.setFrozenRows(1);
-  } else {
-    // Add TotalQuantity column header if this is an older sheet without it
-    var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-    if (hdr.indexOf('TotalQuantity') === -1) {
-      var col = sh.getLastColumn() + 1;
-      sh.getRange(1, col).setValue('TotalQuantity')
-        .setFontWeight('bold').setBackground('#0b8043').setFontColor('#ffffff');
-    }
   }
   return sh;
 }
@@ -263,13 +271,14 @@ function generatePallets(orderFilter) {
 
   for (var r = 1; r < data.length; r++) {
     var row = data[r];
+    var wcRaw = row[idx.WorkCenters];
     var po = {
       ManufacturingOrder: String(row[idx.ManufacturingOrder]).trim(),
       Material: String(row[idx.Material]).trim(),
       TotalQuantity: row[idx.TotalQuantity],
       ProductionUnit: row[idx.ProductionUnit],
       Batch: row[idx.Batch],
-      WorkCenters: row[idx.WorkCenters],
+      WorkCenters: dateToWorkCenter_(wcRaw),
       Plant: row[idx.Plant],
       StorageLocation: row[idx.StorageLocation],
       MfgOrderPlannedStartDate: row[idx.MfgOrderPlannedStartDate]
@@ -458,6 +467,63 @@ function backfillCorruptedPalletRows_() {
     Logger.log('backfillCorruptedPalletRows_: fixed ' + fixed + ' of ' + detected + ' detected rows');
     logEvent('BACKFILL_PM', '-', 'OK', 0, 'fixed ' + fixed + ' corrupted PalletMaster rows');
   }
+}
+
+// ============================================================================
+// Nuclear reset utilities (run once after schema corruption)
+// ============================================================================
+
+/** Step 3a: Delete ALL data rows — keeps header row intact. Triggered from Admin menu. */
+function hardResetPalletMaster() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName(PM_SHEET);
+  if (!sh) { Logger.log('hardResetPalletMaster: PalletMaster sheet NOT FOUND'); return; }
+
+  var lastRow  = sh.getLastRow();
+  var dataRows = Math.max(0, lastRow - 1);
+
+  var ui   = SpreadsheetApp.getUi();
+  var resp = ui.alert(
+    '⚠️ Reset PalletMaster',
+    'จะลบข้อมูลทั้งหมดใน PalletMaster (' + dataRows + ' rows)\nยืนยัน?',
+    ui.ButtonSet.YES_NO
+  );
+  if (resp !== ui.Button.YES) {
+    Logger.log('hardResetPalletMaster: Cancelled by user');
+    return;
+  }
+
+  if (dataRows > 0) {
+    sh.deleteRows(2, dataRows);
+    Logger.log('hardResetPalletMaster: Deleted ' + dataRows + ' data rows');
+  } else {
+    Logger.log('hardResetPalletMaster: No data rows to delete');
+  }
+  Logger.log('PalletMaster reset complete — header row preserved');
+  ui.alert('✅ Done', 'Deleted ' + dataRows + ' rows. Run "Rebuild PM Header" next.', ui.ButtonSet.OK);
+}
+
+/** Step 3b: Rebuild header row to match PM_HEADERS exactly (28 columns). Run from editor. */
+function rebuildPalletMasterHeader() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName(PM_SHEET);
+  if (!sh) { Logger.log('rebuildPalletMasterHeader: PalletMaster sheet NOT FOUND'); return; }
+
+  // Clear entire header row (including any extra columns beyond PM_HEADERS)
+  if (sh.getLastColumn() > 0) {
+    sh.getRange(1, 1, 1, sh.getLastColumn()).clearContent();
+  }
+
+  // Write correct headers
+  sh.getRange(1, 1, 1, PM_HEADERS.length)
+    .setValues([PM_HEADERS])
+    .setFontWeight('bold')
+    .setBackground('#0b8043')
+    .setFontColor('#ffffff');
+
+  sh.setFrozenRows(1);
+  Logger.log('rebuildPalletMasterHeader: wrote ' + PM_HEADERS.length + ' columns');
+  Logger.log(JSON.stringify(PM_HEADERS));
 }
 
 // ============================================================================

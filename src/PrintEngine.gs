@@ -62,13 +62,14 @@ function getReleasedPoData_() {
     const row = data[r];
     const isRel = row[idx.IsReleased];
     if (!isRel && isRel !== 'TRUE' && isRel !== true) continue;
+    var wcRaw = row[idx.WorkCenters];
     orders.push({
       ManufacturingOrder:       String(row[idx.ManufacturingOrder] || '').trim(),
       Material:                 String(row[idx.Material] || '').trim(),
       TotalQuantity:            Number(row[idx.TotalQuantity]) || 0,
       ProductionUnit:           String(row[idx.ProductionUnit] || '').trim(),
       Batch:                    String(row[idx.Batch] || '').trim(),
-      WorkCenters:              String(row[idx.WorkCenters] || '').trim(),
+      WorkCenters:              dateToWorkCenter_(wcRaw),
       Plant:                    String(row[idx.Plant] || '').trim(),
       StorageLocation:          String(row[idx.StorageLocation] || '').trim(),
       MfgOrderPlannedStartDate: row[idx.MfgOrderPlannedStartDate] || null
