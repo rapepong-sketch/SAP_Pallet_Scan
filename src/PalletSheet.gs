@@ -139,7 +139,7 @@ function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
   h += `<span class="doc-title">Pallet Tracking Sheet</span>`;
   h += `</div>`;
   h += `<div class="mat-code">${esc_(p.Material)}</div>`;
-  h += `<div class="mat-name">${esc_(matName)}</div>`;
+  if (matName) h += `<div class="mat-name">${esc_(matName)}</div>`;
   h += `<div class="sap-order">SAP Order: ${esc_(mo)}</div>`;
   h += `<div class="pallet-info">Pallet ID: <b>${esc_(p.PalletID)}</b>&nbsp;|&nbsp;พาเลทที่: <b>${seq}/${total}</b>&nbsp;|&nbsp;พิมพ์: PC&nbsp;|&nbsp;${timestamp}</div>`;
   h += `</div>`;
@@ -252,7 +252,7 @@ body{font-family:'Sarabun',Arial,sans-serif;font-size:9pt;background:#f0f0f0}
 .company-name{font-size:8.5pt;font-weight:bold}
 .doc-title{font-size:8.5pt;font-weight:bold}
 .mat-code{font-size:11pt;font-weight:bold;color:#1a4e8a;margin-top:0.5mm}
-.mat-name{font-size:8.5pt;color:#444;margin-top:0.3mm}
+.mat-name{font-size:10pt;color:#555;font-style:italic;margin:1mm 0}
 .sap-order{font-size:9.5pt;font-weight:bold;color:#c0392b;margin-top:0.5mm}
 .pallet-info{font-size:8pt;color:#555;margin-top:0.5mm}
 

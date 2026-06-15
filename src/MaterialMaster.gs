@@ -193,6 +193,91 @@ function getMoqForMaterial(material) {
   return null;
 }
 
+// ============================================================================
+// MaterialName sync from SAP API_PRODUCT_SRV
+// ============================================================================
+
+/**
+ * Fetch MaterialName (Thai/English) from SAP for every row with a blank name.
+ * Batches 50 materials per request. Respects DRY_RUN gate.
+ */
+function syncMaterialNames() {
+  const t0 = Date.now();
+  const ss = getSpreadsheet_();
+  const sh = ss.getSheetByName(MM_SHEET);
+  if (!sh || sh.getLastRow() < 2) { Logger.log('MaterialMaster empty'); return; }
+
+  const data = sh.getRange(2, 1, sh.getLastRow() - 1, MM_HEADERS.length).getValues();
+  const toFetch = [];
+  data.forEach(function(row, i) {
+    const mat  = String(row[MM_COL.MAT  - 1] || '').trim();
+    const name = String(row[MM_COL.NAME - 1] || '').trim();
+    if (mat && !name) toFetch.push({ rowNum: i + 2, material: mat });
+  });
+  Logger.log('Materials needing name: ' + toFetch.length);
+  if (!toFetch.length) { Logger.log('All names already filled'); return; }
+
+  const BATCH = 50;
+  let filled = 0;
+  for (let b = 0; b < toFetch.length; b += BATCH) {
+    const batch  = toFetch.slice(b, b + BATCH);
+    const filter = batch.map(x => "Material eq '" + x.material + "'").join(' or ');
+
+    // Thai first, fallback English
+    const names = fetchProductDescriptions_(filter, 'TH');
+    if (Object.keys(names).length < batch.length) {
+      const enNames = fetchProductDescriptions_(filter, 'EN');
+      Object.keys(enNames).forEach(m => { if (!names[m]) names[m] = enNames[m]; });
+    }
+
+    batch.forEach(function(item) {
+      const name = names[item.material] || '';
+      if (!name) return;
+      if (!CFG.DRY_RUN) {
+        sh.getRange(item.rowNum, MM_COL.NAME).setValue(name);
+        filled++;
+      } else {
+        Logger.log('[DRY] Would fill ' + item.material + ' = ' + name);
+        filled++;
+      }
+    });
+    Utilities.sleep(200);
+  }
+
+  const note = 'filled=' + filled + '/' + toFetch.length;
+  Logger.log('syncMaterialNames: ' + note + ' DRY_RUN=' + CFG.DRY_RUN);
+  logEvent('MM_NAMES_SYNC', '-', CFG.DRY_RUN ? 'DRY_RUN' : 'OK', Date.now() - t0, note);
+  SpreadsheetApp.getUi().alert('✅ Sync Material Names\n' + note + (CFG.DRY_RUN ? '\n(DRY_RUN — ไม่ได้เขียนจริง)' : ''));
+}
+
+/**
+ * Fetch material descriptions from SAP API_PRODUCT_SRV for a given $filter and language.
+ * @param {string} filter — OData $filter fragment (Material eq '...' or ...)
+ * @param {string} lang   — 'TH' or 'EN'
+ * @return {Object} { 'MATCODE': 'description', ... }
+ */
+function fetchProductDescriptions_(filter, lang) {
+  const path   = '/sap/opu/odata/sap/API_PRODUCT_SRV/A_ProductDescription';
+  const result = {};
+  try {
+    const json  = sapGet(path, {
+      '$filter': "Language eq '" + lang + "' and (" + filter + ')',
+      '$select': 'Material,MaterialName'
+    }, 'fetchProductDescriptions_[' + lang + ']');
+    const items = (json.d && json.d.results) ? json.d.results : [];
+    items.forEach(function(item) {
+      if (item.MaterialName) result[item.Material] = item.MaterialName;
+    });
+  } catch (e) {
+    Logger.log('fetchProductDescriptions_ [' + lang + '] error: ' + e.message);
+  }
+  return result;
+}
+
+// ============================================================================
+// Read API
+// ============================================================================
+
 /**
  * Returns usable material map (only rows where MOQ_Per_Pallet > 0).
  * @return {Object} { 'MATCODE': { name, orderType, productGroup, moq, unit, maxQty, status } }

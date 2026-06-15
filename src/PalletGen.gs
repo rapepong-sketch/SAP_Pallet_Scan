@@ -79,6 +79,8 @@ function ensurePalletMasterSheet_() {
       .setFontWeight('bold').setBackground('#0b8043').setFontColor('#ffffff');
     sh.setFrozenRows(1);
   }
+  var wcCol = PM_HEADERS.indexOf('WorkCenter') + 1;
+  sh.getRange(1, wcCol, sh.getMaxRows(), 1).setNumberFormat('@');
   return sh;
 }
 
@@ -522,8 +524,106 @@ function rebuildPalletMasterHeader() {
     .setFontColor('#ffffff');
 
   sh.setFrozenRows(1);
+  var wcCol = PM_HEADERS.indexOf('WorkCenter') + 1;
+  sh.getRange(1, wcCol, sh.getMaxRows(), 1).setNumberFormat('@');
   Logger.log('rebuildPalletMasterHeader: wrote ' + PM_HEADERS.length + ' columns');
   Logger.log(JSON.stringify(PM_HEADERS));
+}
+
+// ============================================================================
+// Backfill utilities
+// ============================================================================
+
+function backfillMaterialName() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var pmSh = ss.getSheetByName('PalletMaster');
+  if (!pmSh || pmSh.getLastRow() < 2) {
+    Logger.log('PalletMaster empty'); return;
+  }
+
+  var matMap = getMaterialMap();
+  Logger.log('getMaterialMap keys: ' + Object.keys(matMap).length);
+  Logger.log('Sample keys: ' + Object.keys(matMap).slice(0, 3).join(', '));
+
+  var hdrs    = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var matIdx  = hdrs.indexOf('Material');
+  var nameIdx = hdrs.indexOf('MaterialName');
+  Logger.log('Material col: ' + matIdx + ', MaterialName col: ' + nameIdx);
+  if (matIdx < 0 || nameIdx < 0) { Logger.log('backfillMaterialName: column not found'); return; }
+
+  var data    = pmSh.getRange(2, 1, pmSh.getLastRow() - 1, pmSh.getLastColumn()).getValues();
+  var updated = 0;
+  data.forEach(function(row, i) {
+    var mat         = String(row[matIdx]  || '').trim();
+    var currentName = String(row[nameIdx] || '').trim();
+    Logger.log('Row ' + (i + 2) + ': mat=[' + mat + '] name=[' + currentName + ']');
+
+    if (!currentName && mat) {
+      var entry = matMap[mat];
+      Logger.log('  matMap entry: ' + JSON.stringify(entry));
+      var name = (entry && entry.name) ? entry.name : '';
+      if (name) {
+        if (!CFG.DRY_RUN) {
+          pmSh.getRange(i + 2, nameIdx + 1).setValue(name);
+        }
+        Logger.log('  ' + (CFG.DRY_RUN ? '[DRY]' : '') + 'Filled: ' + name);
+        updated++;
+      } else {
+        Logger.log('  WARNING: no name in MaterialMaster for: ' + mat);
+      }
+    }
+  });
+  Logger.log('backfillMaterialName: updated=' + updated + ' DRY_RUN=' + CFG.DRY_RUN);
+}
+
+/** Debug: verify material is in MaterialMaster and getMaterialMap() returns it */
+function debugMaterialName() {
+  var mat = 'STB1006-A0100S3XRX';
+
+  var map = getMaterialMap();
+  Logger.log('getMaterialMap result for ' + mat + ':');
+  Logger.log(JSON.stringify(map[mat] || 'NOT FOUND'));
+
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName('MaterialMaster');
+  if (!sh) { Logger.log('MaterialMaster sheet NOT FOUND'); return; }
+  var data = sh.getDataRange().getValues();
+  var hdrs = data[0];
+  Logger.log('MaterialMaster headers: ' + JSON.stringify(hdrs));
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === mat) {
+      Logger.log('Found row ' + i + ': ' + JSON.stringify(data[i]));
+      return;
+    }
+  }
+  Logger.log('Material NOT FOUND in MaterialMaster: ' + mat);
+}
+
+function backfillWorkCenter() {
+  var ss   = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var pmSh = ss.getSheetByName('PalletMaster');
+  if (!pmSh || pmSh.getLastRow() < 2) { Logger.log('backfillWorkCenter: no data rows'); return; }
+
+  // Ensure column is plain-text format so fixed values are not re-parsed as dates
+  var wcCol = PM_HEADERS.indexOf('WorkCenter') + 1;
+  pmSh.getRange(1, wcCol, pmSh.getMaxRows(), 1).setNumberFormat('@');
+
+  var hdrs  = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var wcIdx = hdrs.indexOf('WorkCenter');
+  if (wcIdx < 0) { Logger.log('backfillWorkCenter: WorkCenter column not found'); return; }
+
+  var data  = pmSh.getRange(2, 1, pmSh.getLastRow() - 1, pmSh.getLastColumn()).getValues();
+  var fixed = 0;
+  data.forEach(function(row, i) {
+    var wc = row[wcIdx];
+    if (wc instanceof Date) {
+      var fixedWc = dateToWorkCenter_(wc);
+      pmSh.getRange(i + 2, wcIdx + 1).setValue(fixedWc);
+      fixed++;
+      Logger.log('Fixed row ' + (i + 2) + ': ' + fixedWc);
+    }
+  });
+  Logger.log('backfillWorkCenter: fixed ' + fixed + ' rows');
 }
 
 // ============================================================================

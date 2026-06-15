@@ -15,6 +15,7 @@ function onOpen() {
     .addItem('🗑️  Clear Old Orders',                         'clearOldOrders')
     .addSeparator()
     .addItem('🔄 Sync Material Master',                      'syncMaterialMaster')
+    .addItem('🔤 Sync Material Names from SAP',              'syncMaterialNames')
     .addItem('🖨️ สั่งพิมพ์ใบติดตามพาเลท (Multi-Material)',  'printRequestDialog')
     .addItem('🖨️ พิมพ์ซ้ำ (ใส่ MO หรือ PalletID)',          'reprintDialog')
     .addSeparator()
@@ -26,6 +27,8 @@ function onOpen() {
     .addItem('🔧 [Admin] Reset PalletMaster Data',          'hardResetPalletMaster')
     .addItem('🔧 [Admin] Rebuild PM Header',                'rebuildPalletMasterHeader')
     .addItem('🔧 [Admin] Debug PM Schema',                  'debugPalletMasterSchema')
+    .addItem('🔧 Backfill MaterialName',                    'backfillMaterialName')
+    .addItem('🔧 Backfill WorkCenter',                      'backfillWorkCenter')
     .addToUi();
 }
 

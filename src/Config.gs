@@ -91,11 +91,11 @@ const CFG = {
       // Must match PM_HEADERS in PalletGen.gs exactly — setupSheets() uses this to write header row
       'PalletID', 'ManufacturingOrder', 'Material', 'MaterialName', 'Batch',
       'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
-      'WorkCenter', 'ProductionDate', 'QRPayload',
-      'LabelPrintedAt', 'ScanStatus', 'ScannedAt', 'ScannedBy',
-      'GRMaterialDocument', 'QCStatus', 'InspectionLot', 'UpdatedAt',
-      'Plant', 'StorageLocation', 'TotalQuantity',
-      'Status', 'CreatedAt', 'PrintedAt', 'QCResult'
+      'WorkCenter', 'ProductionDate', 'TotalQuantity', 'Plant', 'StorageLocation',
+      'QRPayload', 'Status', 'CreatedAt', 'PrintedAt',
+      'ScannedAt', 'ScannedBy', 'ScanStatus',
+      'GRMaterialDocument', 'QCStatus', 'QCResult', 'InspectionLot',
+      'LabelPrintedAt', 'UpdatedAt', 'QCResultNote'
     ],
 
     MOQ_CONFIG: [
