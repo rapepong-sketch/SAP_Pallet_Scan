@@ -89,13 +89,13 @@ const CFG = {
 
     PALLET_MASTER: [
       // Must match PM_HEADERS in PalletGen.gs exactly — setupSheets() uses this to write header row
-      'PalletID',                   // PL-{MO}-L{nn} — key (idempotency, QR payload)
-      'ManufacturingOrder',         // SAP MO number
-      'Material', 'MaterialName', 'Batch',
+      'PalletID', 'ManufacturingOrder', 'Material', 'MaterialName', 'Batch',
       'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
-      'WorkCenter', 'Plant', 'StorageLocation', 'ProductionDate',
-      'Status', 'QRPayload', 'CreatedAt', 'PrintedAt', 'ScannedAt', 'QCResult',
-      'TotalQuantity'               // Phase 2.5: MO total qty for label display
+      'WorkCenter', 'ProductionDate', 'QRPayload',
+      'LabelPrintedAt', 'ScanStatus', 'ScannedAt', 'ScannedBy',
+      'GRMaterialDocument', 'QCStatus', 'InspectionLot', 'UpdatedAt',
+      'Plant', 'StorageLocation', 'TotalQuantity',
+      'Status', 'CreatedAt', 'PrintedAt', 'QCResult'
     ],
 
     MOQ_CONFIG: [

@@ -211,26 +211,26 @@ function allocatePallets(requests) {
         const totalPallets = Math.ceil(po.TotalQuantity / moq);
         const firstWc      = String(po.WorkCenters || '').split(/[;,]/)[0].trim();
 
-        allNewPmRows.push([
-          palletId,
-          moKey,
-          po.Material,
-          mmData.name || '',
-          po.Batch || '',
-          palletQty,
-          mmData.unit || po.ProductionUnit,
-          seq,
-          totalPallets,
-          firstWc,
-          po.Plant,
-          po.StorageLocation,
-          po.MfgOrderPlannedStartDate || '',
-          'CREATED',
-          qrPayload,
-          now,
-          '', '', '',
-          po.TotalQuantity || 0   // TotalQuantity of MO — for label display
-        ]);
+        allNewPmRows.push(buildPalletRow_({
+          PalletID:           palletId,
+          ManufacturingOrder: moKey,
+          Material:           po.Material,
+          MaterialName:       mmData.name || '',
+          Batch:              po.Batch || '',
+          QtyPerPallet:       palletQty,
+          Unit:               mmData.unit || po.ProductionUnit,
+          PalletSeq:          seq,
+          TotalPallets:       totalPallets,
+          WorkCenter:         firstWc,
+          ProductionDate:     po.MfgOrderPlannedStartDate || '',
+          QRPayload:          qrPayload,
+          ScanStatus:         'CREATED',
+          TotalQuantity:      Number(po.TotalQuantity) || 0,
+          Plant:              po.Plant || '',
+          StorageLocation:    po.StorageLocation || '',
+          Status:             'CREATED',
+          CreatedAt:          now
+        }));
 
         palletIds.push(palletId);
         qty          -= palletQty;
