@@ -50,6 +50,17 @@ const CFG = {
     PRODUCTION_ORDERS: '/sap/opu/odata/sap/API_PRODUCTION_ORDER_2_SRV/A_ProductionOrder_2'
   },
 
+  // ---- Phase 3: Feature flags (stored in Script Properties, managed via Flags.gs + menu)
+  // Readers: sapWriteEnabled_() / isDryRun_()  — ใช้ภายในโค้ด
+  // Setters: flagEnable/Disable/DryRunOn/Off    — ผูกกับ menu ⚙️ Pallet SAP Toggle
+  FLAG_KEYS: {
+    SAP_WRITE: 'SAP_WRITE_ENABLED', // 'false'(default) | 'true'
+    DRY_RUN:   'DRY_RUN'            // 'true'(default)  | 'false'
+  },
+
+  // ---- Phase 3: Web app --------------------------------------------------
+  WEB_APP_TITLE: 'ใบติดตามพาเลท - PJ Chonburi',
+
   // ---- Sheet names ---------------------------------------------------------
   SHEETS: {
     CONFIG:            'Config',
@@ -115,7 +126,9 @@ const CFG = {
 
     OPERATION_LOG: [
       'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
-      'GoodQty', 'ScrapQty', 'Operator', 'Role', 'Result', 'LoggedAt', 'Source'
+      'GoodQty', 'ScrapQty', 'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
+      // Phase 3 Step 1 Enhancement v2: PD inspection columns (written by savePdInspection())
+      'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
     ],
 
     INSPECTION_LOTS: [

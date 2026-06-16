@@ -7,8 +7,20 @@
 
 /** สร้าง custom menu เมื่อเปิด Spreadsheet */
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('🏭 Pallet Tracker')
+  const ui = SpreadsheetApp.getUi();
+
+  // Phase 3: Feature flag submenu — ห้ามสร้าง onOpen ซ้ำ, เพิ่ม submenu ที่นี่เท่านั้น
+  const flagMenu = ui.createMenu('⚙️ Pallet SAP Toggle')
+    .addItem('🔴 ปิด SAP write (ทดสอบ)',      'flagDisableSapWrite')
+    .addItem('🟢 เปิด SAP write',             'flagEnableSapWrite')
+    .addSeparator()
+    .addItem('🧪 DRY_RUN: เปิด (ไม่ POST)',   'flagDryRunOn')
+    .addItem('⚠️ DRY_RUN: ปิด (POST จริง)',   'flagDryRunOff')
+    .addSeparator()
+    .addItem('📊 ดูสถานะ flag',                'flagShowStatus')
+    .addItem('↩️ รีเซ็ตเป็น default ปลอดภัย', 'flagSetDefaults');
+
+  ui.createMenu('🏭 Pallet Tracker')
     .addItem('🔧 Setup Sheets',                              'setupSheets')
     .addItem('🔌 Test SAP Connection',                       'testSapConnection')
     .addItem('📥 Pull Production Orders',                    'pullProductionOrders')
@@ -18,6 +30,8 @@ function onOpen() {
     .addItem('🔤 Sync Material Names from SAP',              'syncMaterialNames')
     .addItem('🖨️ สั่งพิมพ์ใบติดตามพาเลท (Multi-Material)',  'printRequestDialog')
     .addItem('🖨️ พิมพ์ซ้ำ (ใส่ MO หรือ PalletID)',          'reprintDialog')
+    .addSeparator()
+    .addSubMenu(flagMenu)
     .addSeparator()
     .addItem('⚙️ Setup MOQ Config (deprecated)',             'setupMoqConfig')
     .addItem('📦 Generate Pallets (deprecated)',             'generatePallets')

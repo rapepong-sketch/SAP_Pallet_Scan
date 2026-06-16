@@ -421,3 +421,101 @@ function esc_(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+
+// ============================================================================
+// Phase 3 — PalletMaster read/write by column NAME (used by WebApp.gs)
+// ============================================================================
+
+/**
+ * Lookup a single pallet by PalletID — reads all fields via column name index.
+ * WorkCenter cells that Google Sheets auto-parsed as Date are reversed via dateToWorkCenter_().
+ * @param {string} palletId
+ * @return {Object|null} pallet data object, or null if not found
+ */
+function lookupPalletById_(palletId) {
+  palletId = String(palletId || '').trim();
+  if (!palletId) return null;
+
+  const sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) return null;
+
+  const data = sh.getDataRange().getValues();
+  const hdr  = data[0];
+  const idx  = {};
+  hdr.forEach((h, i) => { idx[h] = i; });
+  if (idx['PalletID'] === undefined) return null;
+
+  for (let r = 1; r < data.length; r++) {
+    const pid = String(data[r][idx['PalletID']] || '').trim();
+    if (pid !== palletId) continue;
+
+    const wc = data[r][idx['WorkCenter']];
+    return {
+      rowNum:             r + 1,
+      PalletID:           pid,
+      ManufacturingOrder: String(data[r][idx['ManufacturingOrder']] || '').trim(),
+      Material:           String(data[r][idx['Material']]           || '').trim(),
+      MaterialName:       String(data[r][idx['MaterialName']]       || '').trim(),
+      Batch:              String(data[r][idx['Batch']]              || '').trim(),
+      QtyPerPallet:       Number(data[r][idx['QtyPerPallet']])  || 0,
+      Unit:               String(data[r][idx['Unit']]               || '').trim(),
+      PalletSeq:          Number(data[r][idx['PalletSeq']])    || 0,
+      TotalPallets:       Number(data[r][idx['TotalPallets']]) || 0,
+      TotalQuantity:      Number(data[r][idx['TotalQuantity']]) || 0,
+      WorkCenter:         (wc instanceof Date) ? dateToWorkCenter_(wc) : String(wc || '').trim(),
+      ProductionDate:     data[r][idx['ProductionDate']] || null,
+      Plant:              String(data[r][idx['Plant']]              || '').trim(),
+      StorageLocation:    String(data[r][idx['StorageLocation']]    || '').trim(),
+      QRPayload:          String(data[r][idx['QRPayload']]          || '').trim(),
+      Status:             String(data[r][idx['Status']]             || '').trim(),
+      ScanStatus:         String(data[r][idx['ScanStatus']]         || '').trim(),
+      ScannedAt:          data[r][idx['ScannedAt']] || null,
+      ScannedBy:          String(data[r][idx['ScannedBy']]          || '').trim(),
+      GRMaterialDocument: String(data[r][idx['GRMaterialDocument']] || '').trim(),
+      QCStatus:           String(data[r][idx['QCStatus']]           || '').trim(),
+      QCResult:           String(data[r][idx['QCResult']]           || '').trim(),
+      QCResultNote:       String(data[r][idx['QCResultNote']]       || '').trim()
+    };
+  }
+  return null;
+}
+
+/**
+ * Write scan-related fields to PalletMaster by column NAME.
+ * Finds the pallet row by PalletID, then writes each field by looking up
+ * the column position from the live header row.
+ * Also stamps UpdatedAt if the column exists.
+ * @param {string} palletId
+ * @param {Object} fields — e.g. { ScanStatus: 'SCANNED', ScannedAt: new Date(), ScannedBy: 'operator' }
+ */
+function updatePalletScanFields_(palletId, fields) {
+  const sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh) throw new Error('PalletMaster sheet not found');
+
+  const hdrRow = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const colByName = {};
+  hdrRow.forEach((h, i) => { colByName[h] = i + 1; }); // 1-based
+
+  // Locate the target row by PalletID
+  const pidCol = colByName['PalletID'] || 1;
+  const data   = sh.getRange(2, pidCol, Math.max(1, sh.getLastRow() - 1), 1).getValues();
+  let rowNum   = -1;
+  for (let r = 0; r < data.length; r++) {
+    if (String(data[r][0] || '').trim() === String(palletId).trim()) {
+      rowNum = r + 2; // header is row 1
+      break;
+    }
+  }
+  if (rowNum < 0) throw new Error('PalletID not found in PalletMaster: ' + palletId);
+
+  // Write each field by column name
+  Object.keys(fields).forEach(function(colName) {
+    const col = colByName[colName];
+    if (!col) return; // column absent — skip
+    sh.getRange(rowNum, col).setValue(fields[colName]);
+  });
+
+  if (colByName['UpdatedAt']) {
+    sh.getRange(rowNum, colByName['UpdatedAt']).setValue(new Date());
+  }
+}

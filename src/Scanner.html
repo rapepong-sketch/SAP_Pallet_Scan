@@ -1,0 +1,1219 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>ใบติดตามพาเลท - PJ Chonburi</title>
+  <style>
+    /* ── Reset ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: 'Sarabun', 'Noto Sans Thai', Arial, sans-serif;
+      font-size: 15px;
+      background: #eef2f7;
+      color: #2c3e50;
+    }
+
+    /* ── App header ── */
+    .app-header {
+      background: #1a4e8a;
+      color: #fff;
+      padding: 11px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 6px rgba(0,0,0,.25);
+    }
+    .app-title { font-size: 16px; font-weight: bold; }
+
+    /* ── SAP badge ── */
+    .badge {
+      padding: 4px 11px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: bold;
+      white-space: nowrap;
+    }
+    .badge-off     { background: #e74c3c; color: #fff; }
+    .badge-on      { background: #27ae60; color: #fff; }
+    .badge-dry     { background: #e67e22; color: #fff; }
+    .badge-loading { background: #7f8c8d; color: #fff; }
+
+    /* ── Sections ── */
+    .section {
+      background: #fff;
+      margin: 10px;
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 1px 5px rgba(0,0,0,.09);
+    }
+    .section-title {
+      font-size: 15px;
+      font-weight: bold;
+      color: #1a4e8a;
+      margin-bottom: 10px;
+      padding-bottom: 7px;
+      border-bottom: 2px solid #e0e6ef;
+    }
+
+    /* ── Image preview ── */
+    #img-preview-wrap { text-align: center; margin: 8px 0; }
+    #img-preview {
+      max-width: 120px;
+      max-height: 120px;
+      border-radius: 8px;
+      border: 2px solid #d5dde8;
+      display: block;
+      margin: 0 auto 4px;
+    }
+    #img-preview-label { font-size: 12px; color: #888; }
+
+    /* ── Manual input ── */
+    .manual-label {
+      font-size: 13px;
+      color: #7f8c8d;
+      margin-bottom: 6px;
+      display: block;
+    }
+    .manual-row {
+      display: flex;
+      gap: 8px;
+    }
+    .manual-row input {
+      flex: 1;
+      padding: 10px 12px;
+      border: 2px solid #d5dde8;
+      border-radius: 8px;
+      font-size: 15px;
+      font-family: inherit;
+      transition: border-color .2s;
+    }
+    .manual-row input:focus { outline: none; border-color: #1a4e8a; }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 11px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-family: inherit;
+      cursor: pointer;
+      font-weight: bold;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn:active { opacity: .75; transform: scale(.97); }
+    .btn-primary   { background: #1a4e8a; color: #fff; width: 100%; }
+    .btn-secondary { background: #ecf0f1; color: #2c3e50; }
+    .btn-success   { background: #27ae60; color: #fff; width: 100%; font-size: 17px; padding: 14px; margin-top: 12px; }
+    .btn-outline   { background: transparent; border: 2px solid #1a4e8a; color: #1a4e8a; }
+    .btn-retry     { background: #e67e22; color: #fff; width: 100%; margin-top: 8px; }
+
+    /* ── Pallet info grid ── */
+    .info-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 7px 14px;
+    }
+    .info-label { color: #7f8c8d; font-size: 13px; white-space: nowrap; align-self: center; }
+    .info-value { font-weight: bold; color: #1a4e8a; word-break: break-word; font-size: 15px; }
+    .info-value.normal { color: #2c3e50; font-weight: normal; }
+
+    /* ── Status chip ── */
+    .chip {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .chip-CREATED  { background: #d5e8d4; color: #2d6a4f; }
+    .chip-PRINTED  { background: #dae8fc; color: #1a4e8a; }
+    .chip-SCANNED  { background: #ffe6cc; color: #d35400; }
+    .chip-PD_COMPLETE { background: #fff3cd; color: #856404; }
+    .chip-QC_COMPLETE { background: #d4edda; color: #155724; }
+    .chip-CONFIRMED { background: #d4edda; color: #155724; }
+    .chip-default  { background: #ecf0f1; color: #555; }
+
+    /* ── Form ── */
+    .form-group { margin-bottom: 11px; }
+    .form-group label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; font-weight: bold; }
+    .form-group input,
+    .form-group select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 2px solid #d5dde8;
+      border-radius: 8px;
+      font-size: 15px;
+      font-family: inherit;
+      transition: border-color .2s;
+      background: #fff;
+    }
+    .form-group input:focus,
+    .form-group select:focus { outline: none; border-color: #1a4e8a; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+    /* ── Ops dropdown ── */
+    .ops-hint { font-size: 12px; color: #888; margin-top: 3px; }
+
+    /* ── Message banners ── */
+    .msg {
+      padding: 12px 14px;
+      border-radius: 8px;
+      margin: 8px 10px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .msg-error   { background: #fdeaea; color: #c0392b; border: 1px solid #e74c3c; }
+    .msg-success { background: #eafaf1; color: #1e8449; border: 1px solid #27ae60; }
+    .msg-info    { background: #ebf5fb; color: #2874a6; border: 1px solid #3498db; }
+
+    /* ── Result card ── */
+    .result-icon { font-size: 48px; text-align: center; margin: 10px 0 4px; }
+    .result-title { font-size: 18px; font-weight: bold; text-align: center; margin-bottom: 6px; }
+    .result-detail { font-size: 13px; color: #555; text-align: center; }
+    .result-logid { font-size: 11px; color: #888; text-align: center; margin-top: 4px; font-family: monospace; }
+
+    /* ── Rescan ── */
+    .rescan-row { text-align: center; margin-top: 10px; }
+
+    /* ── Divider ── */
+    .divider { height: 1px; background: #ecf0f1; margin: 10px 0; }
+
+    /* ── Scanning tips collapsible ── */
+    .tips-toggle {
+      width: 100%;
+      background: none;
+      border: none;
+      font-family: inherit;
+      font-size: 13px;
+      color: #7f8c8d;
+      cursor: pointer;
+      padding: 6px 0;
+      text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tips-toggle:hover { color: #1a4e8a; }
+    .tips-body {
+      font-size: 13px;
+      color: #555;
+      padding: 8px 0 2px 4px;
+      line-height: 2;
+    }
+
+    /* ── Hidden ── */
+    .hidden { display: none !important; }
+
+    /* ── Bottom padding so content clears mobile nav ── */
+    .bottom-pad { height: 32px; }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════ HEADER ════════════════════════════════ -->
+<div class="app-header">
+  <div class="app-title">🏭 PJ Chonburi</div>
+  <div id="sap-badge" class="badge badge-loading">⏳ โหลด...</div>
+</div>
+
+<!-- Global message banner -->
+<div id="global-msg" class="hidden"></div>
+
+<!-- ════════════════════════════ SECTION 1: SCANNER ════════════════════════ -->
+<div class="section" id="scan-section">
+  <div class="section-title">📷 สแกน QR พาเลท</div>
+
+  <!-- Hidden file input — capture="environment" opens native camera on mobile -->
+  <input type="file" id="qr-input-file" accept="image/*" capture="environment"
+         style="display:none">
+
+  <!-- PRIMARY: big camera button -->
+  <div style="text-align:center; margin:20px 0 8px;">
+    <button id="btn-scan" style="
+      width:100%; min-height:80px; font-size:24px;
+      background:#1a73e8; color:white; border:none;
+      border-radius:12px; cursor:pointer;
+      display:flex; align-items:center; justify-content:center; gap:12px;
+      font-family:inherit; font-weight:bold;
+      box-shadow:0 3px 8px rgba(26,115,232,.35);
+      transition:opacity .15s, transform .1s;"
+      onclick="document.getElementById('qr-input-file').click()">
+      📷 ถ่ายรูป QR Code
+    </button>
+    <p style="color:#666; margin-top:8px; font-size:14px;">
+      กดปุ่ม → ถ่ายรูป QR บนพาเลท → ระบบอ่านอัตโนมัติ
+    </p>
+  </div>
+
+  <!-- Thumbnail preview of captured image -->
+  <div id="img-preview-wrap" class="hidden">
+    <img id="img-preview" src="" alt="QR preview">
+    <div id="img-preview-label">ภาพที่ถ่าย</div>
+  </div>
+
+  <!-- Retry button (shown only after failed decode) -->
+  <button id="btn-retry" class="btn btn-retry hidden"
+          onclick="document.getElementById('qr-input-file').click()">
+    🔄 ถ่ายรูปใหม่
+  </button>
+
+  <!-- Hidden container required by Html5Qrcode for scanFile() -->
+  <div id="qr-decode-region" style="display:none"></div>
+
+  <div class="divider"></div>
+
+  <!-- FALLBACK: manual text entry -->
+  <span class="manual-label">หรือพิมพ์ Pallet ID</span>
+  <div class="manual-row">
+    <input type="text" id="manual-id"
+           placeholder="PL-000001234567-L01"
+           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <button class="btn btn-secondary" onclick="lookupManual()">ค้นหา</button>
+  </div>
+
+  <!-- Scanning tips collapsible -->
+  <div style="margin-top:14px;">
+    <button class="tips-toggle" onclick="toggleTips()">
+      <span id="tips-arrow">▶</span> 💡 เคล็ดลับการสแกน
+    </button>
+    <div id="tips-body" class="tips-body hidden">
+      <div>📌 ถ่ายให้ QR อยู่กลางจอ</div>
+      <div>📏 ระยะห่าง 10–15 ซม.</div>
+      <div>🚫 หลีกเลี่ยงแสงสะท้อน / เงา</div>
+      <div>⌨️ ถ้าไม่สำเร็จ ใช้ช่องพิมพ์ Pallet ID แทน</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ SECTION 2: PALLET CARD ══════════════════════ -->
+<div class="section hidden" id="pallet-section">
+  <div class="section-title">📦 ข้อมูลพาเลท</div>
+  <div id="pallet-info" class="info-grid"></div>
+  <div class="rescan-row">
+    <button class="btn btn-outline" onclick="resetScanner()" style="padding:8px 20px;font-size:14px">
+      🔄 สแกนใหม่
+    </button>
+  </div>
+</div>
+
+<!-- ══════════════════════ SECTION 2b: OPERATION TIMELINE ══════════════════ -->
+<div class="section hidden" id="timeline-section">
+  <div class="section-title">📋 ขั้นตอนการผลิต</div>
+  <div id="timeline-container"></div>
+</div>
+
+<!-- ═══════════════════════════ SECTION 3: FORM ════════════════════════════ -->
+<div class="section hidden" id="form-section">
+  <div class="section-title">✅ ยืนยันการทำงาน</div>
+
+  <div class="form-group">
+    <label>ชื่อผู้ปฏิบัติงาน *</label>
+    <input type="text" id="f-operator" placeholder="ชื่อ-นามสกุล หรือ รหัสพนักงาน"
+           autocomplete="name">
+  </div>
+
+  <div class="form-group">
+    <label>ตำแหน่ง / Role *</label>
+    <select id="f-role">
+      <option value="">-- เลือก Role --</option>
+      <option value="OP">OP — ผู้ปฏิบัติงาน</option>
+      <option value="PD">PD — Production Control</option>
+      <option value="QC">QC — Quality Control</option>
+    </select>
+  </div>
+
+  <div class="form-group">
+    <label>ขั้นตอนงาน (Operation No)</label>
+    <select id="f-opno">
+      <option value="">-- เลือกขั้นตอน (ถ้ามี) --</option>
+    </select>
+    <div class="ops-hint" id="ops-hint" style="display:none"></div>
+    <div class="ops-hint" id="ops-final-flag" style="display:none;color:#e67e22;font-weight:bold;">
+      ★ ขั้นตอนสุดท้าย — ครบกระบวนการเมื่อ PD ตรวจผ่าน
+    </div>
+  </div>
+
+  <div class="form-row">
+    <div class="form-group">
+      <label>จำนวนดี (PCS) *</label>
+      <input type="number" id="f-good" min="0" value="0" inputmode="numeric">
+    </div>
+    <div class="form-group">
+      <label>จำนวนเสีย (PCS)</label>
+      <input type="number" id="f-scrap" min="0" value="0" inputmode="numeric">
+    </div>
+  </div>
+
+  <button class="btn btn-success" id="btn-confirm" onclick="submitConfirm()">✅ ยืนยันงาน</button>
+</div>
+
+<!-- ═══════════════════════ SECTION 3b: PD INSPECTION ══════════════════════ -->
+<div class="section hidden" id="pd-section">
+  <div class="section-title">🔶 PD สุ่มตรวจ (ไม่บังคับ) — ขั้นตอน <span id="pd-op-label"></span></div>
+  <p style="font-size:13px; color:#7f8c8d; margin-bottom:11px;">
+    PD สามารถสุ่มตรวจได้ — ไม่จำเป็นต้องตรวจทุกพาเลท
+  </p>
+
+  <div class="form-group">
+    <label>ผู้ตรวจสอบ PD *</label>
+    <input type="text" id="pd-inspector" placeholder="ชื่อผู้ตรวจสอบ PD" autocomplete="name">
+  </div>
+
+  <div style="display:flex; gap:10px; margin-bottom:11px;">
+    <button type="button" id="pd-btn-pass" class="btn" onclick="setPdResult('PASS')"
+            style="flex:1; min-height:58px; font-size:16px; background:#27ae60; color:#fff;">
+      ✅ PASS
+    </button>
+    <button type="button" id="pd-btn-fail" class="btn" onclick="setPdResult('FAIL')"
+            style="flex:1; min-height:58px; font-size:16px; background:#e74c3c; color:#fff;">
+      ❌ FAIL
+    </button>
+  </div>
+
+  <div class="form-group hidden" id="pd-note-group">
+    <label id="pd-note-label">หมายเหตุ</label>
+    <input type="text" id="pd-note" placeholder="ระบุสาเหตุ/หมายเหตุ">
+  </div>
+
+  <button class="btn btn-success hidden" id="pd-btn-submit" onclick="submitPdResult()">
+    💾 บันทึกผล PD
+  </button>
+  <button class="btn btn-outline" id="pd-btn-skip" onclick="skipPdInspection()" style="width:100%; margin-top:8px;">
+    ข้ามไป →
+  </button>
+</div>
+
+<!-- ═══════════════════════════ SECTION 4: RESULT ══════════════════════════ -->
+<div class="section hidden" id="result-section">
+  <div id="result-icon" class="result-icon"></div>
+  <div id="result-title" class="result-title"></div>
+  <div id="result-detail" class="result-detail"></div>
+  <div id="result-logid" class="result-logid"></div>
+</div>
+
+<!-- ═══════════════════════════ SECTION 5: QC ══════════════════════════════ -->
+<div class="section hidden" id="qc-section">
+  <div class="section-title">🔍 ตรวจสอบคุณภาพ (QC)</div>
+
+  <div class="form-group">
+    <label>ผู้ตรวจสอบ *</label>
+    <input type="text" id="qc-inspector" placeholder="ชื่อผู้ตรวจสอบ" autocomplete="name">
+  </div>
+
+  <div style="display:flex; gap:10px; margin-bottom:11px;">
+    <button type="button" id="qc-btn-pass" class="btn" onclick="setQcResult('PASS')"
+            style="flex:1; min-height:58px; font-size:16px; background:#27ae60; color:#fff;">
+      ✅ PASS
+    </button>
+    <button type="button" id="qc-btn-fail" class="btn" onclick="setQcResult('FAIL')"
+            style="flex:1; min-height:58px; font-size:16px; background:#e74c3c; color:#fff;">
+      ❌ FAIL
+    </button>
+  </div>
+
+  <div class="form-group hidden" id="qc-note-group">
+    <label id="qc-note-label">หมายเหตุ</label>
+    <input type="text" id="qc-note" placeholder="ระบุสาเหตุ/หมายเหตุ">
+  </div>
+
+  <button class="btn btn-success hidden" id="qc-btn-submit" onclick="submitQcResult()">
+    💾 บันทึกผล QC
+  </button>
+</div>
+
+<div class="section hidden" id="next-scan-section">
+  <button class="btn btn-primary" onclick="resetAll()">🔄 สแกนพาเลทถัดไป</button>
+</div>
+
+<div class="bottom-pad"></div>
+
+<!-- ════════════════════════════════ SCRIPTS ════════════════════════════════ -->
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode/html5-qrcode.min.js"></script>
+<script>
+// ============================================================
+// State
+// ============================================================
+var currentPallet        = null;
+var currentOperations    = [];   // routing ops for current pallet's MO: {opNo,opText,workCenter,isFinal}
+var currentOperationLogs = [];   // OperationLog rows for current pallet: {operationNo,status,pdResult,opBy,pdBy,pdNote,timestamp}
+var currentConfirmedOp   = null; // opNo just OP-confirmed, awaiting inline PD inspection
+var currentPdResult      = null; // 'PASS' | 'FAIL' picked in pd-section, before submit
+var currentQcResult      = null;
+var currentAllOpsConfirmed = false; // server flag from lookupPallet — every routing op has an OP confirm
+var currentQcDone        = false;   // server flag from lookupPallet — pallet.QCStatus === 'INSPECTED'
+var pendingOpNo          = '';   // set by submitConfirm() just before the RPC, read by onConfirmResult()
+var pendingOpLabel       = '';
+var html5QrCode          = null;  // Html5Qrcode instance — reused for every scanFile()
+var autoResetTimer       = null; // pending setTimeout id for auto-return-to-scan, or null
+var autoResetArmed       = false; // set just before a refreshPallet() that should auto-reset once it re-renders, if idle
+
+// ============================================================
+// Init
+// ============================================================
+window.addEventListener('load', function () {
+  loadSapStatus();
+  html5QrCode = new Html5Qrcode('qr-decode-region');
+
+  document.getElementById('qr-input-file').addEventListener('change', async function (e) {
+    var file = e.target.files[0];
+    if (!file) return;
+
+    // Show thumbnail preview
+    var preview = document.getElementById('img-preview');
+    preview.src = URL.createObjectURL(file);
+    show('img-preview-wrap');
+    hide('btn-retry');
+
+    showMsg('info', '⏳ กำลังอ่าน QR Code...');
+
+    try {
+      var decodedText = await html5QrCode.scanFile(file, true);
+      if (navigator.vibrate) navigator.vibrate(200);
+      clearMsg();
+      showMsg('success', '✅ อ่านสำเร็จ');
+      onScanSuccess(decodedText);
+    } catch (err) {
+      showMsg('error', '❌ ไม่พบ QR Code ในรูป — ลองถ่ายใหม่ให้ QR ชัดและเต็มจอ');
+      show('btn-retry');
+    }
+
+    e.target.value = '';  // reset so same file can re-trigger change
+  });
+
+  // Auto-flag the final operation when the operator picks it from the dropdown
+  document.getElementById('f-opno').addEventListener('change', function () {
+    var selected = this.options[this.selectedIndex];
+    var flagEl   = document.getElementById('ops-final-flag');
+    flagEl.style.display = (selected && selected.dataset.isFinal === 'true') ? 'block' : 'none';
+  });
+});
+
+// ============================================================
+// SAP status badge
+// ============================================================
+function loadSapStatus() {
+  google.script.run
+    .withSuccessHandler(function (s) {
+      var b = document.getElementById('sap-badge');
+      if (!s.sapWriteEnabled) {
+        b.className = 'badge badge-off';
+        b.textContent = '🔴 SAP ปิด (ทดสอบ)';
+      } else if (s.dryRun) {
+        b.className = 'badge badge-dry';
+        b.textContent = '🧪 SAP+DRY_RUN';
+      } else {
+        b.className = 'badge badge-on';
+        b.textContent = '🟢 SAP LIVE';
+      }
+    })
+    .withFailureHandler(function () {
+      var b = document.getElementById('sap-badge');
+      b.className = 'badge badge-loading';
+      b.textContent = '❓ ไม่ทราบสถานะ';
+    })
+    .getSapStatus();
+}
+
+// ============================================================
+// Scanning tips toggle
+// ============================================================
+function toggleTips() {
+  var body  = document.getElementById('tips-body');
+  var arrow = document.getElementById('tips-arrow');
+  if (body.classList.contains('hidden')) {
+    body.classList.remove('hidden');
+    arrow.textContent = '▼';
+  } else {
+    body.classList.add('hidden');
+    arrow.textContent = '▶';
+  }
+}
+
+// ============================================================
+// Common scan success handler
+// ============================================================
+function onScanSuccess(decoded) {
+  var palletId = parseQrPayload(decoded);
+  if (!palletId) {
+    showMsg('error', 'QR code ไม่ถูกต้อง — ต้องขึ้นต้นด้วย PALLET|...\nReceived: ' + decoded.substring(0, 60));
+    return;
+  }
+  document.getElementById('manual-id').value = palletId;
+  doLookup(palletId);
+}
+
+// ============================================================
+// QR payload parser
+// ============================================================
+function parseQrPayload(text) {
+  text = (text || '').trim();
+  // Primary format: PALLET|{PalletID}|{MO}|{Material}|{Batch}|{Qty}
+  if (text.indexOf('PALLET|') === 0) {
+    var parts = text.split('|');
+    if (parts.length >= 2 && parts[1]) return parts[1].trim();
+  }
+  // Fallback: bare PalletID formats
+  if (/^PL-\d+-L\d+$/.test(text) || /^\d+-P\d{3}$/.test(text)) return text;
+  return null;
+}
+
+// ============================================================
+// Lookup
+// ============================================================
+function lookupManual() {
+  var id = document.getElementById('manual-id').value.trim();
+  if (!id) { showMsg('error', 'กรุณาพิมพ์ PalletID ก่อน'); return; }
+  doLookup(id);
+}
+
+function doLookup(palletId) {
+  cancelAutoReset();
+  clearMsg();
+  hide('pallet-section');
+  hide('timeline-section');
+  hide('form-section');
+  hide('pd-section');
+  hide('result-section');
+  hide('qc-section');
+  hide('next-scan-section');
+  showMsg('info', '⏳ กำลังค้นหาพาเลท ' + palletId + ' …');
+
+  google.script.run
+    .withSuccessHandler(function (result) { applyLookupResult(result, { scroll: true }); })
+    .withFailureHandler(function (err) {
+      clearMsg();
+      showMsg('error', '❌ เกิดข้อผิดพลาด network: ' + (err.message || String(err)));
+    })
+    .lookupPallet(palletId);
+}
+
+// Re-fetch the current pallet (after a PD save) and re-render without losing place.
+// preserveMsg=true keeps the PD PASS/FAIL banner just shown by onPdResult() on screen
+// instead of letting the generic status banner below overwrite it mid-flight.
+function refreshPallet() {
+  if (!currentPallet) return;
+  google.script.run
+    .withSuccessHandler(function (result) { applyLookupResult(result, { scroll: false, preserveMsg: true }); })
+    .withFailureHandler(function () { /* keep current view on transient network failure */ })
+    .lookupPallet(currentPallet.PalletID);
+}
+
+// Single render path used by both the initial scan lookup and post-PD refresh.
+function applyLookupResult(result, opts) {
+  opts = opts || {};
+  if (!opts.preserveMsg) clearMsg();
+  if (!result.found) {
+    showMsg('error', '❌ ' + (result.error || 'ไม่พบพาเลท'));
+    return;
+  }
+
+  currentPallet           = result.pallet;
+  currentOperations       = result.operations    || [];
+  currentOperationLogs    = result.operationLogs || [];
+  currentQcResult         = null;
+  currentAllOpsConfirmed  = !!result.allOpsConfirmed;
+  currentQcDone           = !!result.qcDone;
+
+  renderPalletCard(currentPallet);
+  show('pallet-section');
+
+  var nextOpNo = renderTimeline(currentOperations, currentOperationLogs);
+
+  populateOpsDropdown(currentOperations, currentOperationLogs, nextOpNo);
+  document.getElementById('ops-final-flag').style.display = 'none';
+  document.getElementById('f-good').value  = currentPallet.QtyPerPallet || 0;
+  document.getElementById('f-scrap').value = 0;
+
+  hide('pd-section');
+  hide('result-section');
+
+  updateFormVisibility(nextOpNo);
+  if (!opts.preserveMsg) showPalletStatus(currentPallet);
+  updateQcVisibility();
+
+  show('next-scan-section');
+
+  if (opts.scroll) {
+    document.getElementById('pallet-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  if (autoResetArmed) {
+    autoResetArmed = false;
+    maybeAutoReset();
+  }
+}
+
+// ============================================================
+// Pallet status banner — informational only; form/QC visibility is owned
+// by updateFormVisibility() / updateQcVisibility() so they don't fight here.
+// ============================================================
+function showPalletStatus(p) {
+  var lines = [];
+  var type  = 'info';
+
+  if (p.ScanStatus === 'CONFIRMED') {
+    lines.push('⚠️ พาเลทนี้ยืนยันขั้นตอนสุดท้ายแล้ว (SAP) — ไม่สามารถบันทึกซ้ำ');
+    type = 'error';
+  } else if (p.ScanStatus === 'QC_COMPLETE') {
+    lines.push('🎉 พาเลทนี้ผ่านทุกขั้นตอนและ QC ตรวจแล้ว');
+  } else if (p.ScanStatus === 'PD_COMPLETE') {
+    lines.push('🎉 ครบทุกขั้นตอน — รอ QC ตรวจสอบ');
+  } else if (p.ScanStatus === 'SCANNED') {
+    lines.push('ℹ️ พาเลทนี้กำลังดำเนินการ — ดูสถานะในตาราง "ขั้นตอนการผลิต" ด้านบน');
+  }
+
+  if (p.QCStatus === 'INSPECTED') {
+    lines.push('🔍 QC ตรวจแล้ว: ' + (p.QCResult || '-') + (p.QCResultNote ? ' — ' + p.QCResultNote : ''));
+  }
+
+  if (lines.length) showMsg(type, lines.join('\n'));
+}
+
+// ============================================================
+// Operation timeline — visual progress + decides the next allowed operation.
+// Sequential rule: an operation can only become "next" if every operation
+// before it already has an OP confirm logged. PD result is optional sampling
+// shown as a bonus badge — it never blocks the next operation.
+// ============================================================
+function renderTimeline(operations, operationLogs) {
+  var container = document.getElementById('timeline-container');
+  container.innerHTML = '';
+
+  if (!operations || !operations.length) {
+    hide('timeline-section');
+    return null;
+  }
+
+  var nextOperationNo = null;
+
+  operations.forEach(function (op) {
+    var log = operationLogs.find(function (l) { return l.operationNo === op.opNo; });
+    var icon, text, color, bg;
+
+    if (log) {
+      // OP has confirmed this operation — PD result (if any) is a bonus badge only.
+      icon = '✅'; text = 'บันทึกแล้ว'; color = '#1e8449'; bg = '#eafaf1';
+      if (log.pdResult === 'PASS') text = 'บันทึกแล้ว | PD ✅';
+      else if (log.pdResult === 'FAIL') text = 'บันทึกแล้ว | PD ❌';
+    } else if (nextOperationNo === null) {
+      icon = '👉'; text = 'ขั้นตอนถัดไป'; color = '#1a4e8a'; bg = '#e3f2fd';
+      nextOperationNo = op.opNo;
+    } else {
+      icon = '🔒'; text = 'รอขั้นตอนก่อนหน้า'; color = '#999'; bg = '#f5f5f5';
+    }
+
+    var label = op.opNo + (op.opText ? ' — ' + op.opText : '') + (op.workCenter ? ' (' + op.workCenter + ')' : '');
+    if (op.isFinal) label += ' ★ สุดท้าย';
+
+    var detail = '';
+    if (log) {
+      detail = 'บันทึกโดย: ' + esc(log.opBy) + (log.timestamp ? ' | ' + esc(log.timestamp) : '');
+      if (log.pdResult) detail += ' | PD: ' + esc(log.pdResult) + ' โดย ' + esc(log.pdBy);
+    }
+
+    var card = document.createElement('div');
+    card.style.cssText =
+      'background:' + bg + '; border-left:4px solid ' + color + ';' +
+      'padding:12px 14px; margin-bottom:8px; border-radius:0 8px 8px 0;';
+    card.innerHTML =
+      '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">' +
+        '<div>' +
+          '<strong>' + icon + ' ' + esc(label) + '</strong>' +
+          (detail ? '<div style="font-size:12px; color:#666; margin-top:4px;">' + detail + '</div>' : '') +
+        '</div>' +
+        '<span style="font-size:12px; color:' + color + '; font-weight:bold; white-space:nowrap;">' + esc(text) + '</span>' +
+      '</div>';
+    container.appendChild(card);
+  });
+
+  show('timeline-section');
+  return nextOperationNo;
+}
+
+// Show the OP confirm form only when there's an operation it's actually
+// allowed to log right now (no routing data falls back to the legacy
+// free-form behavior — opNo becomes optional). currentAllOpsConfirmed is the
+// server's verdict (lookupPallet) — once every operation has an OP confirm,
+// the OP form stays hidden even on a fresh scan/rescan, so QC staff scanning
+// the same pallet/URL lands on the QC section instead of the OP form.
+function updateFormVisibility(nextOperationNo) {
+  if (currentPallet.ScanStatus === 'CONFIRMED') { hide('form-section'); return; }
+  if (currentAllOpsConfirmed) { hide('form-section'); return; }
+  if (!currentOperations.length) { show('form-section'); return; }
+  if (nextOperationNo) { show('form-section'); } else { hide('form-section'); }
+}
+
+// QC inspects the whole pallet only once every operation has an OP confirm.
+// PD result is optional sampling and is NOT required to unlock QC.
+// currentAllOpsConfirmed / currentQcDone come from lookupPallet (server) —
+// using them here instead of re-deriving from currentOperations/
+// currentOperationLogs keeps this in lockstep with the backend's gate.
+function updateQcVisibility() {
+  if (!currentPallet) { hide('qc-section'); return; }
+  if (currentQcDone) { hide('qc-section'); return; }
+  if (currentAllOpsConfirmed) { showQcSectionIfNeeded(); } else { hide('qc-section'); }
+}
+
+// ============================================================
+// Pallet card rendering
+// ============================================================
+function renderPalletCard(p) {
+  var status    = p.ScanStatus || p.Status || 'CREATED';
+  var chipClass = 'chip chip-' + statusChipClass(status);
+  var rows = [
+    ['PalletID',         esc(p.PalletID)],
+    ['ใบสั่งผลิต (MO)',  esc(p.ManufacturingOrder)],
+    ['วัสดุ',            esc(p.Material)],
+    ['ชื่อวัสดุ',        esc(p.MaterialName || '—')],
+    ['แบตช์',            esc(p.Batch || '—')],
+    ['จำนวน/พาเลท',     esc(String(p.QtyPerPallet)) + ' ' + esc(p.Unit || '')],
+    ['พาเลทที่',         esc(String(p.PalletSeq)) + ' / ' + esc(String(p.TotalPallets))],
+    ['Work Center',      esc(p.WorkCenter || '—')],
+    ['วันที่ผลิต',       esc(p.ProductionDate || '—')],
+    ['สถานะ',           '<span class="' + chipClass + '">' + esc(status) + '</span>']
+  ];
+  var html = rows.map(function (r) {
+    var isHtml = r[1].indexOf('<') !== -1;
+    return '<div class="info-label">' + r[0] + '</div>' +
+           '<div class="info-value' + (isHtml ? '' : ' normal') + '">' + r[1] + '</div>';
+  }).join('');
+  document.getElementById('pallet-info').innerHTML = html;
+}
+
+function statusChipClass(s) {
+  if (s === 'CREATED' || s === 'PRINTED' || s === 'SCANNED' || s === 'CONFIRMED' ||
+      s === 'PD_COMPLETE' || s === 'QC_COMPLETE') return s;
+  return 'default';
+}
+
+// ============================================================
+// Operations dropdown — only the sequentially-next operation is selectable;
+// everything else is shown for context but disabled.
+// ============================================================
+function populateOpsDropdown(operations, operationLogs, nextOperationNo) {
+  var sel  = document.getElementById('f-opno');
+  var hint = document.getElementById('ops-hint');
+  sel.innerHTML = '<option value="">-- เลือกขั้นตอน (ถ้ามี) --</option>';
+  if (!operations || operations.length === 0) {
+    hint.style.display = 'none';
+    return;
+  }
+  operations.forEach(function (op) {
+    var log = operationLogs.find(function (l) { return l.operationNo === op.opNo; });
+
+    var label = op.opNo + (op.opText ? ' — ' + op.opText : '') + (op.workCenter ? ' (' + op.workCenter + ')' : '');
+    if (op.isFinal) label += ' ★ ขั้นตอนสุดท้าย';
+
+    var opt  = document.createElement('option');
+    opt.value           = op.opNo;
+    opt.dataset.opText  = op.opText || '';
+    opt.dataset.isFinal = op.isFinal ? 'true' : 'false';
+
+    if (log) {
+      opt.disabled = true;
+      label = '✅ ' + label + ' (บันทึกแล้ว)';
+      if (log.pdResult === 'PASS') label += ' | PD ✅';
+      else if (log.pdResult === 'FAIL') label += ' | PD ❌';
+    } else if (op.opNo === nextOperationNo) {
+      opt.selected = true;
+      label = '👉 ' + label;
+    } else {
+      opt.disabled = true;
+      label = '🔒 ' + label;
+    }
+
+    opt.textContent = label;
+    sel.appendChild(opt);
+  });
+  hint.textContent   = 'พบ ' + operations.length + ' ขั้นตอนจาก SAP routing';
+  hint.style.display = 'block';
+}
+
+// ============================================================
+// Submit
+// ============================================================
+function submitConfirm() {
+  if (!currentPallet) { showMsg('error', 'ยังไม่มีข้อมูลพาเลท — สแกนก่อน'); return; }
+
+  var operator = document.getElementById('f-operator').value.trim();
+  var role     = document.getElementById('f-role').value;
+  var opNo     = document.getElementById('f-opno').value.trim();
+  var qtyGood  = parseInt(document.getElementById('f-good').value,  10) || 0;
+  var qtyScrap = parseInt(document.getElementById('f-scrap').value, 10) || 0;
+
+  if (!operator) { showMsg('error', 'กรุณาระบุชื่อผู้ปฏิบัติงาน'); return; }
+  if (!role)     { showMsg('error', 'กรุณาเลือก Role'); return; }
+
+  var selOp   = document.getElementById('f-opno');
+  var hasOp   = selOp.selectedIndex > 0;
+  var opText  = hasOp ? (selOp.options[selOp.selectedIndex].dataset.opText  || '') : '';
+  var isFinal = hasOp && selOp.options[selOp.selectedIndex].dataset.isFinal === 'true';
+
+  pendingOpNo    = opNo;
+  pendingOpLabel = hasOp ? selOp.options[selOp.selectedIndex].textContent : opNo;
+
+  clearMsg();
+  showMsg('info', '⏳ กำลังบันทึก…');
+
+  google.script.run
+    .withSuccessHandler(onConfirmResult)
+    .withFailureHandler(function (err) {
+      clearMsg();
+      showMsg('error', '❌ บันทึกไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .confirmScan({
+      palletId: currentPallet.PalletID,
+      opNo:     opNo,
+      opText:   opText,
+      isFinal:  isFinal,
+      qtyGood:  qtyGood,
+      qtyScrap: qtyScrap,
+      operator: operator,
+      role:     role
+    });
+}
+
+function onConfirmResult(result) {
+  clearMsg();
+
+  if (!result.success) {
+    showMsg('error', '❌ ' + (result.message || 'เกิดข้อผิดพลาด'));
+    return; // form/pallet card stay visible so the operator can fix and retry
+  }
+
+  hide('form-section');
+
+  document.getElementById('result-icon').textContent   = '✅';
+  document.getElementById('result-title').textContent  = 'บันทึกงานสำเร็จ';
+  document.getElementById('result-detail').textContent = result.message || '';
+  document.getElementById('result-logid').textContent  = result.logId ? 'LogID: ' + result.logId : '';
+  show('result-section');
+
+  // Reflect this OP confirm locally (PD hasn't run yet) so the timeline,
+  // dropdown, and QC gate update immediately without needing a rescan.
+  if (pendingOpNo) {
+    currentOperationLogs = currentOperationLogs.filter(function (l) { return l.operationNo !== pendingOpNo; });
+    currentOperationLogs.push({
+      operationNo: pendingOpNo,
+      status:      'PASS',
+      pdResult:    null,
+      opBy:        document.getElementById('f-operator').value.trim(),
+      pdBy:        '',
+      pdNote:      '',
+      timestamp:   ''
+    });
+
+    var nextOp = renderTimeline(currentOperations, currentOperationLogs);
+    populateOpsDropdown(currentOperations, currentOperationLogs, nextOp);
+
+    currentConfirmedOp = pendingOpNo;
+    document.getElementById('pd-op-label').textContent = pendingOpLabel;
+    resetPdSection();
+    show('pd-section');
+    document.getElementById('pd-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else {
+    document.getElementById('result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // QC unlocks once every operation has an OP confirm — PD is not required.
+  // Sync the server-derived gate flag here too, since this came from
+  // confirmScan() rather than a fresh lookupPallet() call.
+  currentAllOpsConfirmed = !!result.allOperationsDone;
+  if (result.allOperationsDone) {
+    if (currentPallet) currentPallet.ScanStatus = 'PD_COMPLETE';
+    showMsg('success', '✅ ครบทุกขั้นตอน — พร้อมให้ QC ตรวจ');
+    updateQcVisibility();
+  }
+
+  show('next-scan-section');
+
+  // Only auto-resets when nothing needs the operator's attention right now
+  // (e.g. no routing/PD step) — never while the inline PD section is shown.
+  maybeAutoReset();
+}
+
+// ============================================================
+// PD inspection (inline, right after OP confirms an operation)
+// ============================================================
+function resetPdSection() {
+  currentPdResult = null;
+  document.getElementById('pd-inspector').value = '';
+  document.getElementById('pd-note').value = '';
+  hide('pd-note-group');
+
+  var btnSubmit = document.getElementById('pd-btn-submit');
+  btnSubmit.classList.add('hidden');
+  btnSubmit.disabled    = false;
+  btnSubmit.textContent = '💾 บันทึกผล PD';
+
+  var btnPass = document.getElementById('pd-btn-pass');
+  var btnFail = document.getElementById('pd-btn-fail');
+  btnPass.disabled = false; btnPass.style.opacity = '1';
+  btnFail.disabled = false; btnFail.style.opacity = '1';
+}
+
+function setPdResult(result) {
+  currentPdResult = result;
+  document.getElementById('pd-btn-pass').style.opacity = result === 'PASS' ? '1' : '0.4';
+  document.getElementById('pd-btn-fail').style.opacity = result === 'FAIL' ? '1' : '0.4';
+
+  var noteLabel = document.getElementById('pd-note-label');
+  noteLabel.textContent = result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุเพิ่มเติม (ถ้ามี)';
+  show('pd-note-group');
+  document.getElementById('pd-btn-submit').classList.remove('hidden');
+}
+
+function submitPdResult() {
+  if (!currentPallet || !currentConfirmedOp) return;
+  if (!currentPdResult) { showMsg('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
+
+  var inspector = document.getElementById('pd-inspector').value.trim();
+  var note      = document.getElementById('pd-note').value.trim();
+
+  if (!inspector) { showMsg('error', 'กรุณากรอกชื่อผู้ตรวจสอบ PD'); return; }
+  if (currentPdResult === 'FAIL' && !note) { showMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน'); return; }
+
+  var btn = document.getElementById('pd-btn-submit');
+  btn.disabled    = true;
+  btn.textContent = '⏳ กำลังบันทึก...';
+
+  google.script.run
+    .withSuccessHandler(onPdResult)
+    .withFailureHandler(function (err) {
+      btn.disabled    = false;
+      btn.textContent = '💾 บันทึกผล PD';
+      showMsg('error', '❌ บันทึก PD ไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .savePdInspection({
+      palletId:    currentPallet.PalletID,
+      operationNo: currentConfirmedOp,
+      result:      currentPdResult,
+      inspector:   inspector,
+      note:        note
+    });
+}
+
+function onPdResult(result) {
+  var btn = document.getElementById('pd-btn-submit');
+  if (!result.success) {
+    btn.disabled    = false;
+    btn.textContent = '💾 บันทึกผล PD';
+    showMsg('error', '❌ ' + (result.message || 'บันทึก PD ไม่สำเร็จ'));
+    return;
+  }
+
+  btn.textContent = '✅ บันทึกแล้ว';
+  document.getElementById('pd-btn-pass').disabled = true;
+  document.getElementById('pd-btn-fail').disabled = true;
+
+  if (result.result === 'PASS') {
+    showMsg('success', result.allOperationsDone
+      ? '🎉 ครบทุกขั้นตอน — รอ QC ตรวจสอบ'
+      : '✅ PD ผ่าน — พร้อมไปขั้นตอนถัดไป');
+  } else {
+    showMsg('error', '❌ PD ไม่ผ่าน — แก้ไขงานแล้วสแกนใหม่');
+  }
+
+  currentConfirmedOp = null;
+  hide('pd-section');
+  autoResetArmed = true;
+  refreshPallet();
+}
+
+// PD is optional random sampling — let the operator skip it and move on
+// without inspecting this operation. Doesn't touch the server; the
+// OperationLog row already exists from confirmScan() with PDResult blank.
+function skipPdInspection() {
+  currentConfirmedOp = null;
+  hide('pd-section');
+  updateQcVisibility();
+  maybeAutoReset();
+}
+
+// ============================================================
+// QC section
+// ============================================================
+function showQcSectionIfNeeded() {
+  if (!currentPallet || currentPallet.QCStatus === 'INSPECTED') { hide('qc-section'); return; }
+
+  currentQcResult = null;
+  document.getElementById('qc-inspector').value = document.getElementById('f-operator').value || '';
+  document.getElementById('qc-note').value = '';
+  hide('qc-note-group');
+
+  var btnSubmit = document.getElementById('qc-btn-submit');
+  btnSubmit.classList.add('hidden');
+  btnSubmit.disabled    = false;
+  btnSubmit.textContent = '💾 บันทึกผล QC';
+
+  var btnPass = document.getElementById('qc-btn-pass');
+  var btnFail = document.getElementById('qc-btn-fail');
+  btnPass.disabled = false; btnPass.style.opacity = '1';
+  btnFail.disabled = false; btnFail.style.opacity = '1';
+
+  show('qc-section');
+}
+
+function setQcResult(result) {
+  currentQcResult = result;
+  document.getElementById('qc-btn-pass').style.opacity = result === 'PASS' ? '1' : '0.4';
+  document.getElementById('qc-btn-fail').style.opacity = result === 'FAIL' ? '1' : '0.4';
+
+  var noteLabel = document.getElementById('qc-note-label');
+  noteLabel.textContent = result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุเพิ่มเติม (ถ้ามี)';
+  show('qc-note-group');
+  document.getElementById('qc-btn-submit').classList.remove('hidden');
+}
+
+function submitQcResult() {
+  if (!currentPallet) return;
+  if (!currentQcResult) { showMsg('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
+
+  var inspector = document.getElementById('qc-inspector').value.trim();
+  var note      = document.getElementById('qc-note').value.trim();
+
+  if (!inspector) { showMsg('error', 'กรุณากรอกชื่อผู้ตรวจสอบ'); return; }
+  if (currentQcResult === 'FAIL' && !note) { showMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน'); return; }
+
+  var btn = document.getElementById('qc-btn-submit');
+  btn.disabled    = true;
+  btn.textContent = '⏳ กำลังบันทึก...';
+
+  google.script.run
+    .withSuccessHandler(onQcResult)
+    .withFailureHandler(function (err) {
+      btn.disabled    = false;
+      btn.textContent = '💾 บันทึกผล QC';
+      showMsg('error', '❌ บันทึก QC ไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .saveQcResult({
+      palletId:  currentPallet.PalletID,
+      result:    currentQcResult,
+      inspector: inspector,
+      note:      note
+    });
+}
+
+function onQcResult(result) {
+  var btn = document.getElementById('qc-btn-submit');
+  if (!result.success) {
+    btn.disabled    = false;
+    btn.textContent = '💾 บันทึกผล QC';
+    showMsg('error', '❌ ' + (result.message || 'บันทึก QC ไม่สำเร็จ'));
+    return;
+  }
+
+  showMsg('success', '✅ ' + (result.message || 'บันทึก QC สำเร็จ'));
+  btn.textContent = '✅ บันทึกแล้ว';
+  document.getElementById('qc-btn-pass').disabled = true;
+  document.getElementById('qc-btn-fail').disabled = true;
+  autoResetArmed = true;
+  refreshPallet(); // pulls fresh QCStatus/ScanStatus so the chip + banner show QC_COMPLETE and the form hides
+}
+
+// ============================================================
+// Auto-return to scan screen — fires once the screen has reached an idle
+// state with nothing left for the operator to act on (no pending OP form,
+// PD section, or QC section). Never fires while the optional inline PD
+// section is showing, so PD sampling right after an OP confirm is never
+// cut off. An explicit "สแกนพาเลทถัดไป" tap always works immediately
+// without waiting for the timer.
+// ============================================================
+function scheduleAutoReset(delayMs) {
+  cancelAutoReset();
+  autoResetTimer = setTimeout(function () {
+    autoResetTimer = null;
+    resetScanner();
+    showMsg('info', '📷 พร้อมสแกนพาเลทถัดไป');
+  }, delayMs);
+}
+
+function cancelAutoReset() {
+  if (autoResetTimer) { clearTimeout(autoResetTimer); autoResetTimer = null; }
+}
+
+function maybeAutoReset() {
+  var formVisible = !document.getElementById('form-section').classList.contains('hidden');
+  var pdVisible   = !document.getElementById('pd-section').classList.contains('hidden');
+  var qcVisible   = !document.getElementById('qc-section').classList.contains('hidden');
+  if (!formVisible && !pdVisible && !qcVisible) {
+    scheduleAutoReset(3000);
+  }
+}
+
+// ============================================================
+// Reset
+// ============================================================
+function resetScanner() {
+  cancelAutoReset();
+  hide('pallet-section');
+  hide('timeline-section');
+  hide('form-section');
+  hide('pd-section');
+  hide('result-section');
+  hide('qc-section');
+  hide('next-scan-section');
+  hide('img-preview-wrap');
+  hide('btn-retry');
+  clearMsg();
+  currentPallet        = null;
+  currentOperations    = [];
+  currentOperationLogs = [];
+  currentConfirmedOp   = null;
+  currentPdResult      = null;
+  currentQcResult      = null;
+  currentAllOpsConfirmed = false;
+  currentQcDone        = false;
+  pendingOpNo          = '';
+  pendingOpLabel       = '';
+  document.getElementById('manual-id').value     = '';
+  document.getElementById('img-preview').src     = '';
+  document.getElementById('qr-input-file').value = '';
+
+  var btnConfirm = document.getElementById('btn-confirm');
+  btnConfirm.disabled    = false;
+  btnConfirm.textContent = '✅ ยืนยันงาน';
+
+  document.getElementById('scan-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function resetAll() {
+  resetScanner();
+}
+
+// ============================================================
+// UI helpers
+// ============================================================
+function show(id) { document.getElementById(id).classList.remove('hidden'); }
+function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+function showMsg(type, text) {
+  var el  = document.getElementById('global-msg');
+  var cls = type === 'error' ? 'msg-error' : type === 'success' ? 'msg-success' : 'msg-info';
+  el.className = 'msg ' + cls;
+  el.innerHTML = esc(text).replace(/\n/g, '<br>');
+  el.classList.remove('hidden');
+}
+
+function clearMsg() {
+  var el = document.getElementById('global-msg');
+  el.className = 'hidden';
+  el.innerHTML = '';
+}
+
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>

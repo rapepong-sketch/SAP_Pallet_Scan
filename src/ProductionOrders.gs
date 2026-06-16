@@ -371,7 +371,8 @@ function fetchOperationsForMO_(mo) {
       'to_ProductionOrderOperation/ManufacturingOrderOperation',
       'to_ProductionOrderOperation/MfgOrderOperationText',
       'to_ProductionOrderOperation/WorkCenter'
-    ].join(',')
+    ].join(','),
+    '$orderby': 'to_ProductionOrderOperation/ManufacturingOrderOperation asc'
   };
   Logger.log('fetchOperationsForMO_: path=' + path);
 
