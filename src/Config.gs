@@ -95,7 +95,8 @@ const CFG = {
       'StatusCodes',                // จาก to_ProductionOrderStatus
       'IsReleased',                 // direct boolean flag from header
       'LastSyncAt',
-      'OperationsJSON'              // Phase 2.5: JSON array for routing table (lazy-fetch cache)
+      'OperationsJSON',             // Phase 2.5: JSON array for routing table (lazy-fetch cache)
+      'FinalOperation'              // Phase 3: cached last routing op number — getFinalOperationForMo_()
     ],
 
     PALLET_MASTER: [

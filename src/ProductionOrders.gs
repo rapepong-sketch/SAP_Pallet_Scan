@@ -239,7 +239,9 @@ function mapPoToRow_(po) {
  */
 function upsertProductionOrders_(rows) {
   const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
-  const width = CFG.HEADERS.PRODUCTION_ORDERS.length;
+  // Sync only the SAP-derived columns (through OperationsJSON) — columns appended
+  // after it (e.g. FinalOperation) are local caches and must survive re-pulls.
+  const width = CFG.HEADERS.PRODUCTION_ORDERS.indexOf('OperationsJSON') + 1;
 
   // Force WorkCenters column to plain text BEFORE writing — prevents Sheets
   // from auto-parsing codes like "0408-02" as Date objects on future reads.
@@ -397,6 +399,92 @@ function fetchOperationsForMO_(mo) {
     Logger.log('fetchOperationsForMO_: EXCEPTION ' + e.message);
     return [];
   }
+}
+
+/**
+ * Read the cached final operation number for a MO from the ProductionOrders
+ * sheet (fast sheet read, no SAP call). Phase 3 Step 2 uses this to build the
+ * SAP confirmation payload without re-deriving the routing every scan.
+ * @param {string} mo
+ * @return {string} cached final op number, or '' if not cached / MO not found
+ */
+function getFinalOperationCached_(mo) {
+  mo = String(mo || '').trim();
+  if (!mo) return '';
+  try {
+    const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return '';
+    const hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    const moCol = hdr.indexOf('ManufacturingOrder');
+    const foCol = hdr.indexOf('FinalOperation');
+    if (moCol === -1 || foCol === -1) return '';
+    const data = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
+    for (let i = 0; i < data.length; i++) {
+      if (String(data[i][moCol] || '').trim() === mo) {
+        return String(data[i][foCol] || '').trim();
+      }
+    }
+  } catch (e) {
+    logError('getFinalOperationCached_', CFG.SHEETS.PRODUCTION_ORDERS, e.message, mo);
+  }
+  return '';
+}
+
+/**
+ * Write the final operation number for a MO into the FinalOperation column.
+ * Skips the write when the cached value already matches — keeps this cheap
+ * to call from getFinalOperationForMo_ on every cold-cache lookup.
+ * @param {string} mo
+ * @param {string} finalOpNo
+ */
+function cacheFinalOperation_(mo, finalOpNo) {
+  mo = String(mo || '').trim();
+  finalOpNo = String(finalOpNo || '').trim();
+  if (!mo || !finalOpNo) return;
+  try {
+    const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+    const hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    const moCol = hdr.indexOf('ManufacturingOrder');
+    const foCol = hdr.indexOf('FinalOperation');
+    if (moCol === -1 || foCol === -1) return;
+    const keys = sh.getRange(2, moCol + 1, lastRow - 1, 1).getValues();
+    for (let i = 0; i < keys.length; i++) {
+      if (String(keys[i][0] || '').trim() === mo) {
+        const cell = sh.getRange(i + 2, foCol + 1);
+        if (String(cell.getValue() || '').trim() !== finalOpNo) cell.setValue(finalOpNo);
+        return;
+      }
+    }
+  } catch (e) {
+    logError('cacheFinalOperation_', CFG.SHEETS.PRODUCTION_ORDERS, e.message, mo + '=' + finalOpNo);
+  }
+}
+
+/**
+ * Final operation number for a MO — Phase 3 Step 2 needs this to build the
+ * SAP order confirmation payload. Reads the ProductionOrders.FinalOperation
+ * cache first (sheet read, no SAP call); only on a cold cache does it fall
+ * back to getOperationsForOrder() (which itself prefers the sheet's
+ * OperationsJSON over a live SAP fetch), then writes the cache for next time.
+ * @param {string} mo
+ * @return {string} final operation number, or '' if no routing found
+ */
+function getFinalOperationForMo_(mo) {
+  mo = String(mo || '').trim();
+  if (!mo) return '';
+
+  const cached = getFinalOperationCached_(mo);
+  if (cached) return cached;
+
+  const ops = getOperationsForOrder(mo);
+  if (!ops.length) return '';
+
+  const finalOpNo = ops[ops.length - 1].opNo;
+  cacheFinalOperation_(mo, finalOpNo);
+  return finalOpNo;
 }
 
 /**
