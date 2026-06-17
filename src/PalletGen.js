@@ -9,42 +9,50 @@
  */
 
 var PM_SHEET = 'PalletMaster';
-// Must stay in sync with CFG.HEADERS.PALLET_MASTER — setupSheets() uses CFG, ensurePalletMasterSheet_ uses this
-// Matches actual PalletMaster sheet column order (27 cols, 0-indexed).
-// NEVER reorder — use buildPalletRow_() to write rows by name, not by position.
+/**
+ * 33-col layout — identical to CFG.HEADERS.PALLET_MASTER.
+ * Indices 22-26 are Phase 3 SAP writeback columns added in the 28→33 migration.
+ * buildPalletRow_() maps by name, so callers that don't set the 5 new keys
+ * automatically get '' for those columns.
+ */
 var PM_HEADERS = [
-  'PalletID',             // 0
-  'ManufacturingOrder',   // 1
-  'Material',             // 2
-  'MaterialName',         // 3
-  'Batch',                // 4
-  'QtyPerPallet',         // 5
-  'Unit',                 // 6
-  'PalletSeq',            // 7
-  'TotalPallets',         // 8
-  'WorkCenter',           // 9
-  'ProductionDate',       // 10
-  'TotalQuantity',        // 11
-  'Plant',                // 12
-  'StorageLocation',      // 13
-  'QRPayload',            // 14
-  'Status',               // 15
-  'CreatedAt',            // 16
-  'PrintedAt',            // 17
-  'ScannedAt',            // 18
-  'ScannedBy',            // 19
-  'ScanStatus',           // 20
-  'GRMaterialDocument',   // 21
-  'QCStatus',             // 22
-  'QCResult',             // 23
-  'InspectionLot',        // 24
-  'LabelPrintedAt',       // 25
-  'UpdatedAt',            // 26
-  'QCResultNote'          // 27
+  'PalletID',               // 0
+  'ManufacturingOrder',      // 1
+  'Material',                // 2
+  'MaterialName',            // 3
+  'Batch',                   // 4
+  'QtyPerPallet',            // 5
+  'Unit',                    // 6
+  'PalletSeq',               // 7
+  'TotalPallets',            // 8
+  'WorkCenter',              // 9
+  'ProductionDate',          // 10
+  'TotalQuantity',           // 11
+  'Plant',                   // 12
+  'StorageLocation',         // 13
+  'QRPayload',               // 14
+  'Status',                  // 15
+  'CreatedAt',               // 16
+  'PrintedAt',               // 17
+  'ScannedAt',               // 18
+  'ScannedBy',               // 19
+  'ScanStatus',              // 20
+  'GRMaterialDocument',      // 21
+  'GRMaterialDocumentYear',  // 22 — Phase 3 writeback
+  'ConfirmationGroup',       // 23 — Phase 3 writeback
+  'ConfirmationCount',       // 24 — Phase 3 writeback
+  'ConfirmedAt',             // 25 — Phase 3 writeback
+  'ConfirmedBy',             // 26 — Phase 3 writeback
+  'QCStatus',                // 27
+  'QCResult',                // 28
+  'InspectionLot',           // 29
+  'LabelPrintedAt',          // 30
+  'UpdatedAt',               // 31
+  'QCResultNote'             // 32
 ];
 
 /**
- * Build a PalletMaster row array aligned to PM_HEADERS.
+ * Build a 33-col PalletMaster row array aligned to PM_HEADERS (= CFG layout).
  * values = object keyed by column name; missing keys get ''.
  * Always use this instead of positional arrays — immune to column reorder.
  */
@@ -472,6 +480,149 @@ function backfillCorruptedPalletRows_() {
 }
 
 // ============================================================================
+// 28→33 column migration (run once from Apps Script editor)
+// ============================================================================
+
+/**
+ * One-time migration: fix 28-col data vs 33-col header desync.
+ * Inserts 5 blank writeback columns at position 22 (GRMaterialDocumentYear …
+ * ConfirmedBy), shifting QCStatus+ data to its correct CFG position.
+ * Idempotent: skips if data already looks migrated.
+ * Run from Apps Script editor → select migratePalletMaster33Col → Run.
+ */
+function migratePalletMaster33Col() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName(PM_SHEET);
+  if (!sh) throw new Error('PalletMaster sheet not found');
+
+  // ── STEP 0: BACKUP ──────────────────────────────────────────────────────
+  var now = new Date();
+  var stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyyMMdd_HHmm');
+  var backupName = 'PalletMaster_BACKUP_' + stamp;
+  try {
+    var backupSh = sh.copyTo(ss);
+    backupSh.setName(backupName);
+    logEvent('MIGRATE', 'BACKUP', 'OK', 0, backupName);
+    Logger.log('STEP 0 BACKUP: created ' + backupName);
+  } catch (e) {
+    logEvent('MIGRATE', 'BACKUP', 'FAIL', 0, e.message);
+    throw new Error('STEP 0 BACKUP FAILED — migration aborted: ' + e.message);
+  }
+
+  // ── STEP 1: PRECONDITION RE-CHECK ───────────────────────────────────────
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  Logger.log('STEP 1: header length=' + hdr.length + ' header[22]=' + hdr[22]);
+
+  if (hdr.length !== 33 || hdr[22] !== 'GRMaterialDocumentYear') {
+    var msg = 'unexpected header: length=' + hdr.length + ' header[22]=' + hdr[22];
+    logEvent('MIGRATE', 'PRECONDITION', 'FAIL', 0, msg);
+    throw new Error('STEP 1 PRECONDITION FAILED — ' + msg);
+  }
+
+  // Check if already migrated: QCResult at CFG idx28 should hold 'PASS' for
+  // the known QC rows, AND ConfirmationGroup at idx23 should be blank.
+  if (sh.getLastRow() >= 2) {
+    var probe = sh.getRange(2, 1, sh.getLastRow() - 1, hdr.length).getValues();
+    var alreadyMigrated = probe.every(function(row) {
+      var confGroup = String(row[23] || '').trim();
+      var qcResult  = String(row[28] || '').trim();
+      var oldQcSlot = String(row[22] || '').trim(); // would be QCStatus if unmigrated
+      // Migrated = confGroup is blank/numeric AND old QC slot is not a QC status value
+      var QC_VALUES = { 'INSPECTED': 1, 'PASS': 1, 'FAIL': 1, 'HOLD': 1, 'REJECT': 1 };
+      return !QC_VALUES[oldQcSlot.toUpperCase()];
+    });
+
+    if (alreadyMigrated) {
+      logEvent('MIGRATE', 'SKIP', 'OK', 0, 'already migrated — no QC data at idx22');
+      Logger.log('STEP 1: already migrated — skipping');
+      return { status: 'SKIP', message: 'already migrated', backup: backupName };
+    }
+  }
+
+  Logger.log('STEP 1: precondition passed — data is 28-col aligned, proceeding');
+
+  // ── STEP 2: INSERT 5 COLUMNS ───────────────────────────────────────────
+  sh.insertColumnsBefore(23, 5);
+  Logger.log('STEP 2: inserted 5 columns before col 23');
+
+  // Overwrite header with the canonical 33-col CFG layout
+  var cfgHeaders = CFG.HEADERS.PALLET_MASTER;
+  sh.getRange(1, 1, 1, cfgHeaders.length)
+    .setValues([cfgHeaders])
+    .setFontWeight('bold')
+    .setBackground('#0b8043')
+    .setFontColor('#ffffff');
+  sh.setFrozenRows(1);
+
+  // Delete leftover columns beyond 33 (old header cols shifted right by the insert)
+  var totalAfterInsert = sh.getLastColumn();
+  if (totalAfterInsert > cfgHeaders.length) {
+    sh.deleteColumns(cfgHeaders.length + 1, totalAfterInsert - cfgHeaders.length);
+    Logger.log('STEP 2: deleted ' + (totalAfterInsert - cfgHeaders.length) + ' leftover columns');
+  }
+
+  // Plain-text format on WorkCenter column to prevent date auto-parse
+  var wcCol = cfgHeaders.indexOf('WorkCenter') + 1;
+  if (wcCol > 0) {
+    sh.getRange(1, wcCol, sh.getMaxRows(), 1).setNumberFormat('@');
+  }
+
+  logEvent('MIGRATE', 'SHIFT', 'OK', 0, 'inserted 5 cols at 23, header reset to CFG 33-col');
+  Logger.log('STEP 2: header overwritten with CFG.HEADERS.PALLET_MASTER (33 cols)');
+
+  // ── STEP 4: VERIFY ─────────────────────────────────────────────────────
+  var verifyIds = ['PL-1000036350-L01', 'PL-1000034813-L02'];
+  var newHdr = sh.getRange(1, 1, 1, cfgHeaders.length).getValues()[0];
+  var colByName = {};
+  newHdr.forEach(function(h, i) { colByName[h] = i; });
+
+  var allPass = true;
+  var dataRows = sh.getLastRow() >= 2
+    ? sh.getRange(2, 1, sh.getLastRow() - 1, cfgHeaders.length).getValues()
+    : [];
+
+  var expectations = {
+    ConfirmationGroup:      '',
+    ConfirmationCount:      '',
+    GRMaterialDocumentYear: '',
+    QCStatus:               'INSPECTED',
+    QCResult:               'PASS'
+  };
+
+  verifyIds.forEach(function(pid) {
+    var row = null;
+    for (var r = 0; r < dataRows.length; r++) {
+      if (String(dataRows[r][0] || '').trim() === pid) { row = dataRows[r]; break; }
+    }
+    if (!row) {
+      Logger.log('STEP 4 VERIFY ' + pid + ': row not found — may not have QC data, skip');
+      return;
+    }
+
+    Object.keys(expectations).forEach(function(col) {
+      var idx = colByName[col];
+      var actual   = String(row[idx] || '').trim();
+      var expected = expectations[col];
+      var ok = (actual === expected);
+      if (!ok) allPass = false;
+      Logger.log('STEP 4 ' + pid + ' ' + col + '(idx' + idx + '): ' +
+        (ok ? 'PASS' : 'FAIL') + ' expected="' + expected + '" actual="' + actual + '"');
+    });
+  });
+
+  if (allPass) {
+    logEvent('MIGRATE', 'VERIFY', 'OK', 0, 'all expectations passed for ' + verifyIds.join(', '));
+    Logger.log('STEP 4: ALL PASS');
+  } else {
+    logEvent('MIGRATE', 'VERIFY', 'FAIL', 0,
+      'some expectations failed — backup sheet: ' + backupName);
+    Logger.log('STEP 4: SOME CHECKS FAILED — restore from backup: ' + backupName);
+  }
+
+  return { status: allPass ? 'OK' : 'VERIFY_FAIL', backup: backupName };
+}
+
+// ============================================================================
 // Nuclear reset utilities (run once after schema corruption)
 // ============================================================================
 
@@ -505,7 +656,7 @@ function hardResetPalletMaster() {
   ui.alert('✅ Done', 'Deleted ' + dataRows + ' rows. Run "Rebuild PM Header" next.', ui.ButtonSet.OK);
 }
 
-/** Step 3b: Rebuild header row to match PM_HEADERS exactly (28 columns). Run from editor. */
+/** Step 3b: Rebuild header row to match PM_HEADERS exactly (33 columns). Run from editor. */
 function rebuildPalletMasterHeader() {
   var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
   var sh = ss.getSheetByName(PM_SHEET);
@@ -576,28 +727,7 @@ function backfillMaterialName() {
   Logger.log('backfillMaterialName: updated=' + updated + ' DRY_RUN=' + CFG.DRY_RUN);
 }
 
-/** Debug: verify material is in MaterialMaster and getMaterialMap() returns it */
-function debugMaterialName() {
-  var mat = 'STB1006-A0100S3XRX';
-
-  var map = getMaterialMap();
-  Logger.log('getMaterialMap result for ' + mat + ':');
-  Logger.log(JSON.stringify(map[mat] || 'NOT FOUND'));
-
-  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
-  var sh = ss.getSheetByName('MaterialMaster');
-  if (!sh) { Logger.log('MaterialMaster sheet NOT FOUND'); return; }
-  var data = sh.getDataRange().getValues();
-  var hdrs = data[0];
-  Logger.log('MaterialMaster headers: ' + JSON.stringify(hdrs));
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === mat) {
-      Logger.log('Found row ' + i + ': ' + JSON.stringify(data[i]));
-      return;
-    }
-  }
-  Logger.log('Material NOT FOUND in MaterialMaster: ' + mat);
-}
+// debugMaterialName → moved to Tests.gs
 
 function backfillWorkCenter() {
   var ss   = SpreadsheetApp.openById(CFG.SHEET_ID);
@@ -626,29 +756,7 @@ function backfillWorkCenter() {
   Logger.log('backfillWorkCenter: fixed ' + fixed + ' rows');
 }
 
-// ============================================================================
-// Debug utilities
-// ============================================================================
-
-/** Run from Editor → paste full output to confirm column names and data. */
-function debugPalletMasterSchema() {
-  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
-  var sh = ss.getSheetByName('PalletMaster');
-  if (!sh) { Logger.log('PalletMaster sheet NOT FOUND'); return; }
-
-  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-  Logger.log('PalletMaster lastRow=' + sh.getLastRow() +
-             ' lastCol=' + sh.getLastColumn());
-  Logger.log('PalletMaster headers: ' + JSON.stringify(headers));
-
-  if (sh.getLastRow() > 1) {
-    var row1 = sh.getRange(2, 1, 1, sh.getLastColumn()).getValues()[0];
-    Logger.log('Row 1 data: ' + JSON.stringify(row1));
-    headers.forEach(function(h, i) {
-      Logger.log('  [' + i + '] ' + h + ' = "' + row1[i] + '"');
-    });
-  }
-}
+// debugPalletMasterSchema → moved to Tests.gs
 
 /** สะดวกเรียกจากเมนู: gen เฉพาะ order เดียว */
 function generatePalletsForOrder() {

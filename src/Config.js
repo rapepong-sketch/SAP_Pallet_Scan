@@ -100,13 +100,15 @@ const CFG = {
     ],
 
     PALLET_MASTER: [
-      // Must match PM_HEADERS in PalletGen.gs exactly — setupSheets() uses this to write header row
+      // Single source of truth — PM_HEADERS in PalletGen.gs mirrors this 33-col layout
       'PalletID', 'ManufacturingOrder', 'Material', 'MaterialName', 'Batch',
       'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
       'WorkCenter', 'ProductionDate', 'TotalQuantity', 'Plant', 'StorageLocation',
       'QRPayload', 'Status', 'CreatedAt', 'PrintedAt',
       'ScannedAt', 'ScannedBy', 'ScanStatus',
-      'GRMaterialDocument', 'QCStatus', 'QCResult', 'InspectionLot',
+      'GRMaterialDocument', 'GRMaterialDocumentYear',
+      'ConfirmationGroup', 'ConfirmationCount', 'ConfirmedAt', 'ConfirmedBy',
+      'QCStatus', 'QCResult', 'InspectionLot',
       'LabelPrintedAt', 'UpdatedAt', 'QCResultNote'
     ],
 

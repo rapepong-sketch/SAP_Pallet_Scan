@@ -366,20 +366,7 @@ function parseSapDate_(v) {
   return m ? new Date(parseInt(m[1], 10)) : v;
 }
 
-/** สำหรับ Test Gate: ping SAP ด้วย GET เบา ๆ ($top=1) เช็ก credential + connectivity */
-function testSapConnection() {
-  // Use $top=1 with NO $select first — confirms EntitySet reachable
-  const data = sapGet(CFG.ENDPOINTS.PRODUCTION_ORDERS,
-    { '$top': '1' }, 'testSapConnection');
-  const results = (data.d || {}).results || [];
-  const n = results.length;
-  if (n > 0) {
-    console.log('SAP connection OK — sample row keys: ' + Object.keys(results[0]).join(', '));
-  } else {
-    console.log('SAP connection OK — 0 rows returned (check Plant filter or date range)');
-  }
-  return n;
-}
+// testSapConnection → moved to Tests.gs
 
 // ============================================================================
 // Phase 3 — CSRF session helper (explicit token+cookie pair, no shared cache)
@@ -452,24 +439,4 @@ function getCsrfSession_(serviceUrl) {
   }
 }
 
-/**
- * ทดสอบ getCsrfSession_() กับ API_PROD_ORDER_CONFIRMATION_2_SRV (Phase 3 — Order Confirmation)
- * รันจาก editor Run dropdown เพื่อ verify credential + CSRF handshake ก่อนต่อ POST จริง
- * Log เฉพาะข้อมูลปลอดภัย: token length, 4 ตัวอักษรแรกของ token, จำนวน cookie, ชื่อ cookie —
- * ห้าม log ค่า token/cookie เต็ม
- */
-function testCsrfSession() {
-  const serviceUrl = CFG.SAP_BASE_URL + CFG.SERVICES.PROD_ORDER_CONF;
-  try {
-    const session = getCsrfSession_(serviceUrl);
-    const cookieNames = session.cookies
-      ? session.cookies.split(';').map(function (c) { return c.split('=')[0].trim(); })
-      : [];
-    Logger.log('CSRF session OK — tokenLen=' + session.token.length +
-      ' tokenPrefix=' + session.token.slice(0, 4) +
-      ' cookieCount=' + cookieNames.length +
-      ' cookieNames=[' + cookieNames.join(', ') + ']');
-  } catch (err) {
-    Logger.log('testCsrfSession FAILED: ' + err.message);
-  }
-}
+// testCsrfSession → moved to Tests.gs

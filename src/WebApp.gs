@@ -20,6 +20,7 @@
  * Deploy: Execute as Me, Access: DOMAIN (or ANYONE — see appsscript.json)
  */
 function doGet(e) {
+
   return HtmlService.createTemplateFromFile('Scanner')
     .evaluate()
     .setTitle(CFG.WEB_APP_TITLE)
