@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <title>Admin — Confirm to SAP</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Sarabun', 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #1a1a2e; padding: 20px 24px; }
+
+    /* Header */
+    .header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+    .header h1 { font-size: 1.35em; font-weight: 700; }
+    .header .email { color: #666; font-size: 0.85em; margin-left: auto; }
+
+    /* Mode badges */
+    .badge { display: inline-block; padding: 4px 14px; border-radius: 4px; font-size: 0.85em; font-weight: 700; letter-spacing: 0.3px; }
+    .badge-dryrun  { background: #d4edda; color: #155724; border: 1px solid #28a745; }
+    .badge-live    { background: #f8d7da; color: #721c24; border: 2px solid #dc3545; font-size: 0.95em; animation: pulse-live 1.5s ease-in-out infinite; }
+    .badge-off     { background: #e2e3e5; color: #6c757d; border: 1px solid #adb5bd; }
+    @keyframes pulse-live { 0%,100% { box-shadow: 0 0 0 0 rgba(220,53,69,0.3); } 50% { box-shadow: 0 0 0 6px rgba(220,53,69,0); } }
+
+    /* Toolbar */
+    .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar .summary { font-size: 0.9em; color: #555; }
+    .toolbar .summary b { color: #1a1a2e; }
+    .idempotency-note { font-size: 0.78em; color: #888; margin-bottom: 14px; }
+
+    /* Buttons */
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 18px; border: none; border-radius: 6px; font-size: 0.9em; font-weight: 600; cursor: pointer; transition: background 0.15s, opacity 0.15s; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-danger  { background: #dc3545; color: #fff; }
+    .btn-danger:hover:not(:disabled) { background: #b02a37; }
+    .btn-secondary { background: #e9ecef; color: #495057; }
+    .btn-secondary:hover:not(:disabled) { background: #dee2e6; }
+    .btn-sm { padding: 3px 10px; font-size: 0.78em; border-radius: 4px; }
+
+    /* Table */
+    .table-wrap { background: #fff; border-radius: 8px; border: 1px solid #dee2e6; overflow-x: auto; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88em; }
+    thead { background: #f8f9fa; position: sticky; top: 0; z-index: 1; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #eee; white-space: nowrap; }
+    th { font-weight: 700; font-size: 0.82em; color: #555; text-transform: uppercase; letter-spacing: 0.3px; }
+    tr.not-ready td { color: #999; }
+    .reason { color: #dc3545; font-size: 0.82em; font-weight: 600; }
+    .qc-pass { color: #28a745; font-weight: 600; }
+    .qc-fail { color: #dc3545; font-weight: 600; }
+    tr:hover { background: #f8f9fa; }
+
+    /* Action bar */
+    .action-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+    .cap-warn { color: #dc3545; font-size: 0.85em; font-weight: 600; }
+
+    /* Spinner */
+    .spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid #dee2e6; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Modal overlay */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 100; justify-content: center; align-items: center; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: #fff; border-radius: 10px; padding: 24px 28px; max-width: 520px; width: 92%; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+    .modal h2 { font-size: 1.15em; margin-bottom: 14px; }
+    .modal .live-warn { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; font-size: 0.88em; color: #856404; font-weight: 600; }
+    .modal ul { list-style: none; margin-bottom: 16px; max-height: 200px; overflow-y: auto; }
+    .modal li { padding: 3px 0; font-size: 0.88em; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+    /* Result panel */
+    .result-panel { background: #fff; border-radius: 8px; border: 1px solid #dee2e6; padding: 18px 22px; margin-bottom: 16px; display: none; }
+    .result-panel.visible { display: block; }
+    .result-panel h3 { font-size: 1em; margin-bottom: 10px; }
+    .result-counts { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+    .result-counts span { font-size: 0.9em; font-weight: 600; }
+    .result-detail { font-size: 0.85em; margin-top: 6px; }
+    .result-detail .item { padding: 3px 0; }
+    .result-detail .item.fail { color: #dc3545; }
+    .result-detail .item.dry  { color: #6c757d; }
+    .result-detail .item.skip { color: #856404; }
+    .result-detail .item.ok   { color: #28a745; }
+
+    /* Progress */
+    .progress-bar { display: none; align-items: center; gap: 8px; padding: 14px 0; font-size: 0.9em; font-weight: 600; color: #2563eb; }
+    .progress-bar.visible { display: flex; }
+
+    /* Empty state */
+    .empty { text-align: center; padding: 40px 20px; color: #888; font-size: 0.95em; }
+
+    /* Error banner */
+    .error-banner { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 6px; padding: 10px 16px; margin-bottom: 14px; font-size: 0.88em; display: none; }
+    .error-banner.visible { display: block; }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <h1>PJ Chonburi — ยืนยันยอดเข้า SAP</h1>
+    <span class="badge" id="modeBadge">...</span>
+    <span class="email" id="userEmail"></span>
+  </div>
+
+  <!-- Error banner -->
+  <div class="error-banner" id="errorBanner"></div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <button class="btn btn-secondary" id="btnRefresh" onclick="loadList()">โหลดรายการ</button>
+    <span class="summary" id="summaryText"></span>
+  </div>
+  <div class="idempotency-note">หมายเหตุ: พาเลทที่ยืนยันแล้วจะไม่สามารถส่งซ้ำได้ (ระบบป้องกันการซ้ำอัตโนมัติ)</div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="chkAll" title="เลือกทั้งหมดที่พร้อม" onchange="toggleAll(this.checked)"></th>
+          <th>PalletID</th>
+          <th>MO</th>
+          <th>Material</th>
+          <th>จำนวน</th>
+          <th>Final Op</th>
+          <th>QC</th>
+          <th>สถานะ</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody">
+        <tr><td colspan="8" class="empty">กดปุ่ม "โหลดรายการ" เพื่อดูพาเลทที่พร้อมยืนยัน</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Action bar -->
+  <div class="action-bar">
+    <button class="btn btn-primary" id="btnSubmit" disabled onclick="openModal()">ส่งเข้า SAP (0)</button>
+    <span class="cap-warn" id="capWarn" style="display:none">เลือกได้สูงสุด 15 ใบต่อครั้ง</span>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-bar" id="progressBar">
+    <span class="spinner"></span>
+    <span>กำลังส่ง...</span>
+  </div>
+
+  <!-- Result panel -->
+  <div class="result-panel" id="resultPanel">
+    <h3>ผลการยืนยัน</h3>
+    <div class="result-counts" id="resultCounts"></div>
+    <div class="result-detail" id="resultDetail"></div>
+  </div>
+
+  <!-- Confirmation modal -->
+  <div class="modal-overlay" id="modalOverlay" onclick="closeModalOutside(event)">
+    <div class="modal" id="modal">
+      <h2>ยืนยันส่งเข้า SAP</h2>
+      <div id="modalLiveWarn" class="live-warn" style="display:none">
+        ⚠️ GR + backflush จะเกิดจริงใน SAP
+      </div>
+      <div id="modalMode" style="margin-bottom:10px; font-size:0.88em;"></div>
+      <div style="font-size:0.88em; margin-bottom:6px;">รายการที่เลือก (<span id="modalCount">0</span> ใบ):</div>
+      <ul id="modalList"></ul>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModal()">ยกเลิก</button>
+        <button class="btn btn-danger" id="btnConfirmSend" onclick="doConfirm()">ยืนยันส่ง</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  var pallets = [];
+  var flagState = { sapWriteEnabled: false, dryRun: true };
+  var uiLocked = false;
+
+  // ---- Init ----
+  google.script.run.withSuccessHandler(function(email) {
+    document.getElementById('userEmail').textContent = email || '(unknown)';
+  }).getActiveUserEmail();
+
+  loadFlags();
+
+  function loadFlags() {
+    google.script.run
+      .withSuccessHandler(function(f) {
+        flagState = f || { sapWriteEnabled: false, dryRun: true };
+        renderBadge();
+      })
+      .withFailureHandler(function(e) { showError('โหลดสถานะ flag ล้มเหลว: ' + e.message); })
+      .getSapStatus();
+  }
+
+  function renderBadge() {
+    var el = document.getElementById('modeBadge');
+    if (!flagState.sapWriteEnabled) {
+      el.className = 'badge badge-off';
+      el.textContent = 'SAP ปิด';
+    } else if (flagState.dryRun) {
+      el.className = 'badge badge-dryrun';
+      el.textContent = 'DRY-RUN (ทดสอบ — ไม่ส่งจริง)';
+    } else {
+      el.className = 'badge badge-live';
+      el.textContent = 'LIVE (ส่งเข้า SAP จริง)';
+    }
+  }
+
+  // ---- Load list ----
+  function loadList() {
+    if (uiLocked) return;
+    var btn = document.getElementById('btnRefresh');
+    btn.disabled = true;
+    btn.textContent = 'กำลังโหลด...';
+    hideError();
+    hideResult();
+
+    google.script.run
+      .withSuccessHandler(function(data) {
+        pallets = data || [];
+        renderTable();
+        updateSummary();
+        updateSubmitBtn();
+        btn.disabled = false;
+        btn.textContent = 'โหลดรายการ';
+      })
+      .withFailureHandler(function(e) {
+        showError('โหลดรายการล้มเหลว: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'โหลดรายการ';
+      })
+      .listConfirmablePallets();
+  }
+
+  // ---- Render table ----
+  function renderTable() {
+    var tbody = document.getElementById('tableBody');
+    if (!pallets.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">ไม่มีพาเลทที่รอยืนยัน</td></tr>';
+      document.getElementById('chkAll').checked = false;
+      return;
+    }
+
+    var html = '';
+    for (var i = 0; i < pallets.length; i++) {
+      var p = pallets[i];
+      var cls = p.ready ? '' : ' class="not-ready"';
+      var chk = p.ready
+        ? '<input type="checkbox" class="pallet-chk" data-idx="' + i + '" onchange="updateSubmitBtn()">'
+        : '<input type="checkbox" disabled title="' + esc(p.readyReason) + '">';
+
+      var qcCls = p.QCResult === 'PASS' ? 'qc-pass' : (p.QCResult === 'FAIL' ? 'qc-fail' : '');
+
+      var statusCell = '';
+      if (p.ready) {
+        statusCell = '<span style="color:#28a745;font-weight:600">พร้อม</span>';
+      } else {
+        statusCell = '<span class="reason">' + esc(p.readyReason) + '</span> ' +
+          '<button class="btn btn-secondary btn-sm" onclick="refreshOp(\'' + esc(p.ManufacturingOrder) + '\',this)" title="รีเฟรช FinalOperation">&#x1f504; Refresh</button>';
+      }
+
+      html += '<tr' + cls + '>' +
+        '<td>' + chk + '</td>' +
+        '<td>' + esc(p.PalletID) + '</td>' +
+        '<td>' + esc(p.ManufacturingOrder) + '</td>' +
+        '<td>' + esc(p.Material) + '</td>' +
+        '<td>' + p.QtyPerPallet + ' ' + esc(p.Unit) + '</td>' +
+        '<td>' + esc(p.finalOperation || '-') + '</td>' +
+        '<td class="' + qcCls + '">' + esc(p.QCResult || '-') + '</td>' +
+        '<td>' + statusCell + '</td>' +
+        '</tr>';
+    }
+    tbody.innerHTML = html;
+    document.getElementById('chkAll').checked = false;
+  }
+
+  // ---- Refresh single order operation cache ----
+  function refreshOp(mo, btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+    google.script.run
+      .withSuccessHandler(function() {
+        loadList();
+      })
+      .withFailureHandler(function(e) {
+        showError('Refresh ล้มเหลว (' + mo + '): ' + e.message);
+        btn.disabled = false;
+        btn.textContent = '\u{1f504} Refresh';
+      })
+      .refreshOrderOperationCache(mo);
+  }
+
+  // ---- Select all ----
+  function toggleAll(checked) {
+    var boxes = document.querySelectorAll('.pallet-chk');
+    for (var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+    updateSubmitBtn();
+  }
+
+  // ---- Get ticked pallet IDs ----
+  function getTickedIds() {
+    var ids = [];
+    var boxes = document.querySelectorAll('.pallet-chk');
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked) {
+        ids.push(pallets[parseInt(boxes[i].getAttribute('data-idx'))].PalletID);
+      }
+    }
+    return ids;
+  }
+
+  function getTickedPallets() {
+    var items = [];
+    var boxes = document.querySelectorAll('.pallet-chk');
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked) {
+        items.push(pallets[parseInt(boxes[i].getAttribute('data-idx'))]);
+      }
+    }
+    return items;
+  }
+
+  // ---- Update submit button ----
+  function updateSubmitBtn() {
+    var ids = getTickedIds();
+    var n = ids.length;
+    var btn = document.getElementById('btnSubmit');
+    var warn = document.getElementById('capWarn');
+
+    btn.textContent = 'ส่งเข้า SAP (' + n + ')';
+
+    if (n === 0) {
+      btn.disabled = true;
+      warn.style.display = 'none';
+    } else if (n > 15) {
+      btn.disabled = true;
+      warn.style.display = 'inline';
+    } else {
+      btn.disabled = false;
+      warn.style.display = 'none';
+    }
+  }
+
+  // ---- Update summary ----
+  function updateSummary() {
+    var ready = 0, notReady = 0;
+    for (var i = 0; i < pallets.length; i++) {
+      if (pallets[i].ready) ready++; else notReady++;
+    }
+    var el = document.getElementById('summaryText');
+    el.innerHTML = 'พร้อมส่ง <b>' + ready + '</b> / ไม่พร้อม <b>' + notReady + '</b> (ทั้งหมด ' + pallets.length + ')';
+  }
+
+  // ---- Modal ----
+  function openModal() {
+    var items = getTickedPallets();
+    if (!items.length) return;
+
+    loadFlags();
+
+    document.getElementById('modalCount').textContent = items.length;
+
+    var modeText = '';
+    if (!flagState.sapWriteEnabled) {
+      modeText = 'โหมด: SAP ปิด — จะไม่ส่งจริง';
+    } else if (flagState.dryRun) {
+      modeText = 'โหมด: DRY-RUN — จะไม่ส่งจริง';
+    } else {
+      modeText = 'โหมด: LIVE — ส่งเข้า SAP จริง';
+    }
+    document.getElementById('modalMode').textContent = modeText;
+
+    var isLive = flagState.sapWriteEnabled && !flagState.dryRun;
+    document.getElementById('modalLiveWarn').style.display = isLive ? 'block' : 'none';
+
+    var ul = document.getElementById('modalList');
+    var html = '';
+    for (var i = 0; i < items.length; i++) {
+      html += '<li>' + esc(items[i].PalletID) + ' — ' + items[i].QtyPerPallet + ' ' + esc(items[i].Unit) + '</li>';
+    }
+    ul.innerHTML = html;
+
+    document.getElementById('modalOverlay').classList.add('open');
+  }
+
+  function closeModal() {
+    document.getElementById('modalOverlay').classList.remove('open');
+  }
+
+  function closeModalOutside(e) {
+    if (e.target === document.getElementById('modalOverlay')) closeModal();
+  }
+
+  // ---- Confirm and send ----
+  function doConfirm() {
+    var ids = getTickedIds();
+    if (!ids.length) return;
+
+    closeModal();
+    lockUI(true);
+    hideResult();
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        lockUI(false);
+        if (result.error) {
+          showError(result.message || result.error);
+          return;
+        }
+        showResult(result);
+        loadList();
+      })
+      .withFailureHandler(function(e) {
+        lockUI(false);
+        showError('เกิดข้อผิดพลาด: ' + e.message);
+      })
+      .batchConfirmPallets(ids);
+  }
+
+  // ---- Lock/unlock UI ----
+  function lockUI(lock) {
+    uiLocked = lock;
+    document.getElementById('btnSubmit').disabled = lock;
+    document.getElementById('btnRefresh').disabled = lock;
+    document.getElementById('progressBar').classList.toggle('visible', lock);
+    var boxes = document.querySelectorAll('.pallet-chk');
+    for (var i = 0; i < boxes.length; i++) boxes[i].disabled = lock;
+    document.getElementById('chkAll').disabled = lock;
+  }
+
+  // ---- Result panel ----
+  function showResult(r) {
+    var panel = document.getElementById('resultPanel');
+    var counts = document.getElementById('resultCounts');
+    var detail = document.getElementById('resultDetail');
+
+    counts.innerHTML =
+      '<span style="color:#28a745">✅ ยืนยัน ' + r.confirmed.length + '</span>' +
+      '<span style="color:#856404">⏭️ ข้าม ' + r.skipped.length + '</span>' +
+      '<span style="color:#dc3545">❌ ผิดพลาด ' + r.failed.length + '</span>' +
+      (r.dryRun.length ? '<span style="color:#6c757d">🧪 DRY-RUN ' + r.dryRun.length + '</span>' : '');
+
+    var html = '';
+    for (var i = 0; i < r.confirmed.length; i++) {
+      var c = r.confirmed[i];
+      html += '<div class="item ok">✅ ' + esc(c.palletId) +
+        ' — MatDoc: ' + esc(c.materialDocument || '-') +
+        ', ConfGroup: ' + esc(c.confirmationGroup || '-') + '</div>';
+    }
+    for (var i = 0; i < r.skipped.length; i++) {
+      var s = r.skipped[i];
+      html += '<div class="item skip">⏭️ ' + esc(s.palletId) + ' — ' + esc(s.reason) + '</div>';
+    }
+    for (var i = 0; i < r.failed.length; i++) {
+      var f = r.failed[i];
+      html += '<div class="item fail">❌ ' + esc(f.palletId) + ' — ' + esc(f.error) + '</div>';
+    }
+    for (var i = 0; i < r.dryRun.length; i++) {
+      var d = r.dryRun[i];
+      html += '<div class="item dry">🧪 ' + esc(d.palletId) + ' — DRY-RUN: ไม่ได้ส่งจริง</div>';
+    }
+    detail.innerHTML = html;
+    panel.classList.add('visible');
+  }
+
+  function hideResult() {
+    document.getElementById('resultPanel').classList.remove('visible');
+  }
+
+  // ---- Error banner ----
+  function showError(msg) {
+    var el = document.getElementById('errorBanner');
+    el.textContent = msg;
+    el.classList.add('visible');
+  }
+
+  function hideError() {
+    document.getElementById('errorBanner').classList.remove('visible');
+  }
+
+  // ---- Escape HTML ----
+  function esc(s) {
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(String(s || '')));
+    return d.innerHTML;
+  }
+</script>
+</body>
+</html>

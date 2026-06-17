@@ -1,9 +1,10 @@
 /**
- * Confirmation.gs — Phase 3 Step 2c: SAP Order Confirmation POST + Readback
- * ==========================================================================
- * Builds the API_PROD_ORDER_CONFIRMATION_2_SRV payload for a QC-passed pallet,
- * POSTs it to SAP (gated by SAP_WRITE_ENABLED + DRY_RUN flags), reads back the
- * MaterialDocument from the confirmation, and writes results to PalletMaster.
+ * Confirmation.gs — Phase 3 Step 2c/2d: SAP Order Confirmation + Batch Confirm
+ * ==============================================================================
+ * Step 2c: Builds the API_PROD_ORDER_CONFIRMATION_2_SRV payload for a QC-passed
+ * pallet, POSTs to SAP (gated by SAP_WRITE_ENABLED + DRY_RUN), reads back
+ * MaterialDocument, writes results to PalletMaster.
+ * Step 2d: Admin batch confirmation — listConfirmablePallets() + batchConfirmPallets().
  *
  * Reuses:
  *  - lookupPalletById_()        (PalletSheet.gs)      — PalletMaster row by PalletID
@@ -194,6 +195,9 @@ function postConfirmation_(payload) {
  * created by the confirmation (Goods Receipt) from the confirmation's navigation
  * property to_ProdnOrdConfMatlDocItm.
  *
+ * Retries up to 3 times with 2 s sleep between attempts — the GR material
+ * document may post asynchronously after the confirmation response.
+ *
  * Reuses the SAME session (cookies) from the POST for session affinity.
  * Does NOT throw on failure — the confirmation itself already succeeded.
  *
@@ -209,39 +213,47 @@ function readMaterialDocument_(confirmationGroup, confirmationCount, session) {
 
   var url = buildSapUrl_(entityPath, { '$format': 'json' });
   var creds = getSapCredentials_();
+  var MAX_ATTEMPTS = 3;
 
-  var resp = UrlFetchApp.fetch(url, {
-    method: 'get',
-    headers: {
-      'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
-      'Cookie': session.cookies
-    },
-    muteHttpExceptions: true
-  });
+  for (var attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      Utilities.sleep(2000);
+    }
+    logEvent('READBACK', 'RETRY', 'attempt ' + attempt + ' group=' + confirmationGroup);
 
-  var code = resp.getResponseCode();
-  var body = resp.getContentText();
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: {
+        'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+        'Cookie': session.cookies
+      },
+      muteHttpExceptions: true
+    });
 
-  if (code < 200 || code >= 300) {
-    logEvent('CONFIRM', 'WARN', 'matDoc readback HTTP ' + code + ': ' + body.slice(0, 200));
-    return { materialDocument: '', materialDocumentYear: '' };
-  }
+    var code = resp.getResponseCode();
+    var body = resp.getContentText();
 
-  var parsed = JSON.parse(body);
-  var results = (parsed.d && parsed.d.results) || [];
+    if (code < 200 || code >= 300) {
+      logEvent('CONFIRM', 'WARN', 'matDoc readback HTTP ' + code + ' attempt ' + attempt + ': ' + body.slice(0, 200));
+      continue;
+    }
 
-  for (var i = 0; i < results.length; i++) {
-    var md = results[i].MaterialDocument || '';
-    if (md) {
-      logEvent('CONFIRM', 'READBACK', 'matDoc=' + md + ' year=' + (results[i].MaterialDocumentYear || ''));
-      return {
-        materialDocument: md,
-        materialDocumentYear: results[i].MaterialDocumentYear || ''
-      };
+    var parsed = JSON.parse(body);
+    var results = (parsed.d && parsed.d.results) || [];
+
+    for (var i = 0; i < results.length; i++) {
+      var md = results[i].MaterialDocument || '';
+      if (md) {
+        logEvent('CONFIRM', 'READBACK', 'matDoc=' + md + ' year=' + (results[i].MaterialDocumentYear || '') + ' attempt=' + attempt);
+        return {
+          materialDocument: md,
+          materialDocumentYear: results[i].MaterialDocumentYear || ''
+        };
+      }
     }
   }
 
-  logEvent('CONFIRM', 'WARN', 'no material doc in readback');
+  logEvent('CONFIRM', 'WARN', 'no material doc after ' + MAX_ATTEMPTS + ' retries group=' + confirmationGroup);
   return { materialDocument: '', materialDocumentYear: '' };
 }
 
@@ -314,3 +326,246 @@ function confirmPallet(palletId) {
 }
 
 // testConfirmPallet → moved to Tests.gs
+
+// ============================================================================
+// Phase 3 Step 2d — Admin Batch Confirmation (backend)
+// ============================================================================
+
+/**
+ * Return all PalletMaster rows eligible for confirmation (ScanStatus === 'QC_COMPLETE').
+ * Each object includes a readiness check (FinalOperation cached + QtyPerPallet valid).
+ * READ-ONLY — does not POST anything.
+ * @return {Array<{PalletID:string, ManufacturingOrder:string, Material:string,
+ *   QtyPerPallet:number, Unit:string, WorkCenter:string, QCResult:string,
+ *   PalletSeq:number, finalOperation:string, ready:boolean, readyReason:string}>}
+ */
+function listConfirmablePallets() {
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  var required = ['PalletID', 'ManufacturingOrder', 'Material', 'QtyPerPallet',
+                  'Unit', 'WorkCenter', 'QCResult', 'PalletSeq', 'ScanStatus'];
+  for (var k = 0; k < required.length; k++) {
+    if (idx[required[k]] === undefined) {
+      logEvent('BATCH_CONFIRM', 'ERROR', 'Missing column: ' + required[k]);
+      return [];
+    }
+  }
+
+  var results = [];
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r];
+    var status = String(row[idx['ScanStatus']] || '').trim();
+    if (status !== 'QC_COMPLETE') continue;
+
+    var mo  = String(row[idx['ManufacturingOrder']] || '').trim();
+    var qty = Number(row[idx['QtyPerPallet']]) || 0;
+
+    var finalOp = getFinalOperationCached_(mo);
+    var ready = true;
+    var readyReason = '';
+
+    if (!finalOp) {
+      ready = false;
+      readyReason = 'FinalOperation not cached';
+    } else if (qty <= 0) {
+      ready = false;
+      readyReason = 'QtyPerPallet invalid';
+    }
+
+    var wc = row[idx['WorkCenter']];
+    results.push({
+      PalletID:           String(row[idx['PalletID']] || '').trim(),
+      ManufacturingOrder: mo,
+      Material:           String(row[idx['Material']] || '').trim(),
+      QtyPerPallet:       qty,
+      Unit:               String(row[idx['Unit']] || '').trim(),
+      WorkCenter:         (wc instanceof Date) ? dateToWorkCenter_(wc) : String(wc || '').trim(),
+      QCResult:           String(row[idx['QCResult']] || '').trim(),
+      PalletSeq:          Number(row[idx['PalletSeq']]) || 0,
+      finalOperation:     finalOp,
+      ready:              ready,
+      readyReason:        readyReason
+    });
+  }
+
+  results.sort(function(a, b) {
+    if (a.ManufacturingOrder < b.ManufacturingOrder) return -1;
+    if (a.ManufacturingOrder > b.ManufacturingOrder) return  1;
+    return a.PalletSeq - b.PalletSeq;
+  });
+
+  logEvent('BATCH_CONFIRM', 'LIST', 'found ' + results.length + ' confirmable pallets');
+  return results;
+}
+
+/**
+ * Confirm a batch of pallets by delegating each to confirmPallet().
+ * Fail-soft: one pallet's failure does not abort the batch.
+ * Safety cap: max 15 pallets per call (GAS ~6min execution limit).
+ *
+ * @param {string[]} palletIds — array of PalletID strings
+ * @return {{total:number, confirmed:Array, skipped:Array, failed:Array, dryRun:Array}|
+ *          {error:string, message:string, requested:number}}
+ */
+function batchConfirmPallets(palletIds) {
+  if (!Array.isArray(palletIds) || palletIds.length === 0) {
+    return { total: 0, confirmed: [], skipped: [], failed: [], dryRun: [] };
+  }
+
+  if (palletIds.length > 15) {
+    logEvent('BATCH_CONFIRM', 'BLOCKED', 'requested ' + palletIds.length + ' pallets (cap 15)');
+    return {
+      error: 'TOO_MANY',
+      message: 'Select 15 or fewer per batch to avoid timeout',
+      requested: palletIds.length
+    };
+  }
+
+  var confirmed = [];
+  var skipped   = [];
+  var failed    = [];
+  var dryRun    = [];
+
+  for (var i = 0; i < palletIds.length; i++) {
+    var pid = String(palletIds[i]).trim();
+    try {
+      var result = confirmPallet(pid);
+
+      if (result.ok) {
+        confirmed.push({
+          palletId:          pid,
+          materialDocument:  result.materialDocument || '',
+          confirmationGroup: result.confirmationGroup || '',
+          confirmationCount: result.confirmationCount || ''
+        });
+      } else if (result.alreadyConfirmed) {
+        skipped.push({ palletId: pid, reason: 'already confirmed' });
+      } else if (result.dryRun) {
+        dryRun.push({ palletId: pid, payload: result.payload || null });
+      } else if (result.skipped) {
+        skipped.push({ palletId: pid, reason: 'write disabled' });
+      }
+
+    } catch (e) {
+      logEvent('BATCH_CONFIRM', 'FAIL', pid + ' ' + e.message);
+      failed.push({ palletId: pid, error: e.message });
+    }
+  }
+
+  logEvent('BATCH_CONFIRM', 'SUMMARY',
+    'confirmed=' + confirmed.length +
+    ' skipped=' + skipped.length +
+    ' failed=' + failed.length +
+    ' dryRun=' + dryRun.length);
+
+  return {
+    total:     palletIds.length,
+    confirmed: confirmed,
+    skipped:   skipped,
+    failed:    failed,
+    dryRun:    dryRun
+  };
+}
+
+/**
+ * Test harness: list confirmable pallets and log the results.
+ */
+function testListConfirmable() {
+  var pallets = listConfirmablePallets();
+  Logger.log('Confirmable pallets: ' + pallets.length);
+  Logger.log(JSON.stringify(pallets, null, 2));
+}
+
+// ============================================================================
+// GRMaterialDocument backfill — READ-only against SAP, write to sheet
+// ============================================================================
+
+/**
+ * Backfill GRMaterialDocument for a pallet that was confirmed but has an empty
+ * material document (readback fired before SAP finished posting the GR).
+ * READ-only against SAP — does NOT re-POST any confirmation.
+ *
+ * @param {string} palletId
+ * @return {{found:boolean, materialDocument:string, materialDocumentYear:string}}
+ */
+function backfillMaterialDocument(palletId) {
+  palletId = String(palletId || '').trim();
+  if (!palletId) throw new Error('backfillMaterialDocument: palletId is required');
+
+  // ---- Read ConfirmationGroup + ConfirmationCount by column name ----
+  var sh  = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) throw new Error('PalletMaster sheet missing or empty');
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  var targetRow = -1;
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][idx['PalletID']] || '').trim() === palletId) {
+      targetRow = r;
+      break;
+    }
+  }
+  if (targetRow < 0) throw new Error('PalletID not found in PalletMaster: ' + palletId);
+
+  var group = String(data[targetRow][idx['ConfirmationGroup']] || '').trim();
+  var count = String(data[targetRow][idx['ConfirmationCount']] || '').trim();
+
+  if (!group || !count) {
+    throw new Error('no confirmation group on pallet');
+  }
+
+  // ---- Readback from SAP ----
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.PROD_ORDER_CONF;
+  var session = getCsrfSession_(serviceRoot);
+  var matDoc  = readMaterialDocument_(group, count, session);
+
+  if (matDoc.materialDocument) {
+    // ---- Write back to PalletMaster ----
+    updatePalletScanFields_(palletId, {
+      GRMaterialDocument:     matDoc.materialDocument,
+      GRMaterialDocumentYear: matDoc.materialDocumentYear
+    });
+    logEvent('BACKFILL', 'OK', palletId + ' matDoc=' + matDoc.materialDocument);
+    return {
+      found: true,
+      materialDocument: matDoc.materialDocument,
+      materialDocumentYear: matDoc.materialDocumentYear
+    };
+  }
+
+  logEvent('BACKFILL', 'WARN', palletId + ' still empty');
+  return { found: false, materialDocument: '', materialDocumentYear: '' };
+}
+
+/**
+ * Test harness: backfill GRMaterialDocument for PL-1000035952-L01 and verify.
+ */
+function testBackfillOne() {
+  var PALLET_ID = 'PL-1000035952-L01';
+  var result = backfillMaterialDocument(PALLET_ID);
+  Logger.log('backfillMaterialDocument result: ' + JSON.stringify(result));
+
+  // Re-read the row directly to verify both columns were written
+  var sh   = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][idx['PalletID']] || '').trim() === PALLET_ID) {
+      Logger.log('After backfill — GRMaterialDocument: ' + (data[r][idx['GRMaterialDocument']] || ''));
+      Logger.log('After backfill — GRMaterialDocumentYear: ' + (data[r][idx['GRMaterialDocumentYear']] || ''));
+      break;
+    }
+  }
+}

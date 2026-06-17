@@ -1,14 +1,19 @@
 /**
- * WebApp.gs — Phase 3 Step 1: Mobile Scanner Web App
+ * WebApp.gs — Phase 3: Mobile Scanner + Admin Web App
  * ====================================================
- * Phase 3 — Step 1
+ * Phase 3 — Step 1 + Step 2d
  *
- * doGet() serves Scanner.html as the mobile QR scanner UI.
+ * doGet() routes by ?app= query param:
+ *   ?app=scan    → Scanner.html        (operators, no restriction)
+ *   ?app=print   → AdminPrint.html     (admin only)
+ *   ?app=confirm → AdminConfirm.html   (admin only)
+ *   (default)    → scan
+ *
+ * Admin pages gated by CFG.ADMIN_EMAILS allowlist + isAdminUser_().
  * Backend functions (lookupPallet, confirmScan, getSapStatus) are called
  * via google.script.run from Scanner.html.
  *
  * SAP gate: all SAP write paths check sapWriteEnabled_() + isDryRun_() from Flags.gs.
- * Step 1 scope: local writes only — no SAP calls.
  */
 
 // ============================================================================
@@ -16,14 +21,46 @@
 // ============================================================================
 
 /**
- * Serve Scanner.html as the mobile web app.
+ * Route web app requests by ?app= parameter.
  * Deploy: Execute as Me, Access: DOMAIN (or ANYONE — see appsscript.json)
  */
 function doGet(e) {
+  var app = String((e && e.parameter && e.parameter.app) || 'scan').toLowerCase();
 
-  return HtmlService.createTemplateFromFile('Scanner')
+  // --- Operator page (no auth gate) ---
+  if (app === 'scan') {
+    return HtmlService.createTemplateFromFile('Scanner')
+      .evaluate()
+      .setTitle(CFG.WEB_APP_TITLE)
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
+  // --- Admin pages (auth gate) ---
+  var adminPages = {
+    print:   { file: 'AdminPrint',   title: 'Admin — Print Pallet Sheets' },
+    confirm: { file: 'AdminConfirm', title: 'Admin — Confirm to SAP' }
+  };
+
+  var page = adminPages[app];
+  if (!page) {
+    return HtmlService.createHtmlOutput('<h2>404 — Unknown page: ' + app + '</h2>')
+      .setTitle('Not Found');
+  }
+
+  if (!isAdminUser_()) {
+    var email = '';
+    try { email = Session.getActiveUser().getEmail() || ''; } catch (_) {}
+    return HtmlService.createHtmlOutput(
+      '<h2>Access Denied</h2>' +
+      '<p>This page is restricted to authorized administrators.</p>' +
+      '<p>Signed in as: <strong>' + (email || '(no email detected)') + '</strong></p>'
+    ).setTitle('Access Denied');
+  }
+
+  return HtmlService.createTemplateFromFile(page.file)
     .evaluate()
-    .setTitle(CFG.WEB_APP_TITLE)
+    .setTitle(page.title)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
@@ -34,8 +71,52 @@ function include(filename) {
 }
 
 // ============================================================================
-// Backend API — called by google.script.run from Scanner.html
+// Auth helpers
 // ============================================================================
+
+/**
+ * Check if the current user is an admin.
+ * Returns true if ADMIN_LOCK_ENABLED is false (open mode), or if the
+ * user's email is in CFG.ADMIN_EMAILS (case-insensitive).
+ * Fail-closed: empty email = not admin (unless lock disabled).
+ * @return {boolean}
+ */
+function isAdminUser_() {
+  if (CFG.ADMIN_LOCK_ENABLED === false) {
+    logEvent('AUTH', 'Admin', 'OK_UNLOCKED', 0, '(lock disabled)');
+    return true;
+  }
+  var email = '';
+  try { email = Session.getActiveUser().getEmail() || ''; } catch (_) {}
+  var isAdmin = email !== '' && CFG.ADMIN_EMAILS.some(function (a) {
+    return a.toLowerCase() === email.toLowerCase();
+  });
+  logEvent('AUTH', 'Admin', isAdmin ? 'OK' : 'DENY', 0, email || '(no email)');
+  return isAdmin;
+}
+
+/**
+ * Test helper — run from Apps Script editor to verify auth setup.
+ * Logs current user email, lock state, and admin check result.
+ */
+function whoAmI() {
+  var email = '';
+  try { email = Session.getActiveUser().getEmail() || '(empty)'; } catch (e) { email = '(error: ' + e.message + ')'; }
+  var isAdmin = isAdminUser_();
+  Logger.log('Email:              ' + email);
+  Logger.log('ADMIN_LOCK_ENABLED: ' + CFG.ADMIN_LOCK_ENABLED);
+  Logger.log('isAdminUser_():     ' + isAdmin);
+  Logger.log('ADMIN_EMAILS:       ' + JSON.stringify(CFG.ADMIN_EMAILS));
+}
+
+// ============================================================================
+// Backend API — called by google.script.run from HTML pages
+// ============================================================================
+
+/** Return active user email for admin page display. */
+function getActiveUserEmail() {
+  try { return Session.getActiveUser().getEmail() || ''; } catch (_) { return ''; }
+}
 
 /**
  * Return current SAP flag status for the UI badge.

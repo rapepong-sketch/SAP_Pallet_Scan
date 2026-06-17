@@ -61,6 +61,14 @@ const CFG = {
   // ---- Phase 3: Web app --------------------------------------------------
   WEB_APP_TITLE: 'ใบติดตามพาเลท - PJ Chonburi',
 
+  /**
+   * Admin email allowlist — add emails here to grant access to admin pages
+   * (?app=print, ?app=confirm). Case-insensitive match.
+   * Set ADMIN_LOCK_ENABLED = false for temporary open access (all users = admin).
+   */
+  ADMIN_EMAILS: ['pc@pjwood.org'],
+  ADMIN_LOCK_ENABLED: true,
+
   // ---- Sheet names ---------------------------------------------------------
   SHEETS: {
     CONFIG:            'Config',

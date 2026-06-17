@@ -748,3 +748,105 @@ function refreshOrderOperationCache(mo) {
 }
 
 // testRefreshOneOrder → moved to Tests.gs
+
+// ============================================================================
+// BULK CACHE REFRESH — backfill FinalOperation for orders synced before that
+// column existed. Reuses refreshOrderOperationCache() per order; fail-soft.
+// ============================================================================
+
+/**
+ * Scan ProductionOrders for rows with empty FinalOperation and backfill them
+ * by calling refreshOrderOperationCache() for each. Fail-soft: one bad order
+ * does not stop the batch. Respects GAS ~6 min limit via 'limit' cap + sleep.
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.limit=25] — max orders to process per run
+ * @param {boolean} [opts.dryRun=false] — if true, only report stale count + sample MOs
+ * @return {{staleTotal:number, processed:number, refreshed:number, failed:Array, remaining:number}}
+ */
+function bulkRefreshStaleFinalOperations(opts) {
+  const fn = 'bulkRefreshStaleFinalOperations';
+  opts = opts || {};
+  const limit  = opts.limit  || 25;
+  const dryRun = opts.dryRun || false;
+  const t0 = Date.now();
+
+  try {
+    const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) {
+      logEvent(fn, 'BULK_REFRESH', 'INFO', Date.now() - t0, 'No data rows in ProductionOrders');
+      return { staleTotal: 0, processed: 0, refreshed: 0, failed: [], remaining: 0 };
+    }
+
+    const hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    const moCol = hdr.indexOf('ManufacturingOrder');
+    const foCol = hdr.indexOf('FinalOperation');
+    if (moCol === -1) throw new Error('ManufacturingOrder column not found');
+    if (foCol === -1) throw new Error('FinalOperation column not found');
+
+    const data = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
+    const staleMOs = [];
+    for (let i = 0; i < data.length; i++) {
+      const mo = String(data[i][moCol] || '').trim();
+      const fo = String(data[i][foCol] || '').trim();
+      if (mo && !fo) staleMOs.push(mo);
+    }
+
+    const staleTotal = staleMOs.length;
+
+    if (dryRun) {
+      const sample = staleMOs.slice(0, limit);
+      logEvent(fn, 'BULK_REFRESH', 'DRY_RUN', Date.now() - t0,
+        'stale=' + staleTotal + ' sample=' + sample.join(','));
+      Logger.log('[DRY_RUN] bulkRefreshStaleFinalOperations: ' +
+        staleTotal + ' stale orders found. Sample (first ' + sample.length + '): ' +
+        JSON.stringify(sample));
+      return { staleTotal: staleTotal, processed: 0, refreshed: 0, failed: [], remaining: staleTotal, sample: sample };
+    }
+
+    const batch = staleMOs.slice(0, limit);
+    let refreshed = 0;
+    const failed = [];
+
+    for (let i = 0; i < batch.length; i++) {
+      const mo = batch[i];
+      try {
+        const result = refreshOrderOperationCache(mo);
+        refreshed++;
+        Logger.log('[BULK] refreshed ' + mo + ' → finalOp=' + result.finalOperation);
+      } catch (e) {
+        failed.push({ mo: mo, error: e.message });
+        Logger.log('[BULK] FAILED ' + mo + ': ' + e.message);
+      }
+      if (i < batch.length - 1) Utilities.sleep(200);
+    }
+
+    const remaining = staleTotal - batch.length;
+    logEvent(fn, 'BULK_REFRESH', 'SUMMARY', Date.now() - t0,
+      'refreshed=' + refreshed + ' failed=' + failed.length + ' remaining=' + remaining);
+    Logger.log('[BULK] done: refreshed=' + refreshed + ' failed=' + failed.length +
+      ' remaining=' + remaining + ' of ' + staleTotal + ' total stale');
+
+    return {
+      staleTotal: staleTotal,
+      processed: batch.length,
+      refreshed: refreshed,
+      failed: failed,
+      remaining: remaining
+    };
+
+  } catch (e) {
+    logError(fn, 'BULK_REFRESH', e.message, '');
+    throw e;
+  }
+}
+
+/**
+ * Dry-run test — shows how many stale orders exist and sample MOs.
+ * Run this first to see the scope before any live SAP fetch.
+ */
+function testBulkRefreshDryRun() {
+  const result = bulkRefreshStaleFinalOperations({ dryRun: true });
+  Logger.log('testBulkRefreshDryRun result: ' + JSON.stringify(result, null, 2));
+}

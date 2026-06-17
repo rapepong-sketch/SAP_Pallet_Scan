@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <title>Admin — Print Pallet Sheets</title>
+  <style>
+    body { font-family: 'Sarabun', Arial, sans-serif; background: #eef2f7; color: #2c3e50; padding: 24px; }
+    h1 { font-size: 1.4em; margin-bottom: 12px; }
+    .email { color: #666; font-size: 0.9em; margin-bottom: 16px; }
+    .placeholder { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 24px; text-align: center; color: #888; }
+  </style>
+</head>
+<body>
+  <h1>🖨️ Admin — Print Pallet Sheets</h1>
+  <div class="email" id="userEmail"></div>
+  <div class="placeholder">UI coming in next step.</div>
+  <script>
+    google.script.run.withSuccessHandler(function(email) {
+      document.getElementById('userEmail').textContent = 'Signed in as: ' + (email || '(unknown)');
+    }).getActiveUserEmail();
+  </script>
+</body>
+</html>
