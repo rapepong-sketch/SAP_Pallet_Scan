@@ -13,6 +13,20 @@
  */
 
 /**
+ * Normalize an operation value to a 4-digit zero-padded string (e.g. "30" → "0030").
+ * @param {string|number} v — raw operation from cache (may be numeric or string)
+ * @return {string} 4-digit zero-padded operation string
+ */
+function padOperation_(v) {
+  var op = String(v).trim().replace(/\D/g, '');
+  op = ('0000' + op).slice(-4);
+  if (op === '0000') {
+    throw new Error('padOperation_: invalid operation value "' + v + '" resolved to 0000');
+  }
+  return op;
+}
+
+/**
  * Build the SAP order confirmation payload for one QC-passed pallet.
  * Pure read + transform — does not call SAP or write any sheet.
  * @param {string} palletId
@@ -47,7 +61,7 @@ function buildConfirmationPayload_(palletId) {
 
   return {
     OrderID:                   orderId,
-    OrderOperation:            finalOp,
+    OrderOperation:            padOperation_(finalOp),
     Sequence:                  '0',
     ConfirmationYieldQuantity: String(qty),
     ConfirmationScrapQuantity: '0',
@@ -97,7 +111,7 @@ function dryRunConfirmation_(palletId) {
  */
 function testDryRunConfirmation() {
   // ⚠️ REPLACE with a real QC_COMPLETE PalletID before running
-  const TEST_PALLET_ID = 'PL-1000035048-L01';
+  const TEST_PALLET_ID = 'PL-1000036350-L01';
 
   try {
     const payload = dryRunConfirmation_(TEST_PALLET_ID);
