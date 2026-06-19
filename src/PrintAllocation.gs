@@ -334,7 +334,30 @@ function previewPalletAllocation(requests) {
     invariantErrors.length ? 'ERROR' : hasError ? 'ERROR' : hasShortfall ? 'SHORTFALL' : 'OK',
     0, note);
 
-  return results;
+  // Sanitize for google.script.run: raw Java Date objects from getValues()
+  // cause "[Ljava.lang.Object;@..." serialization failure on the client side.
+  results.forEach(function(r) {
+    r.requestedQty = Number(r.requestedQty) || 0;
+    r.allocatedQty = Number(r.allocatedQty) || 0;
+    r.shortfall    = Number(r.shortfall) || 0;
+    r.material     = String(r.material || '');
+    if (r.error) r.error = String(r.error);
+    (r.orders || []).forEach(function(o) {
+      o.manufacturingOrder    = String(o.manufacturingOrder || '');
+      o.plannedStartDate      = o.plannedStartDate instanceof Date
+        ? o.plannedStartDate.toISOString() : String(o.plannedStartDate || '');
+      o.totalQuantity          = Number(o.totalQuantity) || 0;
+      o.confirmedQty           = Number(o.confirmedQty) || 0;
+      o.alreadyPrintedQty      = Number(o.alreadyPrintedQty) || 0;
+      o.availableQty           = Number(o.availableQty) || 0;
+      o.allocatedFromThisOrder = Number(o.allocatedFromThisOrder) || 0;
+      (o.pallets || []).forEach(function(p) {
+        p.palletSeq = Number(p.palletSeq) || 0;
+        p.qty       = Number(p.qty) || 0;
+      });
+    });
+  });
+  return JSON.parse(JSON.stringify(results));
 }
 
 // ============================================================================
@@ -478,14 +501,15 @@ function commitPalletAllocation(requests) {
     ]);
   }
 
-  return {
+  var commitResult = {
     created:      created,
     skipped:      skipped,
     totalCreated: created.length,
     totalSkipped: skipped.length,
     perMaterial:  perMaterial,
-    dryRun:       CFG.DRY_RUN
+    dryRun:       !!CFG.DRY_RUN
   };
+  return JSON.parse(JSON.stringify(commitResult));
 }
 
 // ============================================================================
