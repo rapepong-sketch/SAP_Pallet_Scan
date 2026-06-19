@@ -605,7 +605,8 @@ function listOverrideCandidates() {
         Unit:               String(row[idx['Unit']] || '').trim(),
         WorkCenter:         (wc instanceof Date) ? dateToWorkCenter_(wc) : String(wc || '').trim(),
         ScanStatus:         String(row[idx['ScanStatus']] || '').trim(),
-        FinalOperation:     foMap[mo]
+        FinalOperation:     foMap[mo],
+        StorageLocation:    idx['StorageLocation'] !== undefined ? String(row[idx['StorageLocation']] || '').trim() : ''
       });
 
       if (pallets.length >= 50) break;

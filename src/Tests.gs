@@ -46,6 +46,10 @@
  *
  * STORAGE LOCATION:
  *   testStorageLocationBackfill()   — run populateMaterialStorageLocation() + verify
+ *
+ * OVERRIDE UI TEST HELPERS:
+ *   seedOverrideTestPallet_()       — insert 5 fake QC_COMPLETE candidates (varied SLoc+Material)
+ *   cleanupOverrideTestPallet_()    — remove all fake candidate rows (PL-TEST-OVR* + legacy)
  * ──────────────────────────────────────────────────────────────
  */
 
@@ -1349,4 +1353,123 @@ function testStorageLocationBackfill() {
   });
 
   Logger.log('=== testStorageLocationBackfill complete ===');
+}
+
+// ============================================================================
+// Override UI test helpers — seed / cleanup fake candidate in PalletMaster
+// ============================================================================
+
+/**
+ * TEST ONLY: insert multiple fake override candidates into PalletMaster with
+ * different StorageLocation + Material combos so the cascade filter can be
+ * exercised. PalletIDs are clearly fake — WILL post to SAP if confirmed live,
+ * so only confirm under DRY_RUN.
+ *
+ * Rows seeded (all MO 1000036050, FinalOperation 0030, QC_COMPLETE/PASS):
+ *   PL-TEST-OVR-A1  ST39  TESTMAT-A
+ *   PL-TEST-OVR-A2  ST39  TESTMAT-B
+ *   PL-TEST-OVR-B1  PW30  TESTMAT-A
+ *   PL-TEST-OVR-B2  PW40  TESTMAT-C
+ *   PL-TEST-OVR-C1  ''    TESTMAT-A   (empty storage bucket)
+ *
+ * @return {string[]} PalletIDs actually created (skips duplicates)
+ */
+function seedOverrideTestPallet_() {
+  const CANDIDATES = [
+    { id: 'PL-TEST-OVR-A1', sloc: 'ST39', mat: 'TESTMAT-A', matName: 'Test A' },
+    { id: 'PL-TEST-OVR-A2', sloc: 'ST39', mat: 'TESTMAT-B', matName: 'Test B' },
+    { id: 'PL-TEST-OVR-B1', sloc: 'PW30', mat: 'TESTMAT-A', matName: 'Test A' },
+    { id: 'PL-TEST-OVR-B2', sloc: 'PW40', mat: 'TESTMAT-C', matName: 'Test C' },
+    { id: 'PL-TEST-OVR-C1', sloc: '',     mat: 'TESTMAT-A', matName: 'Test A' },
+  ];
+
+  const sh  = getSheet_(PM_SHEET);
+  const hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const pidCol = hdr.indexOf('PalletID');
+  if (pidCol === -1) throw new Error('seedOverrideTestPallet_: PalletID column not found');
+
+  const lastRow = sh.getLastRow();
+  const existingIds = {};
+  if (lastRow >= 2) {
+    const pidVals = sh.getRange(2, pidCol + 1, lastRow - 1, 1).getValues();
+    for (let i = 0; i < pidVals.length; i++) {
+      existingIds[String(pidVals[i][0]).trim()] = true;
+    }
+  }
+
+  const created = [];
+  const newRows = [];
+
+  for (const c of CANDIDATES) {
+    if (existingIds[c.id]) {
+      Logger.log('seedOverrideTestPallet_: ' + c.id + ' already exists — skipping');
+      continue;
+    }
+    const vals = {
+      PalletID:           c.id,
+      ManufacturingOrder: '1000036050',
+      Material:           c.mat,
+      MaterialName:       c.matName,
+      Batch:              '',
+      QtyPerPallet:       1,
+      Unit:               'PC',
+      WorkCenter:         '',
+      ProductionDate:     '',
+      TotalQuantity:      1,
+      Plant:              '1100',
+      StorageLocation:    c.sloc,
+      FinalOperation:     '0030',
+      ScanStatus:         'QC_COMPLETE',
+      QCStatus:           'INSPECTED',
+      QCResult:           'PASS',
+      ConfirmationGroup:  '',
+    };
+    newRows.push(hdr.map(function(h) { return vals.hasOwnProperty(h) ? vals[h] : ''; }));
+    created.push(c.id);
+  }
+
+  if (newRows.length > 0) {
+    sh.getRange(lastRow + 1, 1, newRows.length, hdr.length).setValues(newRows);
+  }
+
+  logEvent('TEST_SEED', 'OVERRIDE_MULTI', 'OK', 0,
+    'Created ' + created.length + ' of ' + CANDIDATES.length + ': ' + created.join(', '));
+  Logger.log('seedOverrideTestPallet_: created ' + created.length + ' row(s) — ' + created.join(', '));
+  return created;
+}
+
+/**
+ * TEST ONLY: delete all fake override candidate rows — matches PalletIDs
+ * starting with 'PL-TEST-OVR' (new multi-row seeds) OR equal to
+ * 'PL-TEST-OVERRIDE-001' (legacy single-row seed). Safe to run repeatedly.
+ * @return {number} rows deleted
+ */
+function cleanupOverrideTestPallet_() {
+  const sh  = getSheet_(PM_SHEET);
+  const hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const pidCol = hdr.indexOf('PalletID');
+  if (pidCol === -1) throw new Error('cleanupOverrideTestPallet_: PalletID column not found');
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) {
+    logEvent('TEST_CLEANUP', 'OVERRIDE', 'OK', 0, '0 rows deleted (sheet empty)');
+    return 0;
+  }
+
+  const pidVals = sh.getRange(2, pidCol + 1, lastRow - 1, 1).getValues();
+  const toDelete = [];
+  for (let i = 0; i < pidVals.length; i++) {
+    const pid = String(pidVals[i][0]).trim();
+    if (pid.startsWith('PL-TEST-OVR') || pid === 'PL-TEST-OVERRIDE-001') {
+      toDelete.push(i + 2);
+    }
+  }
+
+  for (let d = toDelete.length - 1; d >= 0; d--) {
+    sh.deleteRow(toDelete[d]);
+  }
+
+  logEvent('TEST_CLEANUP', 'OVERRIDE', 'OK', 0, toDelete.length + ' rows deleted');
+  Logger.log('cleanupOverrideTestPallet_: deleted ' + toDelete.length + ' row(s)');
+  return toDelete.length;
 }

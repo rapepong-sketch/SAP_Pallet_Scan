@@ -89,6 +89,36 @@
     /* Error banner */
     .error-banner { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 6px; padding: 10px 16px; margin-bottom: 14px; font-size: 0.88em; display: none; }
     .error-banner.visible { display: block; }
+
+    /* Tab nav */
+    .tab-nav { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid #dee2e6; }
+    .tab-btn { padding: 10px 22px; border: none; background: none; font-size: 0.92em; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; color: #6c757d; transition: color 0.15s, border-color 0.15s; }
+    .tab-btn:hover { color: #1a1a2e; }
+    .tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }
+    .tab-btn-override { color: #999; }
+    .tab-btn-override:hover { color: #dc3545; }
+    .tab-btn-override.active { color: #dc3545; border-bottom-color: #dc3545; }
+
+    /* Override warning banner */
+    .override-warn { background: #f8d7da; border: 1px solid #dc3545; border-radius: 6px; padding: 12px 16px; margin-bottom: 14px; font-size: 0.88em; color: #721c24; font-weight: 600; line-height: 1.5; }
+
+    /* Override reason */
+    .reason-wrap { margin-bottom: 14px; }
+    .reason-wrap label { display: block; font-size: 0.88em; font-weight: 600; margin-bottom: 4px; color: #495057; }
+    .reason-wrap textarea { width: 100%; min-height: 60px; padding: 8px 10px; border: 1px solid #dee2e6; border-radius: 6px; font-size: 0.88em; font-family: inherit; resize: vertical; }
+    .reason-wrap textarea:focus { outline: none; border-color: #dc3545; box-shadow: 0 0 0 2px rgba(220,53,69,0.15); }
+    .reason-wrap .char-counter { font-size: 0.78em; color: #888; text-align: right; margin-top: 2px; }
+    .reason-wrap .char-counter.warn { color: #dc3545; }
+
+    /* Override filter bar */
+    .filter-bar { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+    .filter-bar label { font-size: 0.85em; font-weight: 600; color: #555; white-space: nowrap; }
+    .filter-bar select { padding: 6px 10px; border: 1px solid #dee2e6; border-radius: 6px; font-size: 0.88em; font-family: inherit; min-width: 140px; background: #fff; }
+    .filter-bar select:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
+
+    /* Override group headers */
+    .group-header td { background: #e9ecef; font-weight: 700; font-size: 0.9em; border-bottom: 2px solid #dee2e6; }
+    .group-count { font-weight: 400; color: #666; font-size: 0.85em; margin-left: 6px; }
   </style>
 </head>
 <body>
@@ -99,6 +129,15 @@
     <span class="badge" id="modeBadge">...</span>
     <span class="email" id="userEmail"></span>
   </div>
+
+  <!-- Tab nav -->
+  <div class="tab-nav">
+    <button class="tab-btn active" id="tabBtnConfirm" onclick="switchTab('confirm')">ยืนยันผลผลิต</button>
+    <button class="tab-btn tab-btn-override" id="tabBtnOverride" onclick="switchTab('override')">Override Confirm</button>
+  </div>
+
+  <!-- ===== TAB 1: Confirm ===== -->
+  <div id="viewConfirm">
 
   <!-- Error banner -->
   <div class="error-banner" id="errorBanner"></div>
@@ -163,6 +202,98 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeModal()">ยกเลิก</button>
         <button class="btn btn-danger" id="btnConfirmSend" onclick="doConfirm()">ยืนยันส่ง</button>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /viewConfirm -->
+
+  <!-- ===== TAB 2: Override ===== -->
+  <div id="viewOverride" style="display:none">
+
+    <div class="override-warn">
+      ⚠️ โหมด Override — bypass การสแกนตามลำดับ ใช้เฉพาะกรณีสแกนตกหล่น ทุกการ confirm จะถูกบันทึก audit (ใคร/เมื่อไหร่/เหตุผล)
+    </div>
+
+    <span class="badge" id="modeBadgeOverride">...</span>
+
+    <div class="error-banner" id="overrideErrorBanner"></div>
+
+    <div class="toolbar">
+      <button class="btn btn-secondary" id="btnOverrideRefresh" onclick="loadOverrideList()">โหลดรายการรอ override</button>
+      <span class="summary" id="overrideSummary"></span>
+    </div>
+
+    <div class="filter-bar" id="overrideFilterBar" style="display:none">
+      <label>คลัง:</label>
+      <select id="fltStorage" onchange="onStorageFilterChange()">
+        <option value="">ทุกคลัง</option>
+      </select>
+      <label>Material:</label>
+      <select id="fltMaterial" onchange="applyOverrideFilters()">
+        <option value="">ทุก Material</option>
+      </select>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="chkAllOverride" onchange="toggleAllOverride(this.checked)"></th>
+            <th>PalletID</th>
+            <th>MO</th>
+            <th>Material</th>
+            <th>จำนวน</th>
+            <th>WorkCenter</th>
+            <th>Final Op</th>
+            <th>สถานะสแกน</th>
+          </tr>
+        </thead>
+        <tbody id="overrideTableBody">
+          <tr><td colspan="8" class="empty">กดปุ่ม "โหลดรายการรอ override" เพื่อดูพาเลท</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="reason-wrap">
+      <label for="overrideReason">เหตุผล override (บังคับ, อย่างน้อย 5 ตัวอักษร)</label>
+      <textarea id="overrideReason" placeholder="ระบุเหตุผลที่ต้อง override..." oninput="onOverrideReasonInput()"></textarea>
+      <div class="char-counter" id="overrideCharCounter">0 ตัวอักษร</div>
+    </div>
+
+    <div class="action-bar">
+      <button class="btn btn-danger" id="btnOverrideSubmit" disabled onclick="openOverrideModal()">Override confirm รายการที่เลือก (0)</button>
+      <span class="cap-warn" id="overrideCapWarn" style="display:none">เลือกได้สูงสุด 15 ใบต่อครั้ง</span>
+    </div>
+
+    <div class="progress-bar" id="overrideProgressBar">
+      <span class="spinner"></span>
+      <span>กำลังส่ง override...</span>
+    </div>
+
+    <div class="result-panel" id="overrideResultPanel">
+      <h3>ผลการ Override Confirm</h3>
+      <div class="result-counts" id="overrideResultCounts"></div>
+      <div class="result-detail" id="overrideResultDetail"></div>
+    </div>
+
+  </div><!-- /viewOverride -->
+
+  <!-- Override confirmation modal -->
+  <div class="modal-overlay" id="overrideModalOverlay" onclick="closeOverrideModalOutside(event)">
+    <div class="modal" id="overrideModal">
+      <h2 style="color:#dc3545">ยืนยัน Override Confirm</h2>
+      <div id="overrideModalLiveWarn" class="live-warn" style="display:none">
+        ⚠️ GR + backflush จะเกิดจริงใน SAP (LIVE MODE)
+      </div>
+      <div id="overrideModalMode" style="margin-bottom:10px; font-size:0.88em;"></div>
+      <div style="font-size:0.88em; margin-bottom:6px;">รายการที่เลือก (<span id="overrideModalCount">0</span> ใบ):</div>
+      <ul id="overrideModalList"></ul>
+      <div style="font-size:0.88em; margin-bottom:6px; margin-top:10px;"><b>เหตุผล:</b></div>
+      <div id="overrideModalReason" style="font-size:0.88em; background:#fff3cd; border-radius:4px; padding:8px 10px; margin-bottom:14px; white-space:pre-wrap;"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeOverrideModal()">ยกเลิก</button>
+        <button class="btn btn-danger" id="btnOverrideConfirmSend" onclick="doOverrideConfirm()">ยืนยัน Override</button>
       </div>
     </div>
   </div>
@@ -480,6 +611,424 @@
     var d = document.createElement('div');
     d.appendChild(document.createTextNode(String(s || '')));
     return d.innerHTML;
+  }
+
+  // ==== Tab switching ====
+  function switchTab(name) {
+    var isConfirm = name === 'confirm';
+    document.getElementById('viewConfirm').style.display = isConfirm ? '' : 'none';
+    document.getElementById('viewOverride').style.display = isConfirm ? 'none' : '';
+    document.getElementById('tabBtnConfirm').classList.toggle('active', isConfirm);
+    document.getElementById('tabBtnOverride').classList.toggle('active', !isConfirm);
+    if (!isConfirm) renderOverrideBadge();
+  }
+
+  // ==== Override: badge (reuse flagState) ====
+  function renderOverrideBadge() {
+    var el = document.getElementById('modeBadgeOverride');
+    if (!flagState.sapWriteEnabled) {
+      el.className = 'badge badge-off';
+      el.textContent = 'SAP ปิด';
+    } else if (flagState.dryRun) {
+      el.className = 'badge badge-dryrun';
+      el.textContent = 'DRY-RUN (ทดสอบ — ไม่ส่งจริง)';
+    } else {
+      el.className = 'badge badge-live';
+      el.textContent = 'LIVE (ส่งเข้า SAP จริง)';
+    }
+  }
+
+  // ==== Override: load candidate list ====
+  var overridePallets = [];
+  var overrideAllPallets = [];
+  var overrideCheckedSet = new Set();
+  var overrideLocked = false;
+
+  function loadOverrideList() {
+    if (overrideLocked) return;
+    var btn = document.getElementById('btnOverrideRefresh');
+    btn.disabled = true;
+    btn.textContent = 'กำลังโหลด...';
+    hideOverrideError();
+    hideOverrideResult();
+
+    google.script.run
+      .withSuccessHandler(renderOverrideList)
+      .withFailureHandler(showOverrideError)
+      .listOverrideCandidates();
+  }
+
+  function renderOverrideList(resp) {
+    var btn = document.getElementById('btnOverrideRefresh');
+    btn.disabled = false;
+    btn.textContent = 'โหลดรายการรอ override';
+
+    if (!resp || !resp.success) {
+      showOverrideError(resp && resp.message ? { message: resp.message } : { message: 'ไม่สามารถโหลดรายการได้' });
+      return;
+    }
+
+    overrideAllPallets = resp.pallets || [];
+    overrideCheckedSet = new Set();
+
+    if (!overrideAllPallets.length) {
+      document.getElementById('overrideFilterBar').style.display = 'none';
+      document.getElementById('overrideTableBody').innerHTML = '<tr><td colspan="8" class="empty">ไม่มีพาเลทรอ override</td></tr>';
+      document.getElementById('chkAllOverride').checked = false;
+      document.getElementById('overrideSummary').textContent = '';
+      updateOverrideSubmitBtn();
+      return;
+    }
+
+    document.getElementById('overrideFilterBar').style.display = '';
+    document.getElementById('fltStorage').value = '';
+    populateStorageFilter();
+    applyOverrideFilters();
+    document.getElementById('overrideSummary').innerHTML = 'พาเลทรอ override: <b>' + overrideAllPallets.length + '</b>';
+  }
+
+  // ==== Override: filter helpers ====
+  function populateStorageFilter() {
+    var sel = document.getElementById('fltStorage');
+    var locs = {};
+    for (var i = 0; i < overrideAllPallets.length; i++) {
+      var loc = overrideAllPallets[i].StorageLocation || '';
+      locs[loc] = true;
+    }
+    var sorted = Object.keys(locs).sort(function(a, b) {
+      if (a === '' && b !== '') return 1;
+      if (b === '' && a !== '') return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    var html = '<option value="">ทุกคลัง</option>';
+    for (var i = 0; i < sorted.length; i++) {
+      var v = sorted[i];
+      var optVal = v === '' ? '__EMPTY__' : v;
+      html += '<option value="' + esc(optVal) + '">' + esc(v || '(ไม่ระบุคลัง)') + '</option>';
+    }
+    sel.innerHTML = html;
+    populateMaterialFilter();
+  }
+
+  function populateMaterialFilter() {
+    var storageVal = document.getElementById('fltStorage').value;
+    var sel = document.getElementById('fltMaterial');
+    var mats = {};
+    for (var i = 0; i < overrideAllPallets.length; i++) {
+      var p = overrideAllPallets[i];
+      var loc = p.StorageLocation || '';
+      var match = storageVal === '' || (storageVal === '__EMPTY__' ? loc === '' : loc === storageVal);
+      if (match) {
+        var key = p.Material || '';
+        if (!mats[key]) mats[key] = p.MaterialName || '';
+      }
+    }
+    var sorted = Object.keys(mats).sort();
+    var html = '<option value="">ทุก Material</option>';
+    for (var i = 0; i < sorted.length; i++) {
+      var m = sorted[i];
+      var label = m + (mats[m] ? ' / ' + mats[m] : '');
+      html += '<option value="' + esc(m) + '">' + esc(label) + '</option>';
+    }
+    sel.innerHTML = html;
+  }
+
+  function onStorageFilterChange() {
+    populateMaterialFilter();
+    applyOverrideFilters();
+  }
+
+  function applyOverrideFilters() {
+    var storageVal = document.getElementById('fltStorage').value;
+    var materialVal = document.getElementById('fltMaterial').value;
+    var filtered = [];
+    for (var i = 0; i < overrideAllPallets.length; i++) {
+      var p = overrideAllPallets[i];
+      var loc = p.StorageLocation || '';
+      if (storageVal !== '' && (storageVal === '__EMPTY__' ? loc !== '' : loc !== storageVal)) continue;
+      if (materialVal !== '' && p.Material !== materialVal) continue;
+      filtered.push(p);
+    }
+    renderGroupedOverride(filtered);
+    updateOverrideSubmitBtn();
+  }
+
+  function renderGroupedOverride(filtered) {
+    var tbody = document.getElementById('overrideTableBody');
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">ไม่มีพาเลทตรงเงื่อนไข</td></tr>';
+      document.getElementById('chkAllOverride').checked = false;
+      return;
+    }
+    var groups = {};
+    var order = [];
+    for (var i = 0; i < filtered.length; i++) {
+      var loc = filtered[i].StorageLocation || '';
+      if (!groups[loc]) { groups[loc] = []; order.push(loc); }
+      groups[loc].push(filtered[i]);
+    }
+    order.sort(function(a, b) {
+      if (a === '' && b !== '') return 1;
+      if (b === '' && a !== '') return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+
+    var html = '';
+    for (var g = 0; g < order.length; g++) {
+      var loc = order[g];
+      var items = groups[loc];
+      var gid = 'grp_' + g;
+      html += '<tr class="group-header">' +
+        '<td><input type="checkbox" class="group-chk" data-group="' + gid + '" onchange="toggleOverrideGroup(this)"></td>' +
+        '<td colspan="7">' + esc(loc || '(ไม่ระบุคลัง)') + '<span class="group-count"> (' + items.length + ' พาเลท)</span></td></tr>';
+      for (var i = 0; i < items.length; i++) {
+        var p = items[i];
+        var chk = overrideCheckedSet.has(p.PalletID) ? ' checked' : '';
+        html += '<tr data-group="' + gid + '">' +
+          '<td><input type="checkbox" class="override-chk" value="' + esc(p.PalletID) + '"' + chk + ' onchange="onOverrideChkChange(this)"></td>' +
+          '<td>' + esc(p.PalletID) + '</td>' +
+          '<td>' + esc(p.ManufacturingOrder) + '</td>' +
+          '<td>' + esc(p.Material) + (p.MaterialName ? ' / ' + esc(p.MaterialName) : '') + '</td>' +
+          '<td>' + p.QtyPerPallet + ' ' + esc(p.Unit || '') + '</td>' +
+          '<td>' + esc(p.WorkCenter || '-') + '</td>' +
+          '<td>' + esc(p.FinalOperation || p.finalOperation || '-') + '</td>' +
+          '<td>' + esc(p.ScanStatus || '-') + '</td></tr>';
+      }
+    }
+    tbody.innerHTML = html;
+    syncGroupCheckboxes();
+    syncGlobalCheckbox();
+  }
+
+  function onOverrideChkChange(el) {
+    if (el.checked) overrideCheckedSet.add(el.value);
+    else overrideCheckedSet.delete(el.value);
+    syncGroupCheckboxes();
+    syncGlobalCheckbox();
+    updateOverrideSubmitBtn();
+  }
+
+  function toggleOverrideGroup(el) {
+    var gid = el.getAttribute('data-group');
+    var boxes = document.querySelectorAll('tr[data-group="' + gid + '"] .override-chk');
+    for (var i = 0; i < boxes.length; i++) {
+      boxes[i].checked = el.checked;
+      if (el.checked) overrideCheckedSet.add(boxes[i].value);
+      else overrideCheckedSet.delete(boxes[i].value);
+    }
+    syncGlobalCheckbox();
+    updateOverrideSubmitBtn();
+  }
+
+  function syncGroupCheckboxes() {
+    var gChks = document.querySelectorAll('.group-chk');
+    for (var i = 0; i < gChks.length; i++) {
+      var gid = gChks[i].getAttribute('data-group');
+      var boxes = document.querySelectorAll('tr[data-group="' + gid + '"] .override-chk');
+      var all = boxes.length > 0;
+      for (var j = 0; j < boxes.length; j++) { if (!boxes[j].checked) { all = false; break; } }
+      gChks[i].checked = all;
+    }
+  }
+
+  function syncGlobalCheckbox() {
+    var boxes = document.querySelectorAll('.override-chk');
+    var all = boxes.length > 0;
+    for (var i = 0; i < boxes.length; i++) { if (!boxes[i].checked) { all = false; break; } }
+    document.getElementById('chkAllOverride').checked = all;
+  }
+
+  // ==== Override: toggle all visible checkboxes ====
+  function toggleAllOverride(checked) {
+    var boxes = document.querySelectorAll('.override-chk');
+    for (var i = 0; i < boxes.length; i++) {
+      boxes[i].checked = checked;
+      if (checked) overrideCheckedSet.add(boxes[i].value);
+      else overrideCheckedSet.delete(boxes[i].value);
+    }
+    syncGroupCheckboxes();
+    updateOverrideSubmitBtn();
+  }
+
+  // ==== Override: get ticked IDs (from persistent Set) ====
+  function getOverrideTickedIds() {
+    var ids = [];
+    overrideCheckedSet.forEach(function(v) { ids.push(v); });
+    return ids;
+  }
+
+  // ==== Override: reason input handler ====
+  function onOverrideReasonInput() {
+    var ta = document.getElementById('overrideReason');
+    var len = ta.value.trim().length;
+    var counter = document.getElementById('overrideCharCounter');
+    counter.textContent = len + ' ตัวอักษร';
+    counter.className = len < 5 ? 'char-counter warn' : 'char-counter';
+    updateOverrideSubmitBtn();
+  }
+
+  // ==== Override: update submit button ====
+  function updateOverrideSubmitBtn() {
+    var n = overrideCheckedSet.size;
+    var reason = (document.getElementById('overrideReason').value || '').trim();
+    var btn = document.getElementById('btnOverrideSubmit');
+    var warn = document.getElementById('overrideCapWarn');
+
+    btn.textContent = 'Override confirm รายการที่เลือก (' + n + ')';
+
+    if (n === 0 || reason.length < 5) {
+      btn.disabled = true;
+      warn.style.display = 'none';
+    } else if (n > 15) {
+      btn.disabled = true;
+      warn.style.display = 'inline';
+    } else {
+      btn.disabled = false;
+      warn.style.display = 'none';
+    }
+  }
+
+  // ==== Override: modal ====
+  function openOverrideModal() {
+    var ids = getOverrideTickedIds();
+    var reason = (document.getElementById('overrideReason').value || '').trim();
+    if (!ids.length || reason.length < 5) return;
+
+    loadFlags();
+    renderOverrideBadge();
+
+    document.getElementById('overrideModalCount').textContent = ids.length;
+
+    var modeText = '';
+    if (!flagState.sapWriteEnabled) {
+      modeText = 'โหมด: SAP ปิด — จะไม่ส่งจริง';
+    } else if (flagState.dryRun) {
+      modeText = 'โหมด: DRY-RUN — จะไม่ส่งจริง';
+    } else {
+      modeText = 'โหมด: LIVE — ส่งเข้า SAP จริง';
+    }
+    document.getElementById('overrideModalMode').textContent = modeText;
+
+    var isLive = flagState.sapWriteEnabled && !flagState.dryRun;
+    document.getElementById('overrideModalLiveWarn').style.display = isLive ? 'block' : 'none';
+
+    var html = '';
+    for (var i = 0; i < ids.length; i++) {
+      html += '<li>' + esc(ids[i]) + '</li>';
+    }
+    document.getElementById('overrideModalList').innerHTML = html;
+    document.getElementById('overrideModalReason').textContent = reason;
+
+    document.getElementById('overrideModalOverlay').classList.add('open');
+  }
+
+  function closeOverrideModal() {
+    document.getElementById('overrideModalOverlay').classList.remove('open');
+  }
+
+  function closeOverrideModalOutside(e) {
+    if (e.target === document.getElementById('overrideModalOverlay')) closeOverrideModal();
+  }
+
+  // ==== Override: confirm and send ====
+  function doOverrideConfirm() {
+    var ids = getOverrideTickedIds();
+    var reason = (document.getElementById('overrideReason').value || '').trim();
+    if (!ids.length || reason.length < 5) return;
+
+    var btnSend = document.getElementById('btnOverrideConfirmSend');
+    btnSend.disabled = true;
+    btnSend.textContent = 'กำลังส่ง...';
+    closeOverrideModal();
+    lockOverrideUI(true);
+    hideOverrideResult();
+
+    google.script.run
+      .withSuccessHandler(renderOverrideResults)
+      .withFailureHandler(function(e) {
+        showOverrideError(e);
+        lockOverrideUI(false);
+        btnSend.disabled = false;
+        btnSend.textContent = 'ยืนยัน Override';
+      })
+      .batchOverrideConfirm(ids, reason);
+  }
+
+  function lockOverrideUI(lock) {
+    overrideLocked = lock;
+    document.getElementById('btnOverrideSubmit').disabled = lock;
+    document.getElementById('btnOverrideRefresh').disabled = lock;
+    document.getElementById('overrideProgressBar').classList.toggle('visible', lock);
+    var boxes = document.querySelectorAll('.override-chk');
+    for (var i = 0; i < boxes.length; i++) boxes[i].disabled = lock;
+    var gBoxes = document.querySelectorAll('.group-chk');
+    for (var i = 0; i < gBoxes.length; i++) gBoxes[i].disabled = lock;
+    document.getElementById('chkAllOverride').disabled = lock;
+    document.getElementById('overrideReason').disabled = lock;
+    document.getElementById('fltStorage').disabled = lock;
+    document.getElementById('fltMaterial').disabled = lock;
+  }
+
+  // ==== Override: results ====
+  function renderOverrideResults(resp) {
+    lockOverrideUI(false);
+    var btnSend = document.getElementById('btnOverrideConfirmSend');
+    btnSend.disabled = false;
+    btnSend.textContent = 'ยืนยัน Override';
+
+    if (!resp || resp.error) {
+      showOverrideError({ message: (resp && resp.message) || (resp && resp.error) || 'เกิดข้อผิดพลาด' });
+      return;
+    }
+
+    var panel = document.getElementById('overrideResultPanel');
+    var counts = document.getElementById('overrideResultCounts');
+    var detail = document.getElementById('overrideResultDetail');
+
+    var results = resp.results || [];
+    var okCount = 0, failCount = 0;
+    var html = '';
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      if (r.ok || r.success) {
+        okCount++;
+        html += '<div class="item ok">✅ ' + esc(r.palletId || r.PalletID) +
+          (r.confirmationGroup ? ' — ConfGroup: ' + esc(r.confirmationGroup) : '') +
+          (r.materialDocument ? ' — MatDoc: ' + esc(r.materialDocument) : '') +
+          (r.message ? ' — ' + esc(r.message) : '') + '</div>';
+      } else {
+        failCount++;
+        html += '<div class="item fail">❌ ' + esc(r.palletId || r.PalletID) +
+          ' — ' + esc(r.message || r.error || 'ล้มเหลว') + '</div>';
+      }
+    }
+
+    counts.innerHTML =
+      '<span style="color:#28a745">✅ สำเร็จ ' + okCount + '</span>' +
+      '<span style="color:#dc3545">❌ ล้มเหลว ' + failCount + '</span>';
+    detail.innerHTML = html;
+    panel.classList.add('visible');
+
+    loadOverrideList();
+  }
+
+  function hideOverrideResult() {
+    document.getElementById('overrideResultPanel').classList.remove('visible');
+  }
+
+  // ==== Override: error handling ====
+  function showOverrideError(e) {
+    var el = document.getElementById('overrideErrorBanner');
+    el.textContent = (e && e.message) ? e.message : String(e);
+    el.classList.add('visible');
+
+    var btn = document.getElementById('btnOverrideRefresh');
+    btn.disabled = false;
+    btn.textContent = 'โหลดรายการรอ override';
+  }
+
+  function hideOverrideError() {
+    document.getElementById('overrideErrorBanner').classList.remove('visible');
   }
 </script>
 </body>
