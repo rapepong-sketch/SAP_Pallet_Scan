@@ -1,7 +1,7 @@
 /**
  * WebApp.gs — Phase 3: Mobile Scanner + Admin Web App
  * ====================================================
- * Phase 3 — Step 1 + Step 2d
+ * Phase 3 — Step 1 + Step 2d + Phase 3.5 Override UI backend
  *
  * doGet() routes by ?app= query param:
  *   ?app=scan    → Scanner.html        (operators, no restriction)
@@ -525,6 +525,161 @@ function isOperationLogged_(palletId, operationNo) {
   const opNo = _normOpNo_(operationNo);
   if (!opNo) return false;
   return getOperationLogForPallet(palletId).some(function (e) { return e.operationNo === opNo; });
+}
+
+// ============================================================================
+// Phase 3.5 — Admin Override UI backend (google.script.run)
+// ============================================================================
+
+/**
+ * List override candidates: pallets that have passed QC but are not yet
+ * confirmed, for the admin override UI. Admin-gated.
+ * Mirrors the exact allow-list that confirmPalletOverride enforces
+ * (QCStatus=INSPECTED, QCResult=PASS, ScanStatus≠CONFIRMED, ConfirmationGroup empty)
+ * so the UI never shows a pallet the backend will reject.
+ * @return {{success:boolean, pallets:Array, message?:string}}
+ */
+function listOverrideCandidates() {
+  if (!isAdminUser_()) {
+    return { success: false, pallets: [], message: 'ไม่มีสิทธิ์' };
+  }
+
+  try {
+    var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+    if (!sh || sh.getLastRow() < 2) return { success: true, pallets: [] };
+
+    var data = sh.getDataRange().getValues();
+    var hdr  = data[0];
+    var idx  = {};
+    hdr.forEach(function(h, i) { idx[h] = i; });
+
+    var required = ['PalletID', 'ManufacturingOrder', 'Material', 'MaterialName',
+                    'Batch', 'QtyPerPallet', 'Unit', 'WorkCenter',
+                    'ScanStatus', 'QCStatus', 'QCResult', 'ConfirmationGroup'];
+    for (var k = 0; k < required.length; k++) {
+      if (idx[required[k]] === undefined) {
+        logEvent('OVERRIDE_LIST', 'ERROR', 'Missing column: ' + required[k]);
+        return { success: false, pallets: [], message: 'Missing column: ' + required[k] };
+      }
+    }
+
+    // Build MO -> FinalOperation lookup from ProductionOrders (single read)
+    var foMap = {};
+    var poSh = getSpreadsheet_().getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+    if (poSh && poSh.getLastRow() >= 2) {
+      var poData = poSh.getDataRange().getValues();
+      var poHdr  = poData[0];
+      var poMoCol = poHdr.indexOf('ManufacturingOrder');
+      var poFoCol = poHdr.indexOf('FinalOperation');
+      if (poMoCol !== -1 && poFoCol !== -1) {
+        for (var p = 1; p < poData.length; p++) {
+          var poMo = String(poData[p][poMoCol] || '').trim();
+          var poFo = String(poData[p][poFoCol] || '').trim();
+          if (poMo) foMap[poMo] = poFo;
+        }
+      }
+    }
+
+    var pallets = [];
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      if (String(row[idx['ScanStatus']] || '').trim() === 'CONFIRMED') continue;
+      if (String(row[idx['ConfirmationGroup']] || '').trim() !== '') continue;
+      if (String(row[idx['QCStatus']] || '').trim() !== 'INSPECTED') continue;
+      if (String(row[idx['QCResult']] || '').trim() !== 'PASS') continue;
+
+      var mo = String(row[idx['ManufacturingOrder']] || '').trim();
+
+      // Skip if MO not in ProductionOrders or FinalOperation empty
+      if (!foMap.hasOwnProperty(mo) || !foMap[mo]) continue;
+
+      var wc = row[idx['WorkCenter']];
+
+      pallets.push({
+        PalletID:           String(row[idx['PalletID']] || '').trim(),
+        ManufacturingOrder: mo,
+        Material:           String(row[idx['Material']] || '').trim(),
+        MaterialName:       String(row[idx['MaterialName']] || '').trim(),
+        Batch:              String(row[idx['Batch']] || '').trim(),
+        QtyPerPallet:       Number(row[idx['QtyPerPallet']]) || 0,
+        Unit:               String(row[idx['Unit']] || '').trim(),
+        WorkCenter:         (wc instanceof Date) ? dateToWorkCenter_(wc) : String(wc || '').trim(),
+        ScanStatus:         String(row[idx['ScanStatus']] || '').trim(),
+        FinalOperation:     foMap[mo]
+      });
+
+      if (pallets.length >= 50) break;
+    }
+
+    logEvent('OVERRIDE_LIST', 'OK', 'found ' + pallets.length + ' candidates');
+    return { success: true, pallets: pallets };
+
+  } catch (e) {
+    logError('listOverrideCandidates', 'PalletMaster', e.message, '');
+    return { success: false, pallets: [], message: 'เกิดข้อผิดพลาด: ' + e.message };
+  }
+}
+
+/**
+ * Batch override-confirm. Applies the SAME reason to every selected pallet.
+ * Fail-soft: one pallet's failure does not abort the batch. Admin-gated.
+ * Delegates each pallet to confirmPalletOverride (Confirmation.gs).
+ * @param {string[]} palletIds
+ * @param {string} reason  Mandatory, >= 5 chars.
+ * @return {{success:boolean, results:Array, message?:string}}
+ */
+function batchOverrideConfirm(palletIds, reason) {
+  if (!isAdminUser_()) {
+    return { success: false, results: [], message: 'ไม่มีสิทธิ์' };
+  }
+
+  if (!Array.isArray(palletIds) || palletIds.length === 0) {
+    return { success: false, results: [], message: 'กรุณาเลือกพาเลทอย่างน้อย 1 รายการ' };
+  }
+  if (palletIds.length > 15) {
+    return { success: false, results: [], message: 'เลือกได้สูงสุด 15 พาเลทต่อครั้ง (เลือก ' + palletIds.length + ')' };
+  }
+
+  reason = String(reason || '').trim();
+  if (reason.length < 5) {
+    return { success: false, results: [], message: 'ต้องระบุเหตุผล override (อย่างน้อย 5 ตัวอักษร)' };
+  }
+
+  var results = [];
+  var okCount = 0;
+  var failCount = 0;
+
+  for (var i = 0; i < palletIds.length; i++) {
+    var pid = String(palletIds[i]).trim();
+    try {
+      var res = confirmPalletOverride(pid, reason);
+      results.push({
+        palletId:           pid,
+        success:            res.success,
+        message:            res.message || '',
+        confirmationGroup:  res.confirmationGroup || '',
+        materialDocument:   res.materialDocument || ''
+      });
+      if (res.success) { okCount++; } else { failCount++; }
+    } catch (e) {
+      results.push({
+        palletId:           pid,
+        success:            false,
+        message:            e.message,
+        confirmationGroup:  '',
+        materialDocument:   ''
+      });
+      failCount++;
+    }
+  }
+
+  logEvent('BATCH_OVERRIDE', 'DONE', 'ok=' + okCount + ' fail=' + failCount + ' total=' + palletIds.length);
+  return { success: true, results: results };
+}
+
+/** Editor test — run with DRY_RUN ON first. */
+function testListOverrideCandidates() {
+  Logger.log(JSON.stringify(listOverrideCandidates(), null, 2));
 }
 
 /** Format a Date or string to 'dd/MM/yyyy' for JSON transfer to the UI */

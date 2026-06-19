@@ -546,6 +546,164 @@ function backfillMaterialDocument(palletId) {
   return { found: false, materialDocument: '', materialDocumentYear: '' };
 }
 
+// ============================================================================
+// Phase 3.5 — Admin Override Confirmation
+// ============================================================================
+
+/**
+ * Admin-only manual override confirmation for a pallet that never reached
+ * QC_COMPLETE (e.g. operator missed scans) but HAS passed QC. Confirms the final
+ * operation in SAP (auto-GR + backflush) exactly like confirmPallet, bypassing
+ * the sequential-scan requirement, and records a mandatory audit trail.
+ * @param {string} palletId
+ * @param {string} reason  Mandatory free-text override justification.
+ * @return {{success:boolean, message:string, dryRun?:boolean,
+ *           confirmationGroup?:string, materialDocument?:string}}
+ */
+function confirmPalletOverride(palletId, reason) {
+  // ---- 1. AUTHZ — server-side admin check ----
+  var adminEmail = '';
+  try { adminEmail = Session.getActiveUser().getEmail() || ''; } catch (_) {}
+  if (!isAdminUser_()) {
+    return { success: false, message: 'ไม่มีสิทธิ์ override' };
+  }
+
+  // ---- 2. REASON — mandatory, min 5 chars ----
+  reason = String(reason || '').trim();
+  if (reason.length < 5) {
+    return { success: false, message: 'ต้องระบุเหตุผล override (อย่างน้อย 5 ตัวอักษร)' };
+  }
+
+  // ---- 3. LOAD pallet row ----
+  var pallet = lookupPalletById_(palletId);
+  if (!pallet) {
+    return { success: false, message: 'ไม่พบ PalletID: ' + palletId };
+  }
+
+  // ---- 4. IDEMPOTENCY — already confirmed? ----
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var cgColIdx = hdr.indexOf('ConfirmationGroup');
+  var cgVal = (cgColIdx >= 0)
+    ? String(sh.getRange(pallet.rowNum, cgColIdx + 1).getValue() || '').trim()
+    : '';
+
+  if (pallet.ScanStatus === 'CONFIRMED' || cgVal !== '') {
+    return { success: true, message: 'พาเลทนี้ confirm แล้ว (skip)' };
+  }
+
+  // ---- 5. QC ALLOW-LIST ----
+  if (pallet.QCStatus !== 'INSPECTED' || pallet.QCResult !== 'PASS') {
+    if (pallet.QCResult === 'FAIL') {
+      return { success: false, message: 'QC ไม่ผ่าน — override ไม่ได้' };
+    }
+    if (!pallet.QCResult) {
+      return { success: false, message: 'ยังไม่ตรวจ QC — override ไม่ได้' };
+    }
+    return { success: false, message: 'QC ไม่ผ่าน — override ไม่ได้' };
+  }
+
+  // ---- 6. Capture fromStatus for audit ----
+  var fromStatus = pallet.ScanStatus || '';
+
+  // ---- 7. DRY_RUN gate ----
+  if (!sapWriteEnabled_() || isDryRun_()) {
+    var detail = 'palletId=' + palletId + ' adminEmail=' + adminEmail +
+      ' reason=' + reason + ' fromStatus=' + fromStatus;
+    logEvent('OVERRIDE_CONFIRM', 'DRY_RUN', detail);
+    return { success: true, dryRun: true, message: 'DRY_RUN — would override-confirm ' + palletId };
+  }
+
+  // ---- 8. LIVE — build payload + POST + readback + writeback ----
+  try {
+    // Build the same payload as buildConfirmationPayload_ but without QC_COMPLETE guard
+    var mo = pallet.ManufacturingOrder;
+    if (!mo) {
+      return { success: false, message: 'ManufacturingOrder is empty for PalletID: ' + palletId };
+    }
+    var orderId = String(mo).trim().padStart(12, '0');
+
+    var finalOp = getFinalOperationCached_(mo);
+    if (!finalOp) {
+      return { success: false, message: 'FinalOperation not cached for MO: ' + mo };
+    }
+
+    var qty = pallet.QtyPerPallet;
+    if (!qty || qty <= 0) {
+      return { success: false, message: 'QtyPerPallet missing or invalid for PalletID: ' + palletId };
+    }
+
+    var payload = {
+      OrderID:                   orderId,
+      OrderOperation:            padOperation_(finalOp),
+      Sequence:                  '0',
+      ConfirmationYieldQuantity: String(qty),
+      ConfirmationScrapQuantity: '0',
+      ConfirmationUnit:          pallet.Unit || 'PC',
+      Plant:                     CFG.PLANT,
+      IsFinalConfirmation:       true,
+      FinalConfirmationType:     'X'
+    };
+
+    var result = postConfirmation_(payload);
+
+    if (result.skipped) {
+      return { success: false, message: 'SAP write disabled' };
+    }
+    if (result.dryRun) {
+      return { success: true, dryRun: true, message: 'DRY_RUN — would override-confirm ' + palletId };
+    }
+
+    if (result.ok) {
+      var matDoc = readMaterialDocument_(
+        result.confirmationGroup, result.confirmationCount, result.session
+      );
+
+      var now = new Date();
+      updatePalletScanFields_(palletId, {
+        ScanStatus:             'CONFIRMED',
+        ConfirmationGroup:      result.confirmationGroup,
+        ConfirmationCount:      result.confirmationCount,
+        ConfirmedAt:            now,
+        ConfirmedBy:            adminEmail || getActiveUserSafe_(),
+        GRMaterialDocument:     matDoc.materialDocument,
+        GRMaterialDocumentYear: matDoc.materialDocumentYear,
+        OverrideBy:             adminEmail,
+        OverrideReason:         reason,
+        OverrideAt:             now.toISOString()
+      });
+
+      // ---- 9. Audit log ----
+      logEvent('OVERRIDE_CONFIRM', 'OK',
+        'palletId=' + palletId + ' adminEmail=' + adminEmail +
+        ' reason=' + reason + ' fromStatus=' + fromStatus +
+        ' confirmationGroup=' + result.confirmationGroup);
+
+      // ---- 10. Return ----
+      return {
+        success: true,
+        confirmationGroup: result.confirmationGroup,
+        materialDocument: matDoc.materialDocument,
+        message: 'Override confirm สำเร็จ'
+      };
+    }
+
+    return { success: false, message: 'SAP POST returned unexpected result' };
+
+  } catch (e) {
+    logEvent('OVERRIDE_CONFIRM', 'FAIL',
+      'palletId=' + palletId + ' adminEmail=' + adminEmail +
+      ' reason=' + reason + ' fromStatus=' + fromStatus +
+      ' error=' + e.message);
+    return { success: false, message: 'Override confirm failed: ' + e.message };
+  }
+}
+
+/** Editor test — DRY_RUN first. Swap palletId for a real candidate. */
+function testConfirmPalletOverride() {
+  Logger.log(JSON.stringify(confirmPalletOverride('PL-1000034813-L02', 'ทดสอบ override — operator สแกนตกหล่น op กลาง'), null, 2));
+}
+
 /**
  * Test harness: backfill GRMaterialDocument for PL-1000035952-L01 and verify.
  */
