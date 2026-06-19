@@ -127,65 +127,83 @@ function diagnoseOrderOpConfirmation(orderId) {
     return;
   }
 
-  var path = CFG.ENDPOINTS.PRODUCTION_ORDERS + "('" + orderId + "')";
-  var params = {
-    '$expand': 'to_ProductionOrderOperation,to_ProductionOrderStatus',
-    '$select': [
-      'ManufacturingOrder',
-      'to_ProductionOrderOperation/ManufacturingOrderOperation',
-      'to_ProductionOrderOperation/MfgOrderOperationText',
-      'to_ProductionOrderOperation/WorkCenter',
-      'to_ProductionOrderOperation/OpPlannedTotalQuantity',
-      'to_ProductionOrderOperation/OpConfirmedYieldQuantity',
-      'to_ProductionOrderOperation/OperationIsConfirmed',
-      'to_ProductionOrderStatus/StatusCode',
-      'to_ProductionOrderStatus/StatusShortName'
-    ].join(',')
-  };
-
-  var data;
+  // Step 1: GET operations from production order service (no $select — discover real fields)
+  var opsPath = CFG.ENDPOINTS.PRODUCTION_ORDERS + "('" + orderId + "')/to_ProductionOrderOperation";
+  var ops = [];
   try {
-    data = sapGet(path, params, 'diagnoseOrderOpConfirmation');
+    var opsData = sapGet(opsPath, {}, 'diagnoseOrderOp:ops');
+    ops = ((opsData.d || {}).results) || [];
+    if (ops.length > 0) {
+      Logger.log('First operation raw keys: ' + JSON.stringify(Object.keys(ops[0])));
+    }
   } catch (e) {
-    Logger.log('SAP GET failed: ' + e.message);
-    return;
+    Logger.log('Operations GET failed: ' + e.message);
   }
 
-  var d = data.d || {};
-
-  var statuses = (d.to_ProductionOrderStatus || {}).results || [];
-  Logger.log('Order-level statuses (' + statuses.length + '): ' +
-    JSON.stringify(statuses.map(function (s) {
-      return { code: s.StatusCode, short: s.StatusShortName };
-    })));
-
-  var ops = (d.to_ProductionOrderOperation || {}).results || [];
-  ops.sort(function (a, b) {
-    return parseInt(a.ManufacturingOrderOperation, 10) -
-           parseInt(b.ManufacturingOrderOperation, 10);
+  var opNumbers = ops.map(function (op) {
+    return op.ManufacturingOrderOperation || op.OrderOperation || '?';
   });
+  Logger.log('Operations (' + ops.length + '): ' + JSON.stringify(opNumbers));
 
-  Logger.log('Operations (' + ops.length + '):');
-  ops.forEach(function (op, i) {
-    var confirmedYield = parseFloat(op.OpConfirmedYieldQuantity || '0');
-    var planned = parseFloat(op.OpPlannedTotalQuantity || '0');
-    var isConfirmedField = op.OperationIsConfirmed;
+  // Step 2: GET confirmations from API_PROD_ORDER_CONFIRMATION_2_SRV / ProdnOrdConf2
+  var confBase = CFG.SERVICES.PROD_ORDER_CONF + 'ProdnOrdConf2';
 
-    var looksConfirmed = false;
-    if (isConfirmedField === 'X' || isConfirmedField === true) {
-      looksConfirmed = true;
-    } else if (planned > 0 && confirmedYield >= planned) {
-      looksConfirmed = true;
+  // 2a: discover field names from a single row
+  var sampleKeys = [];
+  try {
+    var sample = sapGet(confBase, { '$top': '1' }, 'diagnoseOrderOp:confSample');
+    var sampleResults = ((sample.d || {}).results) || [];
+    if (sampleResults.length > 0) {
+      sampleKeys = Object.keys(sampleResults[0]);
+      Logger.log('ProdnOrdConf2 sample keys: ' + JSON.stringify(sampleKeys));
+    } else {
+      Logger.log('ProdnOrdConf2 returned 0 rows on sample query');
     }
+  } catch (e) {
+    Logger.log('Confirmation sample GET failed: ' + e.message);
+  }
 
-    Logger.log('  op[' + i + ']: ' + JSON.stringify({
-      opNo: op.ManufacturingOrderOperation,
-      opText: op.MfgOrderOperationText,
-      workCenter: op.WorkCenter,
-      plannedQty: planned,
-      confirmedYield: confirmedYield,
-      isConfirmedField: isConfirmedField !== undefined ? isConfirmedField : '(not in response)',
-      looksConfirmed: looksConfirmed
-    }));
-  });
+  // 2b: determine the order filter field
+  var orderField = 'ManufacturingOrder';
+  if (sampleKeys.length > 0 && sampleKeys.indexOf('ManufacturingOrder') === -1) {
+    var alt = sampleKeys.filter(function (k) { return /order/i.test(k) && !/operation/i.test(k); });
+    if (alt.length > 0) orderField = alt[0];
+    Logger.log('Order filter field resolved to: ' + orderField);
+  }
+
+  // 2c: fetch confirmations for this order
+  var confirmedOps = {};
+  try {
+    var confData = sapGet(confBase,
+      { '$filter': orderField + " eq '" + orderId + "'" },
+      'diagnoseOrderOp:conf');
+    var confs = ((confData.d || {}).results) || [];
+    Logger.log('Confirmations for ' + orderId + ': ' + confs.length + ' rows');
+    confs.forEach(function (c, i) {
+      var opNo = c.OrderOperation || c.ManufacturingOrderOperation || '?';
+      confirmedOps[opNo] = true;
+      Logger.log('  conf[' + i + ']: ' + JSON.stringify({
+        order: c[orderField],
+        operation: opNo,
+        yieldQty: c.ConfirmedYieldQuantity || c.ConfirmationYieldQuantity || '(n/a)',
+        confNo: c.ConfirmationGroup || c.ConfirmationCount || '(n/a)',
+        isFinal: c.IsFinalConfirmation
+      }));
+    });
+  } catch (e) {
+    Logger.log('Confirmation GET failed: ' + e.message);
+  }
+
+  // Step 3: summary
+  var withConf = opNumbers.filter(function (n) { return confirmedOps[n]; });
+  var withoutConf = opNumbers.filter(function (n) { return !confirmedOps[n]; });
+  Logger.log('SUMMARY — confirmed: [' + withConf.join(',') + '] | unconfirmed: [' + withoutConf.join(',') + ']');
+}
+/**
+ * Editor-runnable wrapper for diagnoseOrderOpConfirmation.
+ * The Apps Script Run button cannot pass arguments, so the test order ID
+ * is hardcoded here. Swap for any stuck order from diagnoseOverrideCandidates().
+ */
+function testDiagnoseOrderOp() {
+  diagnoseOrderOpConfirmation('1000034813');
 }

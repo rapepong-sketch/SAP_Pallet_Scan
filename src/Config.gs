@@ -108,7 +108,7 @@ const CFG = {
     ],
 
     PALLET_MASTER: [
-      // Single source of truth — PM_HEADERS in PalletGen.gs mirrors this 33-col layout
+      // Single source of truth — PM_HEADERS in PalletGen.gs mirrors this 36-col layout
       'PalletID', 'ManufacturingOrder', 'Material', 'MaterialName', 'Batch',
       'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
       'WorkCenter', 'ProductionDate', 'TotalQuantity', 'Plant', 'StorageLocation',
@@ -117,7 +117,8 @@ const CFG = {
       'GRMaterialDocument', 'GRMaterialDocumentYear',
       'ConfirmationGroup', 'ConfirmationCount', 'ConfirmedAt', 'ConfirmedBy',
       'QCStatus', 'QCResult', 'InspectionLot',
-      'LabelPrintedAt', 'UpdatedAt', 'QCResultNote'
+      'LabelPrintedAt', 'UpdatedAt', 'QCResultNote',
+      'OverrideBy', 'OverrideReason', 'OverrideAt'
     ],
 
     MOQ_CONFIG: [

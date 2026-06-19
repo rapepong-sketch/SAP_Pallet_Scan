@@ -10,9 +10,10 @@
 
 var PM_SHEET = 'PalletMaster';
 /**
- * 33-col layout — identical to CFG.HEADERS.PALLET_MASTER.
+ * 36-col layout — identical to CFG.HEADERS.PALLET_MASTER.
  * Indices 22-26 are Phase 3 SAP writeback columns added in the 28→33 migration.
- * buildPalletRow_() maps by name, so callers that don't set the 5 new keys
+ * Indices 33-35 are Phase 3.5 override audit columns.
+ * buildPalletRow_() maps by name, so callers that don't set the new keys
  * automatically get '' for those columns.
  */
 var PM_HEADERS = [
@@ -48,11 +49,14 @@ var PM_HEADERS = [
   'InspectionLot',           // 29
   'LabelPrintedAt',          // 30
   'UpdatedAt',               // 31
-  'QCResultNote'             // 32
+  'QCResultNote',            // 32
+  'OverrideBy',              // 33
+  'OverrideReason',          // 34
+  'OverrideAt'               // 35
 ];
 
 /**
- * Build a 33-col PalletMaster row array aligned to PM_HEADERS (= CFG layout).
+ * Build a 36-col PalletMaster row array aligned to PM_HEADERS (= CFG layout).
  * values = object keyed by column name; missing keys get ''.
  * Always use this instead of positional arrays — immune to column reorder.
  */
@@ -757,6 +761,63 @@ function backfillWorkCenter() {
 }
 
 // debugPalletMasterSchema → moved to Tests.gs
+
+// ============================================================================
+// Phase 3.5 schema migration
+// ============================================================================
+
+/**
+ * Phase 3.5 migration: append OverrideBy/OverrideReason/OverrideAt to the live
+ * PalletMaster header row (columns 34-36). Backs up first, idempotent, verifies.
+ * Never touches any data row. Reuse existing helpers for the spreadsheet/sheet
+ * handle and for logEvent; if a CFG constant holds the PalletMaster tab name,
+ * use it instead of a literal.
+ * @return {{status:string, backup:string}}
+ */
+function migrateOverrideColumns() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName(CFG.SHEETS.PALLET_MASTER);
+  if (!sh) throw new Error('migrateOverrideColumns: PalletMaster sheet not found');
+
+  // STEP 0 BACKUP
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss');
+  var backupName = 'PalletMaster_bak_' + stamp;
+  var bak = sh.copyTo(ss);
+  bak.setName(backupName);
+  Logger.log('STEP 0: backup created → ' + backupName);
+
+  // STEP 1 IDEMPOTENCY
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  if (hdr.indexOf('OverrideBy') !== -1) {
+    Logger.log('already migrated');
+    return { status: 'SKIP', backup: '' };
+  }
+
+  // STEP 2 PRECONDITION
+  if (hdr.length !== 33 || hdr[32] !== 'QCResultNote') {
+    var msg = 'unexpected layout: length=' + hdr.length + ' col33=' + hdr[32];
+    logEvent('MIGRATE', 'OVERRIDE_COLS', 'FAIL', 0, msg);
+    throw new Error('migrateOverrideColumns PRECONDITION FAILED — ' + msg);
+  }
+
+  // STEP 3 WRITE
+  var newCols = [['OverrideBy', 'OverrideReason', 'OverrideAt']];
+  sh.getRange(1, 34, 1, 3).setValues(newCols);
+  Logger.log('STEP 3: wrote 3 override columns at 34-36');
+
+  // STEP 4 VERIFY
+  var verified = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var ok = verified.length === 36 &&
+           verified[33] === 'OverrideBy' &&
+           verified[34] === 'OverrideReason' &&
+           verified[35] === 'OverrideAt';
+  logEvent('MIGRATE', 'OVERRIDE_COLS', ok ? 'OK' : 'FAIL', 0,
+    'len=' + verified.length + ' [33]=' + verified[33] + ' [34]=' + verified[34] + ' [35]=' + verified[35]);
+  Logger.log('STEP 4: ' + (ok ? 'PASS' : 'FAIL') + ' — ' + JSON.stringify(verified));
+
+  if (!ok) throw new Error('migrateOverrideColumns VERIFY FAILED');
+  return { status: 'OK', backup: backupName };
+}
 
 /** สะดวกเรียกจากเมนู: gen เฉพาะ order เดียว */
 function generatePalletsForOrder() {
