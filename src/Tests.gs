@@ -37,6 +37,15 @@
  * PALLET DIAGNOSTICS:
  *   diagnosePallet()               — PM_HEADERS vs CFG header desync diagnosis
  *                                    for 'PL-1000036350-L01' (READ-ONLY)
+ *
+ * PERFORMANCE:
+ *   timePreviewAllocation()         — profile previewPalletAllocation for STT1001-B1700S3ARX qty=450
+ *
+ * ALLOCATION DIAGNOSIS:
+ *   diagnoseMaterialAllocation()    — why does previewPalletAllocation return 0 for STT1001-B1700S3ARX?
+ *
+ * STORAGE LOCATION:
+ *   testStorageLocationBackfill()   — run populateMaterialStorageLocation() + verify
  * ──────────────────────────────────────────────────────────────
  */
 
@@ -866,4 +875,478 @@ function diagnosePallet() {
   }
 
   Logger.log('=== diagnosePallet complete ===');
+}
+
+// ============================================================================
+// MaterialMaster ProductGroup audit (READ-ONLY)
+// ============================================================================
+
+/**
+ * Audit MaterialMaster.ProductGroup population.
+ * READ-ONLY — no writes, no SAP calls.
+ * Run from Apps Script Editor → select diagnoseMaterialProductGroup → Run.
+ */
+function diagnoseMaterialProductGroup() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName('MaterialMaster');
+  if (!sh) { Logger.log('MaterialMaster sheet NOT FOUND'); return; }
+
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) { Logger.log('MaterialMaster has no data rows'); return; }
+
+  var data = sh.getRange(2, 1, lastRow - 1, MM_HEADERS.length).getValues();
+  var totalRows = data.length;
+
+  var nonEmpty = 0;
+  var empty = 0;
+  var groups = {};
+
+  for (var i = 0; i < data.length; i++) {
+    var mat = String(data[i][0] || '').trim();
+    if (!mat) continue;
+    var pg = String(data[i][MM_COL.PROD_GROUP - 1] || '').trim();
+    if (pg) {
+      nonEmpty++;
+      groups[pg] = (groups[pg] || 0) + 1;
+    } else {
+      empty++;
+    }
+  }
+
+  Logger.log('========================================');
+  Logger.log('MaterialMaster ProductGroup Audit');
+  Logger.log('========================================');
+  Logger.log('1) Total material rows (excl header): ' + totalRows);
+  Logger.log('');
+  Logger.log('2) ProductGroup populated: ' + nonEmpty + '  |  empty: ' + empty);
+  Logger.log('');
+
+  Logger.log('3) Distinct ProductGroup values:');
+  var keys = Object.keys(groups).sort();
+  if (keys.length === 0) {
+    Logger.log('   (none — all rows are empty)');
+  } else {
+    for (var k = 0; k < keys.length; k++) {
+      Logger.log('   "' + keys[k] + '"  →  ' + groups[keys[k]] + ' materials');
+    }
+  }
+  Logger.log('');
+
+  Logger.log('4) Specific material lookups:');
+  var targets = [
+    'STT1001-A0200S3XRX',
+    'STB1006-C0000005RX',
+    'STB1006-A0503S3XRX',
+    'FHW2001-101P30I03F'
+  ];
+  for (var t = 0; t < targets.length; t++) {
+    var found = false;
+    for (var j = 0; j < data.length; j++) {
+      if (String(data[j][0] || '').trim() === targets[t]) {
+        var pgVal = String(data[j][MM_COL.PROD_GROUP - 1] || '').trim();
+        Logger.log('   ' + targets[t] + '  →  ' + (pgVal || '(empty)'));
+        found = true;
+        break;
+      }
+    }
+    if (!found) Logger.log('   ' + targets[t] + '  →  (not in MaterialMaster)');
+  }
+  Logger.log('');
+
+  Logger.log('5) VERDICT:');
+  var pct = totalRows > 0 ? Math.round(nonEmpty / totalRows * 100) : 0;
+  Logger.log('   ' + nonEmpty + '/' + totalRows + ' rows populated (' + pct + '%)');
+  if (pct >= 80) {
+    Logger.log('   ✅ ProductGroup is well-populated — cascade is viable now.');
+  } else if (pct >= 30) {
+    Logger.log('   ⚠️ Partial coverage — cascade would work for ' + pct + '% of materials, backfill recommended for the rest.');
+  } else {
+    Logger.log('   ❌ ProductGroup is mostly empty — needs backfill before driving a cascade.');
+  }
+  Logger.log('========================================');
+}
+
+// ============================================================================
+// Preview allocation performance diagnosis
+// ============================================================================
+
+/**
+ * Performance profiler for previewPalletAllocation (post-optimization).
+ * Instruments the three data-loading functions + the full preview call for
+ * material STT1001-B1700S3ARX, qty 450.
+ *
+ * Reports: total ms, #REL orders, #SAP calls, #sheet reads, biggest sink,
+ * and execution-scope cache effectiveness.
+ */
+function timePreviewAllocation() {
+  var MAT = 'STT1001-B1700S3ARX';
+  var QTY = 450;
+
+  Logger.log('');
+  Logger.log('╔══════════════════════════════════════════════════════════╗');
+  Logger.log('║  timePreviewAllocation — performance profiler           ║');
+  Logger.log('║  material=' + MAT + '  qty=' + QTY + '      ║');
+  Logger.log('╚══════════════════════════════════════════════════════════╝');
+  Logger.log('');
+
+  // ---- 1. Time each data-loading function independently (cold reads) -------
+  clearAllocCache_();
+  var t0, t1;
+  var materialMap, poList, pmSummary;
+
+  t0 = Date.now();
+  materialMap = getMaterialMap();
+  t1 = Date.now();
+  var msMaterialMap = t1 - t0;
+  Logger.log('[1/3] getMaterialMap()               : ' + msMaterialMap + ' ms  (' + Object.keys(materialMap).length + ' materials with MOQ>0)');
+
+  clearAllocCache_();
+  t0 = Date.now();
+  poList = getReleasedPoDataForPreview_();
+  t1 = Date.now();
+  var msPoList = t1 - t0;
+  Logger.log('[2/3] getReleasedPoDataForPreview_() : ' + msPoList + ' ms  (' + poList.length + ' REL orders total)');
+
+  clearAllocCache_();
+  t0 = Date.now();
+  pmSummary = getPmPreviewSummary_();
+  t1 = Date.now();
+  var msPmSummary = t1 - t0;
+  var pmIds = _allocCache_.existingPalletIds ? Object.keys(_allocCache_.existingPalletIds).length : 0;
+  Logger.log('[3/3] getPmPreviewSummary_() (narrow): ' + msPmSummary + ' ms  (' + Object.keys(pmSummary).length + ' MOs, ' + pmIds + ' PalletIDs collected)');
+
+  var msDataLoad = msMaterialMap + msPoList + msPmSummary;
+  Logger.log('');
+  Logger.log('Data loading total (cold): ' + msDataLoad + ' ms');
+
+  // ---- 2. Count REL orders for this material --------------------------------
+  var candidates = poList.filter(function(po) { return po.Material === MAT; });
+  Logger.log('');
+  Logger.log('REL orders for ' + MAT + ': ' + candidates.length);
+  candidates.forEach(function(po, i) {
+    var pm = pmSummary[po.ManufacturingOrder] || { confirmedPalletQty: 0, nonConfirmedPalletQty: 0 };
+    var effectiveConfirmed = Math.max(po.MfgOrderConfirmedYieldQty, pm.confirmedPalletQty);
+    var availableQty = Math.max(0, po.TotalQuantity - effectiveConfirmed - pm.nonConfirmedPalletQty);
+    Logger.log('  [' + i + '] MO=' + po.ManufacturingOrder +
+      ' Total=' + po.TotalQuantity +
+      ' SAPConfirmedYield=' + po.MfgOrderConfirmedYieldQty +
+      ' confirmedPalletQty=' + pm.confirmedPalletQty +
+      ' nonConfirmedPalletQty=' + pm.nonConfirmedPalletQty +
+      ' → availableQty=' + availableQty);
+  });
+
+  // ---- 3. Full preview call timing (clears cache, re-reads) -----------------
+  Logger.log('');
+  t0 = Date.now();
+  var result = previewPalletAllocation([{ material: MAT, requestedQty: QTY }]);
+  t1 = Date.now();
+  var msPreview = t1 - t0;
+  Logger.log('previewPalletAllocation() total: ' + msPreview + ' ms');
+
+  // ---- 4. Cache effectiveness: second preview (should be near-zero reads) ---
+  t0 = Date.now();
+  var result2 = previewPalletAllocation([{ material: MAT, requestedQty: QTY }]);
+  t1 = Date.now();
+  var msPreview2 = t1 - t0;
+  Logger.log('previewPalletAllocation() 2nd call (cache cleared by entry): ' + msPreview2 + ' ms');
+  Logger.log('  (2nd call clears+re-reads; in commit flow, preview cache is reused for getMaterialMap + existingPalletIds)');
+
+  // ---- 5. Result summary ----------------------------------------------------
+  Logger.log('');
+  if (result && result.length > 0) {
+    var r = result[0];
+    Logger.log('Result: allocated=' + r.allocatedQty + ' shortfall=' + r.shortfall +
+      ' orders=' + r.orders.length +
+      ' pallets=' + r.orders.reduce(function(s, o) { return s + o.pallets.length; }, 0));
+  }
+
+  // ---- 6. Diagnosis summary -------------------------------------------------
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log('DIAGNOSIS SUMMARY');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log('Preview time         : ' + msPreview + ' ms');
+  Logger.log('  getMaterialMap     : ' + msMaterialMap + ' ms');
+  Logger.log('  getReleasedPO      : ' + msPoList + ' ms');
+  Logger.log('  getPmPreviewSummary: ' + msPmSummary + ' ms (narrow: 4 of 33 cols)');
+  Logger.log('  Data load subtotal : ' + msDataLoad + ' ms');
+  Logger.log('  Overhead (logEvent): ~' + Math.max(0, msPreview - msDataLoad) + ' ms (single summary append)');
+  Logger.log('');
+  Logger.log('#REL orders for material : ' + candidates.length);
+  Logger.log('#SAP HTTP calls          : 0');
+  Logger.log('#Sheet reads (preview)   : 3 (cached within execution) + 1 EventLog append');
+  Logger.log('#Sheet reads (commit)    : +1 PO full (getReleasedPoData_); MM + PM reuse cache');
+  Logger.log('');
+
+  var biggest = 'getMaterialMap';
+  var biggestMs = msMaterialMap;
+  if (msPoList > biggestMs)    { biggest = 'getReleasedPoDataForPreview_'; biggestMs = msPoList; }
+  if (msPmSummary > biggestMs) { biggest = 'getPmPreviewSummary_';        biggestMs = msPmSummary; }
+  Logger.log('Biggest single sink  : ' + biggest + ' (' + biggestMs + ' ms)');
+  Logger.log('══════════════════════════════════════════');
+}
+
+// ============================================================================
+// Material allocation diagnosis — why does previewPalletAllocation return 0?
+// ============================================================================
+
+/**
+ * Diagnose why previewPalletAllocation returns 0 pallets for a specific material.
+ * READ-ONLY — no writes, no SAP calls.
+ *
+ * Checks: (1) PO rows exist for the material, (2) MaterialMap has MOQ>0,
+ * (3) PalletMaster consumption per order, (4) actual previewPalletAllocation
+ * result, (5) verdict summarizing the root cause.
+ */
+function diagnoseMaterialAllocation() {
+  var MAT = 'STT1001-B1700S3ARX';
+
+  Logger.log('');
+  Logger.log('╔══════════════════════════════════════════════════════════╗');
+  Logger.log('║  diagnoseMaterialAllocation                             ║');
+  Logger.log('║  material=' + MAT + '                  ║');
+  Logger.log('╚══════════════════════════════════════════════════════════╝');
+
+  // ---- PART 1: List ALL ProductionOrders rows for MAT ----------------------
+  Logger.log('');
+  Logger.log('── PART 1: ProductionOrders rows for ' + MAT + ' ──');
+
+  var sh = getSpreadsheet_().getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  var poRows = [];
+  if (sh && sh.getLastRow() >= 2) {
+    var data = sh.getDataRange().getValues();
+    var hdr = data[0];
+    var idx = {};
+    hdr.forEach(function(h, i) { idx[h] = i; });
+
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][idx.Material] || '').trim() !== MAT) continue;
+      var row = data[r];
+      var mo       = String(row[idx.ManufacturingOrder] || '').trim();
+      var orderType = String(row[idx.ManufacturingOrderType] || '').trim();
+      var isRel    = row[idx.IsReleased];
+      var statusC  = String(row[idx.StatusCodes] || '').trim();
+      var sloc     = String(row[idx.StorageLocation] || '').trim();
+      var totalQty = Number(row[idx.TotalQuantity]) || 0;
+      var confirmed = Number(row[idx.MfgOrderConfirmedYieldQty]) || 0;
+
+      Logger.log('  MO=' + mo +
+        ' | Type=' + orderType +
+        ' | IsReleased=' + JSON.stringify(isRel) + ' (typeof ' + typeof isRel + ')' +
+        ' | StatusCodes=' + (statusC || '(empty)') +
+        ' | SLoc=' + (sloc || '(empty)') +
+        ' | TotalQty=' + totalQty +
+        ' | ConfirmedYield=' + confirmed);
+
+      poRows.push({ mo: mo, orderType: orderType, isRel: isRel, totalQty: totalQty, confirmed: confirmed });
+    }
+  }
+  Logger.log('PART 1 TOTAL: ' + poRows.length + ' PO rows for ' + MAT);
+  if (poRows.length === 0) {
+    Logger.log('  ⛔ No rows in ProductionOrders for this material — likely removed by removeStaleOrders_ during pullProductionOrders sync');
+  }
+
+  // ---- PART 2: MaterialMap check -------------------------------------------
+  Logger.log('');
+  Logger.log('── PART 2: getMaterialMap() lookup ──');
+
+  var materialMap = getMaterialMap();
+  var mmData = materialMap[MAT];
+  if (mmData) {
+    Logger.log('  FOUND in MaterialMap: moq=' + mmData.moq +
+      ' unit=' + mmData.unit +
+      ' status=' + mmData.status +
+      ' orderType=' + mmData.orderType +
+      ' storageLocation=' + (mmData.storageLocation || '(empty)') +
+      ' productGroup=' + (mmData.productGroup || '(empty)'));
+  } else {
+    Logger.log('  ⛔ NOT FOUND in MaterialMap (moq=0 or missing from MaterialMaster)');
+  }
+  var hasMoq = mmData && mmData.moq > 0;
+  Logger.log('  hasMoq=' + hasMoq + (hasMoq ? '' : ' → previewPalletAllocation will return NO_MOQ'));
+
+  // ---- PART 3: PalletMaster consumption per order --------------------------
+  Logger.log('');
+  Logger.log('── PART 3: PalletMaster rows for ' + MAT + ' orders ──');
+
+  var moSet = {};
+  poRows.forEach(function(p) { moSet[p.mo] = true; });
+
+  var pmSh = getSpreadsheet_().getSheetByName(CFG.SHEETS.PALLET_MASTER);
+  var pmByMo = {}; // { mo: { confirmedQty, nonConfirmedQty, count } }
+  if (pmSh && pmSh.getLastRow() >= 2) {
+    var pmData = pmSh.getDataRange().getValues();
+    var pmHdr = pmData[0];
+    var pmIdx = {};
+    pmHdr.forEach(function(h, i) { pmIdx[h] = i; });
+
+    for (var p = 1; p < pmData.length; p++) {
+      var pmMo     = String(pmData[p][pmIdx.ManufacturingOrder] || '').trim();
+      if (!moSet[pmMo]) continue;
+      var pmQty    = Number(pmData[p][pmIdx.QtyPerPallet]) || 0;
+      var pmStatus = String(pmData[p][pmIdx.ScanStatus] || '').trim().toUpperCase();
+
+      if (!pmByMo[pmMo]) pmByMo[pmMo] = { confirmedQty: 0, nonConfirmedQty: 0, count: 0 };
+      pmByMo[pmMo].count++;
+      if (pmStatus === 'CONFIRMED') {
+        pmByMo[pmMo].confirmedQty += pmQty;
+      } else {
+        pmByMo[pmMo].nonConfirmedQty += pmQty;
+      }
+
+      Logger.log('  PM: MO=' + pmMo +
+        ' QtyPerPallet=' + pmQty +
+        ' ScanStatus=' + pmStatus);
+    }
+  }
+
+  var moKeys = Object.keys(pmByMo);
+  if (moKeys.length === 0) {
+    Logger.log('  (no PalletMaster rows for any of these orders)');
+  } else {
+    moKeys.forEach(function(mo) {
+      var s = pmByMo[mo];
+      Logger.log('  SUMMARY MO=' + mo +
+        ': pallets=' + s.count +
+        ' confirmedQty=' + s.confirmedQty +
+        ' nonConfirmedQty(printed)=' + s.nonConfirmedQty +
+        ' totalConsumed=' + (s.confirmedQty + s.nonConfirmedQty));
+    });
+  }
+
+  // Compute availableQty per PO row using same logic as previewPalletAllocation
+  Logger.log('');
+  Logger.log('  Available qty per order (same calc as previewPalletAllocation):');
+  poRows.forEach(function(po) {
+    var pm = pmByMo[po.mo] || { confirmedQty: 0, nonConfirmedQty: 0 };
+    var effectiveConfirmed = Math.max(po.confirmed, pm.confirmedQty);
+    var alreadyPrinted = pm.nonConfirmedQty;
+    var available = Math.max(0, po.totalQty - effectiveConfirmed - alreadyPrinted);
+    Logger.log('    MO=' + po.mo +
+      ' TotalQty=' + po.totalQty +
+      ' effectiveConfirmed=' + effectiveConfirmed +
+      ' (SAP=' + po.confirmed + ', PM=' + pm.confirmedQty + ')' +
+      ' alreadyPrinted=' + alreadyPrinted +
+      ' → availableQty=' + available);
+  });
+
+  // ---- PART 4: Actual previewPalletAllocation result -----------------------
+  Logger.log('');
+  Logger.log('── PART 4: previewPalletAllocation() result ──');
+
+  var result = previewPalletAllocation([{ material: MAT, requestedQty: 450 }]);
+  if (result && result.length > 0) {
+    var res = result[0];
+    Logger.log('  material=' + res.material +
+      ' requestedQty=' + res.requestedQty +
+      ' allocatedQty=' + res.allocatedQty +
+      ' shortfall=' + res.shortfall +
+      (res.error ? ' error=' + res.error : ''));
+
+    if (res.orders && res.orders.length > 0) {
+      res.orders.forEach(function(o, i) {
+        Logger.log('  order[' + i + ']: MO=' + o.manufacturingOrder +
+          ' totalQty=' + o.totalQuantity +
+          ' confirmedQty=' + o.confirmedQty +
+          ' alreadyPrinted=' + o.alreadyPrintedQty +
+          ' availableQty=' + o.availableQty +
+          ' allocated=' + o.allocatedFromThisOrder +
+          ' pallets=' + o.pallets.length);
+        o.pallets.forEach(function(p) {
+          Logger.log('    L' + (p.palletSeq < 10 ? '0' : '') + p.palletSeq + ' qty=' + p.qty);
+        });
+      });
+    } else {
+      Logger.log('  NO ORDERS AFTER FILTER — candidates empty or all availableQty=0');
+    }
+  } else {
+    Logger.log('  previewPalletAllocation returned empty array');
+  }
+
+  Logger.log('  FULL RESULT: ' + JSON.stringify(result, null, 2));
+
+  // ---- PART 5: Verdict -----------------------------------------------------
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log('VERDICT');
+  Logger.log('══════════════════════════════════════════');
+
+  var allocatedQty = (result && result[0]) ? result[0].allocatedQty : 0;
+  var error        = (result && result[0]) ? (result[0].error || '') : '';
+
+  if (poRows.length === 0) {
+    Logger.log('ROOT CAUSE: No ProductionOrders rows for ' + MAT + '.');
+    Logger.log('  Orders were likely removed by removeStaleOrders_ during');
+    Logger.log('  pullProductionOrders sync (order no longer passes isReleasedOrder_).');
+  } else if (!hasMoq) {
+    Logger.log('ROOT CAUSE: Material not in getMaterialMap() (MOQ=0 or missing).');
+    Logger.log('  previewPalletAllocation returns NO_MOQ error=' + error);
+  } else if (allocatedQty > 0) {
+    Logger.log('ALLOCATION OK: allocated=' + allocatedQty + ' — issue may be timing/stale cache.');
+  } else {
+    // poRows exist and hasMoq but allocated=0 → all availableQty consumed
+    var allConsumed = true;
+    var anyRelFalse = false;
+    poRows.forEach(function(po) {
+      var pm = pmByMo[po.mo] || { confirmedQty: 0, nonConfirmedQty: 0 };
+      var effectiveConfirmed = Math.max(po.confirmed, pm.confirmedQty);
+      var available = Math.max(0, po.totalQty - effectiveConfirmed - pm.nonConfirmedQty);
+      if (available > 0) allConsumed = false;
+      if (!po.isRel && po.isRel !== 'TRUE' && po.isRel !== true) anyRelFalse = true;
+    });
+
+    if (anyRelFalse) {
+      Logger.log('ROOT CAUSE: PO rows exist but IsReleased is falsy for some/all.');
+      Logger.log('  getReleasedPoDataForPreview_ skips rows where IsReleased is not true/TRUE.');
+      Logger.log('  Per-order IsReleased values:');
+      poRows.forEach(function(po) {
+        var passes = !(!po.isRel && po.isRel !== 'TRUE' && po.isRel !== true);
+        Logger.log('    MO=' + po.mo + ' IsReleased=' + JSON.stringify(po.isRel) + ' passes=' + passes);
+      });
+    } else if (allConsumed) {
+      Logger.log('ROOT CAUSE: All orders have availableQty=0.');
+      Logger.log('  TotalQuantity fully consumed by confirmedQty + alreadyPrintedQty.');
+    } else {
+      Logger.log('ROOT CAUSE: Unknown — PO rows exist, IsReleased=true, MOQ>0,');
+      Logger.log('  availableQty>0 for some orders, yet allocation=0.');
+      Logger.log('  Check previewPalletAllocation FULL RESULT above for clues.');
+    }
+  }
+
+  Logger.log('');
+  Logger.log('SUMMARY: poRows=' + poRows.length +
+    ' hasMoq=' + hasMoq +
+    ' allocatedQty=' + allocatedQty +
+    ' error=' + (error || 'none'));
+  Logger.log('══════════════════════════════════════════');
+}
+
+// ============================================================================
+// StorageLocation backfill test
+// ============================================================================
+
+/**
+ * Test populateMaterialStorageLocation() and verify results for known materials.
+ * Calls the backfill, then reads back specific materials to confirm SLoc values.
+ */
+function testStorageLocationBackfill() {
+  Logger.log('=== testStorageLocationBackfill ===');
+
+  const result = populateMaterialStorageLocation();
+  Logger.log('Result: ' + JSON.stringify(result));
+
+  const map = getMaterialMap();
+  const checks = ['STT1001-A0200S3XRX', 'STB1006-C0000005RX', 'STB1006-A0503S3XRX'];
+  checks.forEach(mat => {
+    const info = map[mat];
+    Logger.log(mat + ' → SLoc=' + (info ? info.storageLocation || '(empty)' : 'NOT IN MAP'));
+  });
+
+  // Find 2 PDFG materials (expect WF01)
+  const pdfgSamples = Object.keys(map).filter(m => map[m].orderType === 'PDFG').slice(0, 2);
+  pdfgSamples.forEach(mat => {
+    Logger.log(mat + ' (PDFG) → SLoc=' + (map[mat].storageLocation || '(empty)'));
+  });
+
+  Logger.log('=== testStorageLocationBackfill complete ===');
 }

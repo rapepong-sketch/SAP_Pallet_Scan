@@ -127,7 +127,7 @@ const CFG = {
 
     MATERIAL_MASTER: [
       'Material', 'MaterialName', 'OrderType', 'ProductGroup', 'MOQ_Per_Pallet',
-      'Unit', 'MaxPalletQty', 'Status', 'Remark'
+      'Unit', 'MaxPalletQty', 'Status', 'Remark', 'StorageLocation'
     ],
 
     PRINT_QUEUE: [

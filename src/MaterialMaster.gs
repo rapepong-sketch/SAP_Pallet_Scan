@@ -10,10 +10,10 @@
 const MM_SHEET = 'MaterialMaster';
 const MM_HEADERS = [
   'Material', 'MaterialName', 'OrderType', 'ProductGroup', 'MOQ_Per_Pallet',
-  'Unit', 'MaxPalletQty', 'Status', 'Remark'
+  'Unit', 'MaxPalletQty', 'Status', 'Remark', 'StorageLocation'
 ];
 // Column indices (1-based) for targeted updates
-const MM_COL = { MAT:1, NAME:2, ORDER_TYPE:3, PROD_GROUP:4, MOQ:5, UNIT:6, MAX_QTY:7, STATUS:8, REMARK:9 };
+const MM_COL = { MAT:1, NAME:2, ORDER_TYPE:3, PROD_GROUP:4, MOQ:5, UNIT:6, MAX_QTY:7, STATUS:8, REMARK:9, SLOC:10 };
 
 // ============================================================================
 // Sheet bootstrap
@@ -54,7 +54,7 @@ function syncMaterialMaster() {
 
   // ---- Build PO material map -----------------------------------------------
   const poSheet = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
-  const poMaterialMap = {}; // { material: { orderType, unit } }
+  const poMaterialMap = {}; // { material: { orderType, unit, storageLocation } }
   if (poSheet && poSheet.getLastRow() > 1) {
     const data = poSheet.getDataRange().getValues();
     const hdr = data[0];
@@ -64,8 +64,9 @@ function syncMaterialMaster() {
       const mat = String(data[r][idx.Material] || '').trim();
       if (!mat || poMaterialMap[mat]) continue;
       poMaterialMap[mat] = {
-        orderType: String(data[r][idx.ManufacturingOrderType] || '').trim(),
-        unit:      String(data[r][idx.ProductionUnit] || '').trim()
+        orderType:       String(data[r][idx.ManufacturingOrderType] || '').trim(),
+        unit:            String(data[r][idx.ProductionUnit] || '').trim(),
+        storageLocation: String(data[r][idx.StorageLocation] || '').trim()
       };
     }
   }
@@ -100,7 +101,8 @@ function syncMaterialMaster() {
         String(row[4] || '').trim() || poInfo.unit || '',
         Number(row[5]) || 0,
         moq > 0 ? 'CONFIRMED' : 'NEW',
-        String(row[6] || '').trim()
+        String(row[6] || '').trim(),
+        poInfo.storageLocation || ''
       ];
       sh.appendRow(mmRow);
       existingRows[mat] = sh.getLastRow();
@@ -114,7 +116,7 @@ function syncMaterialMaster() {
   Object.keys(poMaterialMap).forEach(mat => {
     if (existingRows[mat]) return;
     const po = poMaterialMap[mat];
-    toInsert.push([mat, '', po.orderType, '', '', po.unit, '', 'NEW', '⚠️ ต้องแก้ไข MOQ']);
+    toInsert.push([mat, '', po.orderType, '', '', po.unit, '', 'NEW', '⚠️ ต้องแก้ไข MOQ', po.storageLocation]);
   });
   if (toInsert.length) {
     const startRow = sh.getLastRow() + 1;
@@ -275,12 +277,82 @@ function fetchProductDescriptions_(filter, lang) {
 }
 
 // ============================================================================
+// StorageLocation backfill from ProductionOrders
+// ============================================================================
+
+/**
+ * Populate MaterialMaster.StorageLocation from ProductionOrders for all rows.
+ * Each material gets the first non-empty StorageLocation found across its orders.
+ * Logs a warning if a material has conflicting SLocs (shouldn't happen per audit).
+ * @return {{filled:number, missing:number}}
+ */
+function populateMaterialStorageLocation() {
+  const t0 = Date.now();
+  const ss = getSpreadsheet_();
+
+  // ---- Build material -> StorageLocation map from ProductionOrders ----------
+  const poSheet = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  const slocMap = {}; // { material: storageLocation }
+  if (poSheet && poSheet.getLastRow() > 1) {
+    const poData = poSheet.getDataRange().getValues();
+    const poHdr = poData[0];
+    const poIdx = {};
+    poHdr.forEach((h, i) => { poIdx[h] = i; });
+    for (let r = 1; r < poData.length; r++) {
+      const mat  = String(poData[r][poIdx.Material] || '').trim();
+      const sloc = String(poData[r][poIdx.StorageLocation] || '').trim();
+      if (!mat || !sloc) continue;
+      if (slocMap[mat] && slocMap[mat] !== sloc) {
+        logEvent('SLOC_BACKFILL', mat, 'WARN', 0, mat + ' conflicting sloc: ' + slocMap[mat] + ' vs ' + sloc);
+      }
+      if (!slocMap[mat]) slocMap[mat] = sloc;
+    }
+  }
+
+  // ---- Write StorageLocation to MaterialMaster rows -------------------------
+  const sh = ss.getSheetByName(MM_SHEET);
+  if (!sh || sh.getLastRow() < 2) {
+    logEvent('SLOC_BACKFILL', '-', 'OK', Date.now() - t0, 'no data rows');
+    return { filled: 0, missing: 0 };
+  }
+
+  const mmHdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const matCol  = mmHdr.indexOf('Material');
+  const slocCol = mmHdr.indexOf('StorageLocation');
+  if (slocCol < 0) {
+    logEvent('SLOC_BACKFILL', '-', 'ERROR', 0, 'StorageLocation column not found — run setupSheets() first');
+    throw new Error('StorageLocation column not found in MaterialMaster — run setupSheets() first');
+  }
+
+  const data = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+  let filled = 0;
+  let missing = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const mat = String(data[i][matCol] || '').trim();
+    if (!mat) continue;
+    const sloc = slocMap[mat] || '';
+    if (sloc) {
+      sh.getRange(i + 2, slocCol + 1).setValue(sloc);
+      filled++;
+    } else {
+      missing++;
+    }
+  }
+
+  const note = 'filled=' + filled + ' missing=' + missing;
+  logEvent('SLOC_BACKFILL', '-', 'OK', Date.now() - t0, note);
+  Logger.log('populateMaterialStorageLocation: ' + note);
+  return { filled: filled, missing: missing };
+}
+
+// ============================================================================
 // Read API
 // ============================================================================
 
 /**
  * Returns usable material map (only rows where MOQ_Per_Pallet > 0).
- * @return {Object} { 'MATCODE': { name, orderType, productGroup, moq, unit, maxQty, status } }
+ * @return {Object} { 'MATCODE': { name, orderType, productGroup, moq, unit, maxQty, status, storageLocation } }
  */
 function getMaterialMap() {
   const sh = getSpreadsheet_().getSheetByName(MM_SHEET);
@@ -290,17 +362,65 @@ function getMaterialMap() {
   const map = {};
   data.forEach(row => {
     const mat = String(row[0] || '').trim();
-    const moq = Number(row[4]) || 0;
+    const moq = Number(row[MM_COL.MOQ - 1]) || 0;
     if (!mat || moq <= 0) return;
     map[mat] = {
-      name:         String(row[1] || '').trim(),
-      orderType:    String(row[2] || '').trim(),
-      productGroup: String(row[3] || '').trim(),
-      moq:          moq,
-      unit:         String(row[5] || '').trim(),
-      maxQty:       Number(row[6]) || 0,
-      status:       String(row[7] || '').trim()
+      name:            String(row[MM_COL.NAME - 1] || '').trim(),
+      orderType:       String(row[MM_COL.ORDER_TYPE - 1] || '').trim(),
+      productGroup:    String(row[MM_COL.PROD_GROUP - 1] || '').trim(),
+      moq:             moq,
+      unit:            String(row[MM_COL.UNIT - 1] || '').trim(),
+      maxQty:          Number(row[MM_COL.MAX_QTY - 1]) || 0,
+      status:          String(row[MM_COL.STATUS - 1] || '').trim(),
+      storageLocation: String(row[MM_COL.SLOC - 1] || '').trim()
     };
   });
   return map;
+}
+
+/**
+ * Build a nested cascade structure for the AdminPrint 3-level dropdown UI.
+ * Loads once on page init — no further server round-trips needed.
+ *
+ * @return {{
+ *   storageLocations: string[],
+ *   byLocation: Object.<string, {
+ *     productGroups: string[],
+ *     byGroup: Object.<string, Array<{code:string, name:string, moq:number, unit:string}>>
+ *   }>
+ * }}
+ */
+function getCascadeData() {
+  const t0 = Date.now();
+  const map = getMaterialMap();
+
+  const tree = {};
+
+  Object.keys(map).forEach(code => {
+    const m    = map[code];
+    const sloc = m.storageLocation;
+    if (!sloc) return;
+    const group = m.productGroup || '(ไม่ระบุกลุ่ม)';
+
+    if (!tree[sloc]) tree[sloc] = {};
+    if (!tree[sloc][group]) tree[sloc][group] = [];
+    tree[sloc][group].push({ code: code, name: m.name, moq: m.moq, unit: m.unit });
+  });
+
+  const storageLocations = Object.keys(tree).sort();
+  const byLocation = {};
+
+  storageLocations.forEach(sloc => {
+    const groups = Object.keys(tree[sloc]).sort();
+    const byGroup = {};
+    groups.forEach(g => {
+      byGroup[g] = tree[sloc][g].sort((a, b) => a.code < b.code ? -1 : 1);
+    });
+    byLocation[sloc] = { productGroups: groups, byGroup: byGroup };
+  });
+
+  logEvent('CASCADE_DATA', '-', 'OK', Date.now() - t0,
+    'locs=' + storageLocations.length + ' materials=' + Object.keys(map).length);
+
+  return { storageLocations: storageLocations, byLocation: byLocation };
 }

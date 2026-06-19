@@ -1,23 +1,667 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
-  <meta charset="utf-8">
-  <title>Admin — Print Pallet Sheets</title>
-  <style>
-    body { font-family: 'Sarabun', Arial, sans-serif; background: #eef2f7; color: #2c3e50; padding: 24px; }
-    h1 { font-size: 1.4em; margin-bottom: 12px; }
-    .email { color: #666; font-size: 0.9em; margin-bottom: 16px; }
-    .placeholder { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 24px; text-align: center; color: #888; }
-  </style>
+<meta charset="utf-8">
+<title>Admin — Print Pallet Sheets</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Sarabun','Segoe UI',Arial,sans-serif;background:#f0f2f5;color:#1a1a2e;padding:20px 24px;font-size:16px}
+
+.hdr{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px}
+.hdr h1{font-size:1.4em;font-weight:700}
+.hdr .email{color:#666;font-size:0.85em;margin-left:auto}
+.badge{display:inline-block;padding:4px 14px;border-radius:4px;font-size:0.85em;font-weight:700;letter-spacing:.3px}
+.badge-dry{background:#d4edda;color:#155724;border:1px solid #28a745}
+.badge-live{background:#f8d7da;color:#721c24;border:2px solid #dc3545;animation:pulse 1.5s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(220,53,69,.3)}50%{box-shadow:0 0 0 6px rgba(220,53,69,0)}}
+
+.sec{background:#fff;border-radius:8px;border:1px solid #dee2e6;padding:18px 22px;margin-bottom:16px}
+.sec h3{font-size:1.1em;margin-bottom:12px}
+
+.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border:none;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;transition:background .15s,opacity .15s}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-pri{background:#2563eb;color:#fff}.btn-pri:hover:not(:disabled){background:#1d4ed8}
+.btn-ok{background:#28a745;color:#fff}.btn-ok:hover:not(:disabled){background:#218838}
+.btn-sec{background:#e9ecef;color:#495057}.btn-sec:hover:not(:disabled){background:#dee2e6}
+.btn-danger{background:#dc3545;color:#fff}.btn-danger:hover:not(:disabled){background:#b02a37}
+.btn-sm{padding:6px 14px;font-size:.88em;border-radius:4px}
+
+/* ---- Cascade input grid ---- */
+.inp-grid{width:100%;margin-bottom:12px}
+.inp-grid-hdr{display:grid;grid-template-columns:1fr 1fr 1.4fr 140px 44px;gap:10px;padding:8px 10px;background:#f8f9fa;border-bottom:2px solid #dee2e6;border-radius:6px 6px 0 0}
+.inp-grid-hdr span{font-size:.82em;color:#555;text-transform:uppercase;letter-spacing:.3px;font-weight:600}
+.inp-row{display:grid;grid-template-columns:1fr 1fr 1.4fr 140px 44px;gap:10px;align-items:start;padding:10px 10px;border-bottom:1px solid #eee}
+.inp-row:last-child{border-bottom:none}
+.inp-row select,.inp-row input[type=number]{
+  width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:5px;
+  font-size:15px;font-family:inherit;min-height:40px;background:#fff;
+  appearance:auto;-webkit-appearance:auto}
+.inp-row select:disabled{background:#f0f0f0;color:#999}
+.inp-row select:focus,.inp-row input:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.15)}
+.moq-tag{font-size:.82em;color:#6c757d;margin-top:4px;min-height:18px}
+.row-note{font-size:.82em;color:#dc3545;margin-top:3px;min-height:16px}
+
+.mat-card{border:1px solid #dee2e6;border-radius:6px;margin-bottom:14px;overflow:hidden}
+.mat-card-hdr{background:#f8f9fa;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mat-card-hdr .code{font-weight:700;font-size:.95em}
+.mat-card-hdr .name{color:#555;font-size:.88em}
+.mat-card-hdr .moq-tag-preview{font-size:.78em;color:#6c757d;background:#e9ecef;padding:2px 8px;border-radius:3px}
+.mat-summary{display:flex;gap:18px;padding:8px 14px;font-size:.9em;border-bottom:1px solid #eee;flex-wrap:wrap}
+.mat-summary b{color:#1a1a2e}
+.mat-summary .short{color:#dc3545;font-weight:700}
+.mat-error{color:#dc3545;font-weight:600;padding:8px 14px;font-size:.9em}
+
+.ord-tbl{width:100%;border-collapse:collapse;font-size:.88em}
+.ord-tbl th{padding:6px 10px;text-align:left;font-size:.78em;color:#555;text-transform:uppercase;background:#fafbfc;border-bottom:1px solid #eee}
+.ord-tbl td{padding:6px 10px;border-bottom:1px solid #f5f5f5}
+.ord-row{cursor:pointer}.ord-row:hover{background:#f0f7ff}
+.ord-row td:first-child::before{content:'\25B8  ';color:#2563eb;font-size:.8em}
+.ord-row.open td:first-child::before{content:'\25BE  '}
+.pallet-detail{display:none}
+.pallet-detail.open{display:table-row}
+.pallet-detail td{padding:6px 10px 8px 30px;background:#fafbfc;border-bottom:1px solid #eee}
+.pallet-item{display:inline-block;padding:3px 10px;margin:2px 4px;background:#e8f0fe;border-radius:3px;font-size:.84em}
+.pallet-item.merged{background:#fff3cd;border:1px solid #ffc107}
+.merged-note{font-size:.72em;color:#856404;margin-left:4px}
+
+.grand-total{padding:10px 14px;font-size:.95em;font-weight:600;border-top:2px solid #dee2e6;background:#f8f9fa;border-radius:0 0 6px 6px}
+
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;justify-content:center;align-items:center}
+.modal-bg.open{display:flex}
+.modal{background:#fff;border-radius:10px;padding:24px 28px;max-width:520px;width:92%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.2)}
+.modal h2{font-size:1.15em;margin-bottom:14px}
+.modal .warn{background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.88em;color:#856404;font-weight:600}
+.modal-acts{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+
+.result-counts{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px}
+.result-counts span{font-size:.9em;font-weight:600}
+.result-list{max-height:220px;overflow-y:auto;font-size:.85em;margin-top:8px;border:1px solid #eee;border-radius:4px;padding:8px 12px}
+.result-item{padding:2px 0}
+.result-item.skip{color:#856404}
+
+.spin{display:inline-block;width:16px;height:16px;border:2px solid #dee2e6;border-top-color:#2563eb;border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+#status{margin-top:12px;padding:8px 14px;border-radius:6px;display:none;font-size:.9em}
+.st-ok{background:#d4edda;color:#155724}.st-err{background:#f8d7da;color:#721c24}
+.st-warn{background:#fff3cd;color:#856404}.st-info{background:#d1ecf1;color:#0c5460}
+</style>
 </head>
 <body>
-  <h1>🖨️ Admin — Print Pallet Sheets</h1>
-  <div class="email" id="userEmail"></div>
-  <div class="placeholder">UI coming in next step.</div>
-  <script>
-    google.script.run.withSuccessHandler(function(email) {
-      document.getElementById('userEmail').textContent = 'Signed in as: ' + (email || '(unknown)');
-    }).getActiveUserEmail();
-  </script>
+
+<div class="hdr">
+  <h1>PJ Chonburi &mdash; พิมพ์ใบติดตามพาเลท</h1>
+  <span id="badge"></span>
+  <span class="email" id="userEmail"></span>
+</div>
+
+<!-- Input -->
+<div class="sec" id="secInput">
+  <div class="inp-grid">
+    <div class="inp-grid-hdr">
+      <span>คลังสินค้า</span>
+      <span>กลุ่มสินค้า</span>
+      <span>รหัสสินค้า</span>
+      <span>จำนวน (PCS)</span>
+      <span></span>
+    </div>
+    <div id="inputBody"></div>
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <button class="btn btn-sec btn-sm" onclick="addRow()">+ เพิ่มรหัส</button>
+    <button class="btn btn-pri" id="btnPreview" onclick="doPreview()">ดูตัวอย่าง</button>
+    <span id="loadNote" style="font-size:.82em;color:#888"></span>
+  </div>
+</div>
+
+<!-- Preview -->
+<div class="sec" id="secPreview" style="display:none">
+  <h3>ตัวอย่างการจัดสรร</h3>
+  <div id="previewContent"></div>
+  <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+    <button class="btn btn-ok" id="btnCommit" onclick="doCommit()" disabled>ยืนยันสร้าง + พิมพ์</button>
+    <span id="commitNote" style="font-size:.82em;color:#888"></span>
+  </div>
+</div>
+
+<!-- Result -->
+<div class="sec" id="secResult" style="display:none">
+  <h3>ผลลัพธ์</h3>
+  <div id="resultContent"></div>
+  <div style="margin-top:12px">
+    <button class="btn btn-pri" id="btnPrint" onclick="openPrint()" style="display:none">เปิดหน้าพิมพ์</button>
+  </div>
+</div>
+
+<!-- Confirm modal -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h2>ยืนยันสร้างพาเลท</h2>
+    <div id="modalBody"></div>
+    <div class="modal-acts">
+      <button class="btn btn-sec" onclick="closeModal()">ยกเลิก</button>
+      <button class="btn btn-danger" id="btnModalOk" onclick="executeCommit()">ยืนยันสร้าง</button>
+    </div>
+  </div>
+</div>
+
+<div id="status"></div>
+
+<script>
+var previewData = null;
+var cascadeData = null;
+var moqCache = {};
+var createdIds = [];
+var grandTotalPallets = 0;
+
+// ========== Init ==========
+
+google.script.run.withSuccessHandler(function(e) {
+  document.getElementById('userEmail').textContent = (e || '(unknown)');
+}).getActiveUserEmail();
+
+google.script.run.withSuccessHandler(function(s) {
+  var el = document.getElementById('badge');
+  if (s.dryRun) {
+    el.innerHTML = '<span class="badge badge-dry">DRY RUN</span>';
+  } else {
+    el.innerHTML = '<span class="badge badge-live">LIVE</span>';
+  }
+}).getSapStatus();
+
+document.getElementById('loadNote').textContent = 'กำลังโหลดข้อมูลสินค้า...';
+document.getElementById('btnPreview').disabled = true;
+
+google.script.run
+  .withSuccessHandler(function(data) {
+    cascadeData = data;
+    // Build moqCache from cascade data for preview rendering
+    data.storageLocations.forEach(function(loc) {
+      var locData = data.byLocation[loc];
+      locData.productGroups.forEach(function(grp) {
+        locData.byGroup[grp].forEach(function(m) {
+          moqCache[m.code] = { moq: m.moq, name: m.name, unit: m.unit };
+        });
+      });
+    });
+    document.getElementById('loadNote').textContent = '';
+    document.getElementById('btnPreview').disabled = false;
+    addRow();
+  })
+  .withFailureHandler(function(e) {
+    document.getElementById('loadNote').textContent = 'โหลดข้อมูลล้มเหลว: ' + e.message;
+  })
+  .getCascadeData();
+
+// ========== Row management ==========
+
+function addRow() {
+  if (!cascadeData) return;
+
+  var row = document.createElement('div');
+  row.className = 'inp-row';
+
+  // StorageLocation select
+  var selLoc = document.createElement('select');
+  selLoc.className = 'sel-loc';
+  var optDef = document.createElement('option');
+  optDef.value = '';
+  optDef.textContent = 'เลือกคลัง';
+  selLoc.appendChild(optDef);
+  cascadeData.storageLocations.forEach(function(loc) {
+    var o = document.createElement('option');
+    o.value = loc;
+    o.textContent = loc;
+    selLoc.appendChild(o);
+  });
+
+  // ProductGroup select
+  var selGrp = document.createElement('select');
+  selGrp.className = 'sel-grp';
+  selGrp.disabled = true;
+  var optGrpDef = document.createElement('option');
+  optGrpDef.value = '';
+  optGrpDef.textContent = 'เลือกกลุ่ม';
+  selGrp.appendChild(optGrpDef);
+
+  // Material select
+  var selMat = document.createElement('select');
+  selMat.className = 'sel-mat';
+  selMat.disabled = true;
+  var optMatDef = document.createElement('option');
+  optMatDef.value = '';
+  optMatDef.textContent = 'เลือกสินค้า';
+  selMat.appendChild(optMatDef);
+
+  // Qty input
+  var inpQty = document.createElement('input');
+  inpQty.type = 'number';
+  inpQty.className = 'qi';
+  inpQty.min = '1';
+  inpQty.placeholder = 'จำนวน';
+
+  // Delete button
+  var btnDel = document.createElement('button');
+  btnDel.className = 'btn btn-danger btn-sm';
+  btnDel.textContent = '✕';
+  btnDel.onclick = function() { removeRow(btnDel); };
+
+  // Wrap location cell (select + moq display)
+  var cellLoc = document.createElement('div');
+  cellLoc.appendChild(selLoc);
+
+  var cellGrp = document.createElement('div');
+  cellGrp.appendChild(selGrp);
+
+  var cellMat = document.createElement('div');
+  cellMat.appendChild(selMat);
+  var moqDiv = document.createElement('div');
+  moqDiv.className = 'moq-tag';
+  cellMat.appendChild(moqDiv);
+
+  var cellQty = document.createElement('div');
+  cellQty.appendChild(inpQty);
+  var noteDiv = document.createElement('div');
+  noteDiv.className = 'row-note';
+  cellQty.appendChild(noteDiv);
+
+  row.appendChild(cellLoc);
+  row.appendChild(cellGrp);
+  row.appendChild(cellMat);
+  row.appendChild(cellQty);
+  row.appendChild(btnDel);
+
+  // Event: location change -> populate groups
+  selLoc.addEventListener('change', function() {
+    var loc = selLoc.value;
+    // Reset downstream
+    selGrp.innerHTML = '';
+    selMat.innerHTML = '';
+    moqDiv.textContent = '';
+    var defGrp = document.createElement('option');
+    defGrp.value = '';
+    defGrp.textContent = 'เลือกกลุ่ม';
+    selGrp.appendChild(defGrp);
+    var defMat = document.createElement('option');
+    defMat.value = '';
+    defMat.textContent = 'เลือกสินค้า';
+    selMat.appendChild(defMat);
+
+    if (loc && cascadeData.byLocation[loc]) {
+      var groups = cascadeData.byLocation[loc].productGroups;
+      groups.forEach(function(g) {
+        var o = document.createElement('option');
+        o.value = g;
+        o.textContent = g;
+        selGrp.appendChild(o);
+      });
+      selGrp.disabled = false;
+      // Auto-select if only one group
+      if (groups.length === 1) {
+        selGrp.value = groups[0];
+        selGrp.dispatchEvent(new Event('change'));
+      }
+    } else {
+      selGrp.disabled = true;
+    }
+    selMat.disabled = true;
+  });
+
+  // Event: group change -> populate materials
+  selGrp.addEventListener('change', function() {
+    var loc = selLoc.value;
+    var grp = selGrp.value;
+    selMat.innerHTML = '';
+    moqDiv.textContent = '';
+    var defMat = document.createElement('option');
+    defMat.value = '';
+    defMat.textContent = 'เลือกสินค้า';
+    selMat.appendChild(defMat);
+
+    if (loc && grp && cascadeData.byLocation[loc] && cascadeData.byLocation[loc].byGroup[grp]) {
+      var mats = cascadeData.byLocation[loc].byGroup[grp];
+      mats.forEach(function(m) {
+        var o = document.createElement('option');
+        o.value = m.code;
+        o.textContent = m.code + ' — ' + (m.name || '');
+        selMat.appendChild(o);
+      });
+      selMat.disabled = false;
+      // Auto-select if only one material
+      if (mats.length === 1) {
+        selMat.value = mats[0].code;
+        selMat.dispatchEvent(new Event('change'));
+      }
+    } else {
+      selMat.disabled = true;
+    }
+  });
+
+  // Event: material change -> show MOQ
+  selMat.addEventListener('change', function() {
+    var code = selMat.value;
+    if (code && moqCache[code]) {
+      var d = moqCache[code];
+      moqDiv.textContent = 'MOQ: ' + fmt(d.moq) + ' ' + (d.unit || 'PCS');
+    } else {
+      moqDiv.textContent = '';
+    }
+  });
+
+  document.getElementById('inputBody').appendChild(row);
+}
+
+function removeRow(btn) {
+  var body = document.getElementById('inputBody');
+  if (body.children.length > 1) btn.closest('.inp-row').remove();
+}
+
+// ========== Collect rows ==========
+
+function collectRows() {
+  var rows = document.querySelectorAll('#inputBody .inp-row');
+  var reqs = [], hasErr = false;
+  rows.forEach(function(row) {
+    var mat = row.querySelector('.sel-mat').value;
+    var qty = parseInt(row.querySelector('.qi').value, 10) || 0;
+    var noteEl = row.querySelector('.row-note');
+    noteEl.textContent = '';
+
+    if (!mat && !qty) return;
+    if (!mat) {
+      noteEl.textContent = 'กรุณาเลือกสินค้า';
+      hasErr = true;
+      return;
+    }
+    if (qty <= 0) {
+      noteEl.textContent = 'กรุณากรอกจำนวน > 0';
+      hasErr = true;
+      return;
+    }
+    reqs.push({ material: mat, requestedQty: qty });
+  });
+  if (hasErr) return null;
+  if (!reqs.length) { showSt('กรุณากรอกข้อมูลอย่างน้อย 1 รายการ', 'err'); return null; }
+  return reqs;
+}
+
+// ========== Preview ==========
+
+function doPreview() {
+  var reqs = collectRows();
+  if (!reqs) return;
+  showSt('<span class="spin"></span> กำลังคำนวณการจัดสรร...', 'info');
+  setBusy(true);
+  google.script.run
+    .withSuccessHandler(function(data) {
+      try {
+        previewData = data;
+        renderPreview(data);
+        hideSt();
+      } catch (ex) {
+        showSt('Error rendering preview: ' + ex.message, 'err');
+      } finally {
+        setBusy(false);
+      }
+    })
+    .withFailureHandler(function(e) {
+      showSt('Error: ' + e.message, 'err');
+      setBusy(false);
+    })
+    .previewPalletAllocation(reqs);
+}
+
+function renderPreview(data) {
+  var html = '';
+  grandTotalPallets = 0;
+  var grandTotalQty = 0;
+  var items = data || [];
+
+  items.forEach(function(m) {
+    if (m.error) {
+      html += '<div class="mat-card"><div class="mat-card-hdr"><span class="code">' + esc(m.material) + '</span></div>' +
+        '<div class="mat-error">' + (m.error === 'NO_MOQ' ? 'ไม่พบ MOQ ใน MaterialMaster' : 'จำนวนไม่ถูกต้อง') + '</div></div>';
+      return;
+    }
+
+    var mc = moqCache[m.material] || {};
+    var moq = mc.moq || 0;
+    var orders = m.orders || [];
+    var matPallets = 0;
+    orders.forEach(function(o) { matPallets += (o.pallets || []).length; });
+    grandTotalPallets += matPallets;
+    grandTotalQty += (m.allocatedQty || 0);
+
+    html += '<div class="mat-card">';
+
+    // Header
+    html += '<div class="mat-card-hdr">';
+    html += '<span class="code">' + esc(m.material) + '</span>';
+    if (mc.name) html += '<span class="name">' + esc(mc.name) + '</span>';
+    if (moq) html += '<span class="moq-tag-preview">MOQ: ' + fmt(moq) + ' ' + (mc.unit || 'PCS') + '</span>';
+    html += '</div>';
+
+    // Summary
+    html += '<div class="mat-summary">';
+    html += '<span>ขอ: <b>' + fmt(m.requestedQty) + '</b></span>';
+    html += '<span>จัดสรร: <b>' + fmt(m.allocatedQty) + '</b></span>';
+    html += '<span' + (m.shortfall > 0 ? ' class="short"' : '') + '>ขาด: <b>' + fmt(m.shortfall) + '</b></span>';
+    html += '<span>จำนวนใบ: <b>' + matPallets + '</b></span>';
+    html += '</div>';
+
+    // No orders — show shortfall note
+    if (!orders.length && m.shortfall > 0) {
+      html += '<div class="mat-error">จัดสรรได้ 0 — ไม่มียอดคงเหลือ</div>';
+    }
+
+    // Order table
+    if (orders.length) {
+      html += '<table class="ord-tbl"><thead><tr>' +
+        '<th>MO</th><th>วันที่(FIFO)</th><th>คงเหลือ</th><th>ยืนยัน</th><th>พิมพ์แล้ว</th><th>จัดสรร</th><th>จำนวนใบ</th>' +
+        '</tr></thead><tbody>';
+
+      orders.forEach(function(o, oi) {
+        var pallets = o.pallets || [];
+        var rid = 'p_' + m.material.replace(/\W/g, '') + '_' + oi;
+
+        html += '<tr class="ord-row" onclick="toggleP(\'' + rid + '\',this)">';
+        html += '<td>' + esc(o.manufacturingOrder) + '</td>';
+        html += '<td>' + fmtDate(o.plannedStartDate) + '</td>';
+        html += '<td>' + fmt(o.availableQty) + '</td>';
+        html += '<td>' + fmt(o.confirmedQty) + '</td>';
+        html += '<td>' + fmt(o.alreadyPrintedQty) + '</td>';
+        html += '<td>' + fmt(o.allocatedFromThisOrder) + '</td>';
+        html += '<td>' + pallets.length + '</td>';
+        html += '</tr>';
+
+        html += '<tr class="pallet-detail" id="' + rid + '"><td colspan="7">';
+        pallets.forEach(function(p) {
+          var seq = 'L' + padSeq(p.palletSeq);
+          var isMerged = moq > 0 && p.qty > moq;
+          html += '<span class="pallet-item' + (isMerged ? ' merged' : '') + '">';
+          html += seq + ' = ' + fmt(p.qty) + ' PCS';
+          if (isMerged) html += '<span class="merged-note">(รวมเศษ)</span>';
+          html += '</span>';
+        });
+        html += '</td></tr>';
+      });
+
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+  });
+
+  html += '<div class="grand-total">รวมทั้งหมด: ' + grandTotalPallets + ' ใบ — ' + fmt(grandTotalQty) + ' PCS</div>';
+
+  document.getElementById('previewContent').innerHTML = html;
+  document.getElementById('secPreview').style.display = '';
+  document.getElementById('btnCommit').disabled = (grandTotalPallets === 0);
+  document.getElementById('commitNote').textContent = grandTotalPallets === 0 ? 'ไม่มีพาเลทให้สร้าง' : '';
+  document.getElementById('secResult').style.display = 'none';
+  createdIds = [];
+}
+
+function toggleP(id, row) {
+  var el = document.getElementById(id);
+  var isOpen = el.classList.toggle('open');
+  if (isOpen) row.classList.add('open');
+  else row.classList.remove('open');
+}
+
+// ========== Commit ==========
+
+function doCommit() {
+  if (!previewData || grandTotalPallets === 0) return;
+
+  var html = '<p>จะสร้างพาเลท <b>' + grandTotalPallets + ' ใบ</b></p>';
+  html += '<ul style="list-style:none;max-height:160px;overflow-y:auto;margin:10px 0">';
+  (previewData || []).forEach(function(m) {
+    if (m.error) return;
+    var cnt = 0;
+    (m.orders || []).forEach(function(o) { cnt += (o.pallets || []).length; });
+    html += '<li style="padding:2px 0;font-size:.88em">' + esc(m.material) + ': ' + cnt + ' ใบ (' + fmt(m.allocatedQty) + ' PCS)</li>';
+  });
+  html += '</ul>';
+
+  if ((previewData || []).some(function(m) { return m.shortfall > 0; })) {
+    html += '<div class="warn">มีวัสดุที่จัดสรรไม่ครบ &mdash; ส่วนที่ขาดจะไม่ถูกสร้าง</div>';
+  }
+
+  document.getElementById('modalBody').innerHTML = html;
+  document.getElementById('modalBg').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modalBg').classList.remove('open');
+}
+
+function executeCommit() {
+  closeModal();
+  var reqs = collectRows();
+  if (!reqs) return;
+  showSt('<span class="spin"></span> กำลังสร้างพาเลท...', 'info');
+  setBusy(true);
+  document.getElementById('btnCommit').disabled = true;
+  google.script.run
+    .withSuccessHandler(function(r) {
+      renderResult(r);
+      hideSt();
+      setBusy(false);
+    })
+    .withFailureHandler(function(e) {
+      showSt('Error: ' + e.message, 'err');
+      setBusy(false);
+    })
+    .commitPalletAllocation(reqs);
+}
+
+function renderResult(r) {
+  createdIds = r.created.map(function(c) { return c.palletId; });
+
+  var html = '<div class="result-counts">';
+  html += '<span style="color:#28a745">สร้างแล้ว: ' + r.totalCreated + '</span>';
+  if (r.totalSkipped > 0) html += '<span style="color:#856404">ข้าม (ซ้ำ): ' + r.totalSkipped + '</span>';
+  if (r.dryRun) html += '<span style="color:#6c757d">DRY RUN &mdash; ไม่ได้สร้างจริง</span>';
+  html += '</div>';
+
+  if (r.perMaterial && r.perMaterial.length) {
+    html += '<div style="font-size:.85em;margin-bottom:6px">';
+    r.perMaterial.forEach(function(pm) {
+      html += '<div>' + esc(pm.material) + ': สร้าง ' + pm.created;
+      if (pm.skipped > 0) html += ', ข้าม ' + pm.skipped;
+      if (pm.shortfall > 0) html += ', <span style="color:#dc3545">ขาด ' + fmt(pm.shortfall) + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (r.created.length > 0) {
+    html += '<div class="result-list">';
+    r.created.forEach(function(c) {
+      html += '<div class="result-item">' + esc(c.palletId) + ' &mdash; ' + esc(c.mo) + ' &mdash; ' + fmt(c.qty) + ' PCS</div>';
+    });
+    html += '</div>';
+  }
+
+  if (r.skipped.length > 0) {
+    html += '<div class="result-list" style="margin-top:8px">';
+    html += '<div style="font-weight:600;color:#856404;margin-bottom:4px">ข้ามเนื่องจากมีอยู่แล้ว:</div>';
+    r.skipped.forEach(function(c) {
+      html += '<div class="result-item skip">' + esc(c.palletId) + ' &mdash; ' + fmt(c.qty) + ' PCS</div>';
+    });
+    html += '</div>';
+  }
+
+  document.getElementById('resultContent').innerHTML = html;
+  document.getElementById('secResult').style.display = '';
+  document.getElementById('btnPrint').style.display = (createdIds.length > 0 && !r.dryRun) ? '' : 'none';
+  document.getElementById('btnCommit').disabled = true;
+  document.getElementById('commitNote').textContent = 'สร้างแล้ว — ดูตัวอย่างใหม่เพื่อสร้างเพิ่ม';
+}
+
+// ========== Print ==========
+
+function openPrint() {
+  if (!createdIds.length) return;
+  var win = window.open('', '_blank');
+  if (!win) { showSt('Popup ถูกบล็อก — กรุณาอนุญาต popup แล้วลองใหม่', 'err'); return; }
+  win.document.write('<html><body style="font-family:sans-serif;padding:30px;text-align:center">' +
+    '<p>กำลังโหลดใบพิมพ์ (' + createdIds.length + ' ใบ)...</p></body></html>');
+  document.getElementById('btnPrint').disabled = true;
+  google.script.run
+    .withSuccessHandler(function(html) {
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+      document.getElementById('btnPrint').disabled = false;
+    })
+    .withFailureHandler(function(e) {
+      win.document.open();
+      win.document.write('<html><body style="font-family:sans-serif;padding:30px">' +
+        '<p style="color:#dc3545">Error: ' + e.message + '</p></body></html>');
+      win.document.close();
+      showSt('Error โหลดหน้าพิมพ์: ' + e.message, 'err');
+      document.getElementById('btnPrint').disabled = false;
+    })
+    .buildPalletSheetsHtml(createdIds, false);
+}
+
+// ========== Helpers ==========
+
+function showSt(msg, type) {
+  var el = document.getElementById('status');
+  el.innerHTML = msg;
+  el.className = 'st-' + type;
+  el.style.display = 'block';
+}
+
+function hideSt() {
+  document.getElementById('status').style.display = 'none';
+}
+
+function setBusy(b) {
+  document.getElementById('btnPreview').disabled = b;
+  document.getElementById('btnModalOk').disabled = b;
+}
+
+function fmt(n) { return (n || 0).toLocaleString('en-US'); }
+
+function fmtDate(d) {
+  if (!d) return '-';
+  var dt = new Date(d);
+  if (isNaN(dt.getTime())) return String(d);
+  var dd = ('0' + dt.getDate()).slice(-2);
+  var mm = ('0' + (dt.getMonth() + 1)).slice(-2);
+  var yy = String(dt.getFullYear()).slice(-2);
+  return dd + '/' + mm + '/' + yy;
+}
+
+function padSeq(n) { return n < 10 ? '0' + n : String(n); }
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+</script>
 </body>
 </html>

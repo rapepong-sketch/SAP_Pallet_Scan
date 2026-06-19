@@ -306,7 +306,14 @@ function printRequestDialog() {
 function getMaterialListForDialog() {
   const map = getMaterialMap();
   return Object.keys(map)
-    .map(code => ({ code, name: map[code].name, moq: map[code].moq, unit: map[code].unit }))
+    .map(code => ({
+      code,
+      name:            map[code].name,
+      moq:             map[code].moq,
+      unit:            map[code].unit,
+      storageLocation: map[code].storageLocation,
+      productGroup:    map[code].productGroup
+    }))
     .sort((a, b) => a.code < b.code ? -1 : 1);
 }
 
