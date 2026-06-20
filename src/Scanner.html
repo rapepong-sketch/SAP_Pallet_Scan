@@ -206,6 +206,70 @@
       line-height: 2;
     }
 
+    /* ── Mode toggle ── */
+    .mode-toggle {
+      display: flex;
+      margin: 10px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 2px solid #1a4e8a;
+    }
+    .mode-btn {
+      flex: 1;
+      padding: 10px 8px;
+      border: none;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background .2s, color .2s;
+      background: #fff;
+      color: #1a4e8a;
+    }
+    .mode-btn.active {
+      background: #1a4e8a;
+      color: #fff;
+    }
+
+    /* ── Count mode ── */
+    .count-badge {
+      display: inline-block;
+      background: #3498db;
+      color: #fff;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .count-toast {
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin: 6px 0;
+      font-size: 14px;
+      animation: fadeIn .3s;
+    }
+    .count-toast-ok   { background: #eafaf1; color: #1e8449; border: 1px solid #27ae60; }
+    .count-toast-warn { background: #fef9e7; color: #7d6608; border: 1px solid #f1c40f; }
+    .count-toast-err  { background: #fdeaea; color: #c0392b; border: 1px solid #e74c3c; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
+    .recon-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    .recon-table th, .recon-table td {
+      padding: 7px 6px;
+      border: 1px solid #ddd;
+      text-align: left;
+    }
+    .recon-table th { background: #1a4e8a; color: #fff; font-size: 12px; }
+    .recon-ok      { background: #d4edda; }
+    .recon-surplus  { background: #fff3cd; }
+    .recon-deficit  { background: #f8d7da; }
+    .recon-error   { background: #e2e3e5; }
+
     /* ── Hidden ── */
     .hidden { display: none !important; }
 
@@ -219,6 +283,12 @@
 <div class="app-header">
   <div class="app-title">🏭 PJ Chonburi</div>
   <div id="sap-badge" class="badge badge-loading">⏳ โหลด...</div>
+</div>
+
+<!-- ════════════════════════════ MODE TOGGLE ════════════════════════════════ -->
+<div class="mode-toggle" id="mode-toggle">
+  <button class="mode-btn active" id="mode-btn-scan" onclick="switchMode('scan')">📷 สแกนยืนยัน</button>
+  <button class="mode-btn" id="mode-btn-count" onclick="switchMode('count')">📋 นับสต๊อก</button>
 </div>
 
 <!-- Global message banner -->
@@ -426,8 +496,106 @@
   </button>
 </div>
 
+<!-- ═══════════════════════ SECTION: TRANSFER 311 ══════════════════════════ -->
+<div class="section hidden" id="transfer-section">
+  <div class="section-title">🔀 โอนย้ายวัสดุ (311 Transfer)</div>
+  <div id="transfer-badge-wrap" style="margin-bottom:10px;"></div>
+  <div id="transfer-info" class="info-grid"></div>
+
+  <div class="form-group" style="margin-top:14px;">
+    <label>ปลายทาง (DestSLoc) *</label>
+    <select id="t-dest-sloc">
+      <option value="">-- เลือกปลายทาง --</option>
+    </select>
+  </div>
+
+  <button class="btn btn-success" id="btn-transfer-confirm" onclick="submitTransfer311()">
+    🔀 ยืนยันโอนย้าย
+  </button>
+</div>
+
+<!-- ══════════════════════ SECTION: TRANSFER RESULT ════════════════════════ -->
+<div class="section hidden" id="transfer-result-section">
+  <div id="transfer-result-icon" class="result-icon"></div>
+  <div id="transfer-result-title" class="result-title"></div>
+  <div id="transfer-result-detail" class="result-detail"></div>
+</div>
+
+<div class="section hidden" id="transfer-rescan-section">
+  <button class="btn btn-primary" onclick="resetAll()">🔄 สแกนใหม่</button>
+</div>
+
 <div class="section hidden" id="next-scan-section">
   <button class="btn btn-primary" onclick="resetAll()">🔄 สแกนพาเลทถัดไป</button>
+</div>
+
+<!-- ═══════════════════════ COUNT MODE SECTIONS ════════════════════════════ -->
+
+<!-- Count: SLoc selector + session start -->
+<div class="section hidden" id="count-setup-section">
+  <div class="section-title">📋 นับสต๊อก — เลือกพื้นที่</div>
+  <div class="form-group">
+    <label>พื้นที่คลัง (SLoc) *</label>
+    <select id="c-sloc">
+      <option value="">-- เลือก SLoc --</option>
+    </select>
+  </div>
+  <button class="btn btn-primary" onclick="startCountSession()">🚀 เริ่ม session นับสต๊อก</button>
+</div>
+
+<!-- Count: active scanning session -->
+<div class="section hidden" id="count-scan-section">
+  <div class="section-title">
+    📋 สแกนนับสต๊อก
+    <span class="count-badge" id="count-session-badge"></span>
+  </div>
+  <div style="margin-bottom:8px; font-size:13px; color:#555;">
+    สแกนแล้ว: <strong id="count-total">0</strong> พาเลท
+  </div>
+
+  <!-- Camera button for count mode -->
+  <input type="file" id="count-qr-input" accept="image/*" capture="environment" style="display:none">
+  <div style="text-align:center; margin:12px 0 8px;">
+    <button style="
+      width:100%; min-height:70px; font-size:20px;
+      background:#3498db; color:white; border:none;
+      border-radius:12px; cursor:pointer;
+      display:flex; align-items:center; justify-content:center; gap:10px;
+      font-family:inherit; font-weight:bold;
+      box-shadow:0 3px 8px rgba(52,152,219,.35);"
+      onclick="document.getElementById('count-qr-input').click()">
+      📷 สแกนพาเลท
+    </button>
+  </div>
+
+  <!-- Manual entry for count mode -->
+  <div class="manual-row" style="margin-top:8px;">
+    <input type="text" id="count-manual-id" placeholder="PL-000001234567-L01"
+           autocomplete="off" autocorrect="off">
+    <button class="btn btn-secondary" onclick="countManualLookup()">นับ</button>
+  </div>
+
+  <!-- Toast area -->
+  <div id="count-toast-area" style="margin-top:10px;"></div>
+
+  <!-- Summary + reconcile buttons -->
+  <div style="margin-top:14px; display:flex; gap:8px;">
+    <button class="btn btn-outline" style="flex:1; padding:12px;" onclick="showCountSummary()">
+      📊 ดูสรุป
+    </button>
+    <button class="btn btn-primary" style="flex:1; padding:12px;" onclick="doReconcile()">
+      🔄 Reconcile กับ SAP
+    </button>
+  </div>
+</div>
+
+<!-- Count: summary / reconcile result -->
+<div class="section hidden" id="count-result-section">
+  <div class="section-title" id="count-result-title">📊 สรุปการนับ</div>
+  <div id="count-result-body"></div>
+  <button class="btn btn-outline" style="width:100%; margin-top:12px;" onclick="backToCountScan()">
+    ← กลับไปสแกนต่อ
+  </button>
 </div>
 
 <div class="bottom-pad"></div>
@@ -538,9 +706,21 @@ function toggleTips() {
 // Common scan success handler
 // ============================================================
 function onScanSuccess(decoded) {
+  decoded = (decoded || '').trim();
+
+  // Transfer QR: T:{TxnID}|P:{Material}|Q:{Qty}|L:{LotNo}|Loc:{SLoc}|
+  if (decoded.indexOf('T:') === 0) {
+    var transferFields = parseTransferQr(decoded);
+    if (transferFields && transferFields.txnId) {
+      document.getElementById('manual-id').value = 'T:' + transferFields.txnId;
+      doTransferLookup(transferFields.txnId);
+      return;
+    }
+  }
+
   var palletId = parseQrPayload(decoded);
   if (!palletId) {
-    showMsg('error', 'QR code ไม่ถูกต้อง — ต้องขึ้นต้นด้วย PALLET|...\nReceived: ' + decoded.substring(0, 60));
+    showMsg('error', 'QR code ไม่ถูกต้อง — ต้องขึ้นต้นด้วย PALLET|... หรือ T:...\nReceived: ' + decoded.substring(0, 60));
     return;
   }
   document.getElementById('manual-id').value = palletId;
@@ -567,7 +747,11 @@ function parseQrPayload(text) {
 // ============================================================
 function lookupManual() {
   var id = document.getElementById('manual-id').value.trim();
-  if (!id) { showMsg('error', 'กรุณาพิมพ์ PalletID ก่อน'); return; }
+  if (!id) { showMsg('error', 'กรุณาพิมพ์ PalletID หรือ TxnID ก่อน'); return; }
+  if (id.indexOf('T:') === 0) {
+    var txnId = id.substring(2).split('|')[0].trim();
+    if (txnId) { doTransferLookup(txnId); return; }
+  }
   doLookup(id);
 }
 
@@ -581,6 +765,9 @@ function doLookup(palletId) {
   hide('result-section');
   hide('qc-section');
   hide('next-scan-section');
+  hide('transfer-section');
+  hide('transfer-result-section');
+  hide('transfer-rescan-section');
   showMsg('info', '⏳ กำลังค้นหาพาเลท ' + palletId + ' …');
 
   google.script.run
@@ -1158,6 +1345,9 @@ function resetScanner() {
   hide('result-section');
   hide('qc-section');
   hide('next-scan-section');
+  hide('transfer-section');
+  hide('transfer-result-section');
+  hide('transfer-rescan-section');
   hide('img-preview-wrap');
   hide('btn-retry');
   clearMsg();
@@ -1213,6 +1403,469 @@ function esc(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// ============================================================
+// Transfer 311 mode — T: prefix QR
+// ============================================================
+
+function parseTransferQr(text) {
+  // T:{TxnID}|P:{Material}|Q:{Qty}|L:{LotNo}|Loc:{SLoc}|
+  var result = {};
+  var segments = text.split('|');
+  segments.forEach(function (seg) {
+    seg = seg.trim();
+    if (seg.indexOf('T:') === 0)   result.txnId    = seg.substring(2).trim();
+    if (seg.indexOf('P:') === 0)   result.material = seg.substring(2).trim();
+    if (seg.indexOf('Q:') === 0)   result.qty      = seg.substring(2).trim();
+    if (seg.indexOf('L:') === 0)   result.lotNo    = seg.substring(2).trim();
+    if (seg.indexOf('Loc:') === 0) result.srcSloc  = seg.substring(4).trim();
+  });
+  return result;
+}
+
+var currentTransferInfo = null;
+
+function doTransferLookup(txnId) {
+  cancelAutoReset();
+  clearMsg();
+  hide('pallet-section');
+  hide('timeline-section');
+  hide('form-section');
+  hide('pd-section');
+  hide('result-section');
+  hide('qc-section');
+  hide('next-scan-section');
+  hide('transfer-section');
+  hide('transfer-result-section');
+  hide('transfer-rescan-section');
+  showMsg('info', '⏳ กำลังค้นหารายการโอนย้าย ' + txnId + ' …');
+
+  google.script.run
+    .withSuccessHandler(onTransferLookupResult)
+    .withFailureHandler(function (err) {
+      clearMsg();
+      showMsg('error', '❌ เกิดข้อผิดพลาด: ' + (err.message || String(err)));
+    })
+    .getTransferSlipInfo(txnId);
+}
+
+function onTransferLookupResult(info) {
+  clearMsg();
+
+  if (info.error === 'already_transferred') {
+    showTransferResult('warn',
+      '⚠️ โอนย้ายแล้ว',
+      'เอกสาร: ' + (info.refDoc || '-') + '\nปลายทาง: ' + (info.destSloc || '-'));
+    return;
+  }
+
+  if (info.error) {
+    showMsg('error', '❌ ' + info.error);
+    return;
+  }
+
+  currentTransferInfo = info;
+  renderTransferPanel(info);
+}
+
+function renderTransferPanel(info) {
+  // Badge
+  var badgeWrap = document.getElementById('transfer-badge-wrap');
+  if (info.dryRun) {
+    badgeWrap.innerHTML = '<span class="badge badge-dry">🧪 DRY_RUN</span>';
+  } else {
+    badgeWrap.innerHTML = '<span class="badge badge-on">🟢 LIVE</span>';
+  }
+
+  // Info grid
+  var rows = [
+    ['TxnID',         esc(info.txnId)],
+    ['วัสดุ',          esc(info.material)],
+    ['แบตช์',          esc(info.batch || '—')],
+    ['Lot No',         esc(info.lotNo || '—')],
+    ['จำนวน',          esc(String(info.issueQty)) + ' ' + esc(info.unit)],
+    ['ต้นทาง (SLoc)',   esc(info.sourceSLoc)],
+    ['สถานะ',          '<span class="chip chip-default">' + esc(info.status) + '</span>']
+  ];
+  var html = rows.map(function (r) {
+    var isHtml = r[1].indexOf('<') !== -1;
+    return '<div class="info-label">' + r[0] + '</div>' +
+           '<div class="info-value' + (isHtml ? '' : ' normal') + '">' + r[1] + '</div>';
+  }).join('');
+  document.getElementById('transfer-info').innerHTML = html;
+
+  // Dest SLoc dropdown
+  var sel = document.getElementById('t-dest-sloc');
+  sel.innerHTML = '<option value="">-- เลือกปลายทาง --</option>';
+  (info.destSLocOptions || []).forEach(function (s) {
+    var opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    if (info.destSLocOptions.length === 1) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  // Reset confirm button
+  var btn = document.getElementById('btn-transfer-confirm');
+  btn.disabled    = false;
+  btn.textContent = '🔀 ยืนยันโอนย้าย';
+
+  show('transfer-section');
+  document.getElementById('transfer-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function submitTransfer311() {
+  if (!currentTransferInfo) { showMsg('error', 'ไม่มีข้อมูลรายการโอนย้าย'); return; }
+
+  var destSloc = document.getElementById('t-dest-sloc').value;
+  if (!destSloc) { showMsg('error', 'กรุณาเลือกปลายทาง'); return; }
+
+  var btn = document.getElementById('btn-transfer-confirm');
+  btn.disabled    = true;
+  btn.textContent = '⏳ กำลังโอนย้าย...';
+  clearMsg();
+  showMsg('info', '⏳ กำลังส่งคำสั่งโอนย้าย…');
+
+  google.script.run
+    .withSuccessHandler(onTransferResult)
+    .withFailureHandler(function (err) {
+      btn.disabled    = false;
+      btn.textContent = '🔀 ยืนยันโอนย้าย';
+      clearMsg();
+      showMsg('error', '❌ โอนย้ายไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .confirmTransfer311(currentTransferInfo.txnId, destSloc);
+}
+
+function onTransferResult(result) {
+  clearMsg();
+  hide('transfer-section');
+
+  if (!result.success) {
+    showTransferResult('error', '❌ โอนย้ายไม่สำเร็จ', result.error || 'เกิดข้อผิดพลาด');
+    return;
+  }
+
+  if (result.dryRun) {
+    showTransferResult('dry', '🧪 DRY_RUN — จำลองสำเร็จ',
+      'ระบบจำลองการโอนย้ายเรียบร้อย\n(ยังไม่ได้ส่งไป SAP จริง)');
+  } else {
+    showTransferResult('success', '✅ โอนย้ายสำเร็จ',
+      'เอกสาร: ' + (result.materialDocument || '-') +
+      (result.materialDocumentYear ? ' / ' + result.materialDocumentYear : ''));
+  }
+}
+
+function showTransferResult(type, title, detail) {
+  var iconEl   = document.getElementById('transfer-result-icon');
+  var titleEl  = document.getElementById('transfer-result-title');
+  var detailEl = document.getElementById('transfer-result-detail');
+
+  if (type === 'success') {
+    iconEl.textContent  = '✅';
+    titleEl.style.color = '#1e8449';
+  } else if (type === 'dry') {
+    iconEl.textContent  = '🧪';
+    titleEl.style.color = '#e67e22';
+  } else if (type === 'warn') {
+    iconEl.textContent  = '⚠️';
+    titleEl.style.color = '#d35400';
+  } else {
+    iconEl.textContent  = '❌';
+    titleEl.style.color = '#c0392b';
+  }
+
+  titleEl.textContent  = title;
+  detailEl.innerHTML   = esc(detail).replace(/\n/g, '<br>');
+
+  show('transfer-result-section');
+  show('transfer-rescan-section');
+  document.getElementById('transfer-result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ============================================================
+// Count mode — stock count session
+// ============================================================
+var currentMode       = 'scan'; // 'scan' | 'count'
+var countSessionId    = null;
+var countSloc         = null;
+var countScanTotal    = 0;
+var countQrListenerAttached = false;
+var countRpcTimer     = null;
+
+function countRpcTimeout(label) {
+  return setTimeout(function () {
+    countRpcTimer = null;
+    clearMsg();
+    showMsg('error', '⏱️ หมดเวลา (' + label + ') — ลองใหม่อีกครั้ง');
+  }, 30000);
+}
+
+function clearCountRpcTimeout() {
+  if (countRpcTimer) { clearTimeout(countRpcTimer); countRpcTimer = null; }
+}
+
+function switchMode(mode) {
+  currentMode = mode;
+  document.getElementById('mode-btn-scan').className  = 'mode-btn' + (mode === 'scan'  ? ' active' : '');
+  document.getElementById('mode-btn-count').className = 'mode-btn' + (mode === 'count' ? ' active' : '');
+
+  if (mode === 'scan') {
+    hide('count-setup-section');
+    hide('count-scan-section');
+    hide('count-result-section');
+    show('scan-section');
+  } else {
+    resetScanner();
+    hide('scan-section');
+    hide('pallet-section');
+    hide('timeline-section');
+    hide('form-section');
+    hide('pd-section');
+    hide('result-section');
+    hide('qc-section');
+    hide('next-scan-section');
+    hide('transfer-section');
+    hide('transfer-result-section');
+    hide('transfer-rescan-section');
+
+    if (countSessionId) {
+      show('count-scan-section');
+    } else {
+      populateCountSlocs();
+      show('count-setup-section');
+    }
+    hide('count-result-section');
+  }
+}
+
+function populateCountSlocs() {
+  var sel = document.getElementById('c-sloc');
+  sel.innerHTML = '<option value="">-- เลือก SLoc --</option>';
+  var slocs = ['PW20', 'PW30', 'PW40', 'WF01'];
+  slocs.forEach(function (s) {
+    var opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    sel.appendChild(opt);
+  });
+}
+
+function startCountSession() {
+  var sloc = document.getElementById('c-sloc').value;
+  if (!sloc) { showMsg('error', 'กรุณาเลือก SLoc'); return; }
+
+  clearMsg();
+  showMsg('info', '⏳ กำลังเริ่ม session...');
+  countRpcTimer = countRpcTimeout('เริ่ม session');
+
+  google.script.run
+    .withSuccessHandler(function (sessionId) {
+      clearCountRpcTimeout();
+      clearMsg();
+      countSessionId = sessionId;
+      countSloc      = sloc;
+      countScanTotal = 0;
+
+      document.getElementById('count-session-badge').textContent = sessionId;
+      document.getElementById('count-total').textContent = '0';
+      document.getElementById('count-toast-area').innerHTML = '';
+
+      hide('count-setup-section');
+      show('count-scan-section');
+      initCountQrScanner();
+    })
+    .withFailureHandler(function (err) {
+      clearCountRpcTimeout();
+      clearMsg();
+      showMsg('error', '❌ เริ่ม session ไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .startCountSession(sloc);
+}
+
+function initCountQrScanner() {
+  if (countQrListenerAttached) return;
+  countQrListenerAttached = true;
+
+  document.getElementById('count-qr-input').addEventListener('change', function (e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    html5QrCode.scanFile(file, true).then(function (decoded) {
+      if (navigator.vibrate) navigator.vibrate(200);
+      onCountScan(decoded);
+    }).catch(function () {
+      addCountToast('err', '❌ ไม่พบ QR Code — ลองถ่ายใหม่');
+    });
+    e.target.value = '';
+  });
+}
+
+function countManualLookup() {
+  var id = document.getElementById('count-manual-id').value.trim();
+  if (!id) { addCountToast('err', 'กรุณาพิมพ์ PalletID'); return; }
+  doCountScan(id);
+}
+
+function onCountScan(decoded) {
+  decoded = (decoded || '').trim();
+
+  // Reject transfer QR
+  if (decoded.indexOf('T:') === 0) {
+    addCountToast('err', '❌ ใบเบิก ไม่ใช่ใบพาเลท — สแกนเฉพาะพาเลทเท่านั้น');
+    return;
+  }
+
+  // Parse PALLET| format
+  if (decoded.indexOf('PALLET|') === 0) {
+    var parts = decoded.split('|');
+    if (parts.length >= 2 && parts[1]) {
+      doCountScan(parts[1].trim());
+      return;
+    }
+  }
+  // Bare PalletID
+  if (/^PL-\d+-L\d+$/.test(decoded) || /^\d+-P\d{3}$/.test(decoded)) {
+    doCountScan(decoded);
+    return;
+  }
+  addCountToast('err', 'QR ไม่ถูกต้อง: ' + decoded.substring(0, 40));
+}
+
+function doCountScan(palletId) {
+  document.getElementById('count-manual-id').value = palletId;
+  addCountToast('ok', '⏳ กำลังบันทึก ' + esc(palletId) + '...');
+
+  google.script.run
+    .withSuccessHandler(function (result) {
+      if (result.error) {
+        addCountToast('err', '❌ ' + result.error);
+        return;
+      }
+      if (result.rescan) {
+        addCountToast('warn', '🔄 อัปเดตแล้ว (สแกนซ้ำ): ' + esc(result.material) + ' ' + result.qty + ' ' + esc(result.unit));
+      } else {
+        countScanTotal++;
+        document.getElementById('count-total').textContent = String(countScanTotal);
+        addCountToast('ok', '✅ บันทึกแล้ว: ' + esc(result.material) + ' ' + result.qty + ' ' + esc(result.unit));
+      }
+      document.getElementById('count-manual-id').value = '';
+    })
+    .withFailureHandler(function (err) {
+      addCountToast('err', '❌ ' + (err.message || String(err)));
+    })
+    .recordCountScan(palletId, countSloc, '');
+}
+
+function addCountToast(type, text) {
+  var area = document.getElementById('count-toast-area');
+  var div = document.createElement('div');
+  div.className = 'count-toast count-toast-' + type;
+  div.innerHTML = text;
+  area.insertBefore(div, area.firstChild);
+  while (area.children.length > 5) area.removeChild(area.lastChild);
+}
+
+function showCountSummary() {
+  if (!countSloc) return;
+  clearMsg();
+  showMsg('info', '⏳ กำลังโหลดสรุป...');
+  countRpcTimer = countRpcTimeout('โหลดสรุป');
+
+  google.script.run
+    .withSuccessHandler(function (result) {
+      clearCountRpcTimeout();
+      clearMsg();
+      document.getElementById('count-result-title').textContent = '📊 สรุปการนับ — ' + result.sessionId;
+      renderCountSummaryTable(result.lines, false);
+      hide('count-scan-section');
+      show('count-result-section');
+    })
+    .withFailureHandler(function (err) {
+      clearCountRpcTimeout();
+      clearMsg();
+      showMsg('error', '❌ ' + (err.message || String(err)));
+    })
+    .getCountSessionSummary(countSloc);
+}
+
+function doReconcile() {
+  if (!countSloc) return;
+  clearMsg();
+  showMsg('info', '⏳ กำลัง Reconcile กับ SAP (อาจใช้เวลา 10-30 วินาที)...');
+  countRpcTimer = countRpcTimeout('Reconcile');
+
+  google.script.run
+    .withSuccessHandler(function (result) {
+      clearCountRpcTimeout();
+      clearMsg();
+      if (result.error) {
+        showMsg('error', '❌ ' + result.error);
+        return;
+      }
+      document.getElementById('count-result-title').textContent = '🔄 Reconcile — ' + result.sessionId;
+      renderCountSummaryTable(result.lines, true);
+      hide('count-scan-section');
+      show('count-result-section');
+    })
+    .withFailureHandler(function (err) {
+      clearCountRpcTimeout();
+      clearMsg();
+      showMsg('error', '❌ Reconcile ไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .reconcileCountWithSAP(countSloc);
+}
+
+function renderCountSummaryTable(lines, isReconcile) {
+  var body = document.getElementById('count-result-body');
+  if (!lines || !lines.length) {
+    body.innerHTML = '<p style="color:#888; text-align:center;">ไม่มีข้อมูล</p>';
+    return;
+  }
+
+  var cols = isReconcile
+    ? ['วัสดุ', 'แบตช์', 'นับได้', 'SAP', 'ส่วนต่าง', 'สถานะ']
+    : ['วัสดุ', 'แบตช์', 'นับได้', 'จำนวนพาเลท'];
+
+  var html = '<table class="recon-table"><thead><tr>';
+  cols.forEach(function (c) { html += '<th>' + c + '</th>'; });
+  html += '</tr></thead><tbody>';
+
+  lines.forEach(function (line) {
+    var rowClass = '';
+    if (isReconcile) {
+      if (line.status === 'OK') rowClass = 'recon-ok';
+      else if (line.status === 'SURPLUS') rowClass = 'recon-surplus';
+      else if (line.status === 'DEFICIT') rowClass = 'recon-deficit';
+      else if (line.status === 'SAP_ERROR') rowClass = 'recon-error';
+    }
+
+    html += '<tr class="' + rowClass + '">';
+    html += '<td>' + esc(line.material) + '</td>';
+    html += '<td>' + esc(line.batch || '—') + '</td>';
+    html += '<td style="text-align:right;">' + esc(String(line.countedQty)) + '</td>';
+
+    if (isReconcile) {
+      html += '<td style="text-align:right;">' + (line.sapQty !== null ? esc(String(line.sapQty)) : '—') + '</td>';
+      html += '<td style="text-align:right;">' + (line.variance !== null ? esc(String(line.variance)) : '—') + '</td>';
+      var statusLabel = line.status === 'OK' ? '✅ ตรง' :
+                        line.status === 'SURPLUS' ? '⬆️ เกิน' :
+                        line.status === 'DEFICIT' ? '⬇️ ขาด' : '⚠️ SAP Error';
+      html += '<td>' + statusLabel + '</td>';
+    } else {
+      html += '<td style="text-align:right;">' + esc(String(line.palletCount)) + '</td>';
+    }
+
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  body.innerHTML = html;
+}
+
+function backToCountScan() {
+  hide('count-result-section');
+  show('count-scan-section');
 }
 </script>
 </body>

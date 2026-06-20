@@ -19,8 +19,8 @@ var TL_SHEET = 'TransferLog';
 /** @const {string[]} */
 var TL_HEADERS = [
   'TxnID', 'PickID', 'CreatedAt', 'TxnType', 'ParentPalletID', 'ChildSlipID',
-  'Material', 'LotNo', 'Unit', 'IssueQty', 'SourceSLoc', 'DestSLoc', 'RefDoc',
-  'Status', 'CreatedBy', 'Note', 'IdempotencyKey'
+  'Material', 'Batch', 'LotNo', 'Unit', 'IssueQty', 'SourceSLoc', 'DestSLoc', 'RefDoc',
+  'Status', 'CreatedBy', 'Note', 'IdempotencyKey', 'UpdatedAt'
 ];
 
 // ============================================================================
@@ -34,15 +34,33 @@ var TL_HEADERS = [
 function ensureTransferLogSheet_() {
   var ss = getSpreadsheet_();
   var sh = ss.getSheetByName(TL_SHEET);
-  if (sh) return sh;
 
-  sh = ss.insertSheet(TL_SHEET);
-  sh.getRange(1, 1, 1, TL_HEADERS.length).setValues([TL_HEADERS]);
-  sh.getRange(1, 1, 1, TL_HEADERS.length)
-    .setFontWeight('bold')
-    .setBackground('#d9e2f3');
-  sh.setFrozenRows(1);
-  logEvent('ENSURE_SHEET', TL_SHEET, 'CREATED', 0, TL_HEADERS.length + ' cols');
+  if (!sh) {
+    sh = ss.insertSheet(TL_SHEET);
+    sh.getRange(1, 1, 1, TL_HEADERS.length).setValues([TL_HEADERS]);
+    sh.getRange(1, 1, 1, TL_HEADERS.length)
+      .setFontWeight('bold')
+      .setBackground('#d9e2f3');
+    sh.setFrozenRows(1);
+    logEvent('ENSURE_SHEET', TL_SHEET, 'CREATED', 0, TL_HEADERS.length + ' cols');
+    return sh;
+  }
+
+  var existingHdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var existingSet = {};
+  existingHdr.forEach(function (h) { existingSet[String(h).trim()] = true; });
+
+  var missing = TL_HEADERS.filter(function (h) { return !existingSet[h]; });
+  if (missing.length > 0) {
+    var startCol = existingHdr.length + 1;
+    sh.getRange(1, startCol, 1, missing.length).setValues([missing]);
+    sh.getRange(1, startCol, 1, missing.length)
+      .setFontWeight('bold')
+      .setBackground('#d9e2f3');
+    logEvent('ENSURE_SHEET', TL_SHEET, 'MIGRATED', 0,
+      'added ' + missing.length + ' cols: ' + missing.join(', '));
+  }
+
   return sh;
 }
 
@@ -379,6 +397,8 @@ function commitFifoPick_(material, storageLocation, wantQty, opts) {
   var appendRows = [];
   var rowObjects = [];
 
+  var sheetHdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+
   for (var i = 0; i < plan.allocations.length; i++) {
     var alloc = plan.allocations[i];
     var seq   = i + 1;
@@ -405,11 +425,11 @@ function commitFifoPick_(material, storageLocation, wantQty, opts) {
     };
     rowObjects.push(rowObj);
 
-    var sheetRow = TL_HEADERS.map(function(h) { return rowObj[h]; });
+    var sheetRow = sheetHdr.map(function(h) { return rowObj[h] !== undefined ? rowObj[h] : ''; });
     appendRows.push(sheetRow);
   }
 
-  sh.getRange(sh.getLastRow() + 1, 1, appendRows.length, TL_HEADERS.length)
+  sh.getRange(sh.getLastRow() + 1, 1, appendRows.length, sheetHdr.length)
     .setValues(appendRows);
 
   // Log consumed pallets (remaining now 0) — derived, not stored
