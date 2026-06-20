@@ -1,12 +1,13 @@
 /**
  * WebApp.gs — Phase 3: Mobile Scanner + Admin Web App
  * ====================================================
- * Phase 3 — Step 1 + Step 2d + Phase 3.5 Override UI backend
+ * Phase 3 — Step 1 + Step 2d (slip web UI) + Phase 3.5 Override UI backend
  *
  * doGet() routes by ?app= query param:
  *   ?app=scan    → Scanner.html        (operators, no restriction)
  *   ?app=print   → AdminPrint.html     (admin only)
  *   ?app=confirm → AdminConfirm.html   (admin only)
+ *   ?app=slip    → AdminSlip.html      (admin only)
  *   (default)    → scan
  *
  * Admin pages gated by CFG.ADMIN_EMAILS allowlist + isAdminUser_().
@@ -37,6 +38,23 @@ function doGet(e) {
   }
 
   // --- Admin pages (auth gate) ---
+  // --- Slip page (admin-gated, uses createHtmlOutputFromFile — no templating needed) ---
+  if (app === 'slip') {
+    if (!isAdminUser_()) {
+      var slipEmail = '';
+      try { slipEmail = Session.getActiveUser().getEmail() || ''; } catch (_) {}
+      return HtmlService.createHtmlOutput(
+        '<h2>Access Denied</h2>' +
+        '<p>This page is restricted to authorized administrators.</p>' +
+        '<p>Signed in as: <strong>' + (slipEmail || '(no email detected)') + '</strong></p>'
+      ).setTitle('Access Denied');
+    }
+    return HtmlService.createHtmlOutputFromFile('AdminSlip')
+      .setTitle('ใบกำกับพาเลท')
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
   var adminPages = {
     print:   { file: 'AdminPrint',   title: 'Admin — Print Pallet Sheets' },
     confirm: { file: 'AdminConfirm', title: 'Admin — Confirm to SAP' }
@@ -691,6 +709,204 @@ function batchOverrideConfirm(items, reason) {
 /** Editor test — run with DRY_RUN ON first. */
 function testListOverrideCandidates() {
   Logger.log(JSON.stringify(listOverrideCandidates(), null, 2));
+}
+
+// ============================================================================
+// Step 2d — Slip Web UI backend (google.script.run from AdminSlip.html)
+// ============================================================================
+
+/**
+ * Return distinct StorageLocations from CONFIRMED pallets in PalletMaster.
+ * Admin-gated.
+ * @return {{ok:boolean, slocs?:string[], error?:string}}
+ */
+function slipGetStorageLocations() {
+  if (!isAdminUser_()) return { ok: false, error: 'ไม่มีสิทธิ์ (admin only)' };
+  try {
+    var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+    if (!sh || sh.getLastRow() < 2) return { ok: true, slocs: [] };
+
+    var data = sh.getDataRange().getValues();
+    var idx = {};
+    data[0].forEach(function(h, i) { idx[h] = i; });
+
+    var ssCol   = idx['ScanStatus'];
+    var slocCol = idx['StorageLocation'];
+    if (ssCol === undefined || slocCol === undefined) return { ok: true, slocs: [] };
+
+    var set = {};
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][ssCol] || '').trim() !== 'CONFIRMED') continue;
+      var sloc = String(data[r][slocCol] || '').trim();
+      if (sloc) set[sloc] = true;
+    }
+
+    var slocs = Object.keys(set).sort();
+    return { ok: true, slocs: slocs };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Return materials available for FIFO pick at a given StorageLocation.
+ * Groups CONFIRMED pallets by Material, sums remaining qty (excluding 0).
+ * Admin-gated.
+ * @param {string} sloc — StorageLocation
+ * @return {{ok:boolean, materials?:Array<{material:string, name:string, availQty:number}>, error?:string}}
+ */
+function slipGetMaterialsForSloc(sloc) {
+  if (!isAdminUser_()) return { ok: false, error: 'ไม่มีสิทธิ์ (admin only)' };
+  try {
+    sloc = String(sloc || '').trim();
+    if (!sloc) return { ok: true, materials: [] };
+
+    var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+    if (!sh || sh.getLastRow() < 2) return { ok: true, materials: [] };
+
+    var data = sh.getDataRange().getValues();
+    var idx = {};
+    data[0].forEach(function(h, i) { idx[h] = i; });
+
+    var ssCol   = idx['ScanStatus'];
+    var slocCol = idx['StorageLocation'];
+    var matCol  = idx['Material'];
+    var mnCol   = idx['MaterialName'];
+    var qtyCol  = idx['QtyPerPallet'];
+    var pidCol  = idx['PalletID'];
+    if (ssCol === undefined || slocCol === undefined || matCol === undefined ||
+        qtyCol === undefined || pidCol === undefined) {
+      return { ok: true, materials: [] };
+    }
+
+    // Pre-load issued sums from TransferLog
+    var issuedMap = {};
+    var tlSh = getSpreadsheet_().getSheetByName(TL_SHEET);
+    if (tlSh && tlSh.getLastRow() >= 2) {
+      var tlData = tlSh.getDataRange().getValues();
+      var tlIdx = {};
+      tlData[0].forEach(function(h, i) { tlIdx[h] = i; });
+      var ppCol = tlIdx['ParentPalletID'];
+      var ttCol = tlIdx['TxnType'];
+      var iqCol = tlIdx['IssueQty'];
+      if (ppCol !== undefined && ttCol !== undefined && iqCol !== undefined) {
+        for (var t = 1; t < tlData.length; t++) {
+          if (String(tlData[t][ttCol] || '').trim() === 'SPLIT_ISSUE') {
+            var pp = String(tlData[t][ppCol] || '').trim();
+            issuedMap[pp] = (issuedMap[pp] || 0) + (Number(tlData[t][iqCol]) || 0);
+          }
+        }
+      }
+    }
+
+    // Group by material
+    var matMap = {};
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      if (String(row[ssCol] || '').trim() !== 'CONFIRMED') continue;
+      if (String(row[slocCol] || '').trim() !== sloc) continue;
+
+      var pid      = String(row[pidCol] || '').trim();
+      var original = Number(row[qtyCol]) || 0;
+      var issued   = issuedMap[pid] || 0;
+      var remaining = original - issued;
+      if (remaining <= 0) continue;
+
+      var mat  = String(row[matCol] || '').trim();
+      var name = mnCol !== undefined ? String(row[mnCol] || '').trim() : '';
+      if (!matMap[mat]) matMap[mat] = { material: mat, name: name, availQty: 0 };
+      matMap[mat].availQty += remaining;
+    }
+
+    var materials = Object.keys(matMap).sort().map(function(k) { return matMap[k]; });
+    return { ok: true, materials: materials };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Build receive-slip HTML for matching CONFIRMED pallets.
+ * Admin-gated. Reuses getSlipPalletsByFilter_ + buildSlipSheetsHtml.
+ * @param {{mode:string, value:string}} query — filter spec
+ * @return {{ok:boolean, html?:string, count?:number, error?:string}}
+ */
+function slipBuildReceiveHtml(query) {
+  if (!isAdminUser_()) return { ok: false, error: 'ไม่มีสิทธิ์ (admin only)' };
+  try {
+    query = query || {};
+    var pallets = getSlipPalletsByFilter_({
+      mode:  String(query.mode || 'todayConfirmed'),
+      value: String(query.value || '').trim()
+    });
+    if (!pallets.length) return { ok: false, error: 'ไม่พบพาเลท CONFIRMED' };
+
+    var ids = pallets.map(function(p) { return p.PalletID; });
+    var html = buildSlipSheetsHtml(ids, 'RECEIVE');
+    return { ok: true, html: html, count: pallets.length };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Preview a FIFO pick plan (no write). Admin-gated.
+ * @param {string} material
+ * @param {string} sloc
+ * @param {number} qty
+ * @return {{ok:boolean, plan?:Object, error?:string}}
+ */
+function slipPlanPick(material, sloc, qty) {
+  if (!isAdminUser_()) return { ok: false, error: 'ไม่มีสิทธิ์ (admin only)' };
+  try {
+    material = String(material || '').trim();
+    sloc     = String(sloc || '').trim();
+    qty      = Number(qty);
+    if (!material || !sloc || !qty || qty <= 0) {
+      return { ok: false, error: 'กรุณาระบุ Material, SLoc, และจำนวนที่ถูกต้อง' };
+    }
+    var plan = planFifoPick_(material, sloc, qty);
+    return { ok: true, plan: plan };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Commit a FIFO pick and return printable slip HTML. Admin-gated.
+ * @param {string} material
+ * @param {string} sloc
+ * @param {number} qty
+ * @param {string} refDoc — optional reference document
+ * @return {{ok:boolean, pickId?:string, html?:string, error?:string, shortfall?:number}}
+ */
+function slipCommitPick(material, sloc, qty, refDoc) {
+  if (!isAdminUser_()) return { ok: false, error: 'ไม่มีสิทธิ์ (admin only)' };
+  try {
+    material = String(material || '').trim();
+    sloc     = String(sloc || '').trim();
+    qty      = Number(qty);
+    refDoc   = String(refDoc || '').trim();
+    if (!material || !sloc || !qty || qty <= 0) {
+      return { ok: false, error: 'กรุณาระบุ Material, SLoc, และจำนวนที่ถูกต้อง' };
+    }
+
+    var result = commitFifoPick_(material, sloc, qty, {
+      refDoc:         refDoc,
+      idempotencyKey: Utilities.getUuid(),
+      createdBy:      Session.getActiveUser().getEmail()
+    });
+
+    if (!result.ok) {
+      return { ok: false, shortfall: result.shortfall, error: 'สต็อกไม่พอ: ขาด ' + result.shortfall };
+    }
+
+    logEvent('WEB_PICK', 'TransferLog', 'OK', 0, result.pickId);
+    var html = buildPickSlipsHtml(result);
+    return { ok: true, pickId: result.pickId, html: html };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
 }
 
 /** Format a Date or string to 'dd/MM/yyyy' for JSON transfer to the UI */

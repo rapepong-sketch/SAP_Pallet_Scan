@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <title>ใบกำกับพาเลท</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Sarabun', 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #1a1a2e; padding: 20px 24px; }
+
+    .header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+    .header h1 { font-size: 1.35em; font-weight: 700; }
+    .header .email { color: #666; font-size: 0.85em; margin-left: auto; }
+    .badge { display: inline-block; padding: 4px 14px; border-radius: 4px; font-size: 0.85em; font-weight: 700; letter-spacing: 0.3px; }
+    .badge-live { background: #f8d7da; color: #721c24; border: 2px solid #dc3545; animation: pulse-live 1.5s ease-in-out infinite; }
+    @keyframes pulse-live { 0%,100% { box-shadow: 0 0 0 0 rgba(220,53,69,0.3); } 50% { box-shadow: 0 0 0 6px rgba(220,53,69,0); } }
+
+    .card { background: #fff; border-radius: 8px; border: 1px solid #dee2e6; padding: 20px 22px; margin-bottom: 16px; }
+    .card h2 { font-size: 1.1em; font-weight: 700; margin-bottom: 14px; border-bottom: 2px solid #e9ecef; padding-bottom: 8px; }
+
+    label { display: block; font-size: 0.88em; font-weight: 600; margin-bottom: 4px; color: #333; }
+    select, input[type="text"], input[type="number"] {
+      width: 100%; padding: 8px 10px; border: 1px solid #ced4da; border-radius: 6px;
+      font-size: 0.92em; margin-bottom: 12px; font-family: inherit;
+    }
+    select:focus, input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
+
+    .radio-group { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+    .radio-group label { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; cursor: pointer; }
+
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 18px; border: none; border-radius: 6px; font-size: 0.9em; font-weight: 600; cursor: pointer; transition: background 0.15s, opacity 0.15s; font-family: inherit; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-success { background: #28a745; color: #fff; }
+    .btn-success:hover:not(:disabled) { background: #218838; }
+    .btn-secondary { background: #e9ecef; color: #495057; }
+    .btn-secondary:hover:not(:disabled) { background: #dee2e6; }
+
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #dee2e6; border-top-color: #2563eb; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 4px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .avail-info { font-size: 0.88em; color: #555; margin-bottom: 12px; }
+    .avail-info b { color: #1a1a2e; }
+
+    .plan-table { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 12px; }
+    .plan-table th, .plan-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #eee; }
+    .plan-table th { background: #f8f9fa; font-weight: 700; font-size: 0.82em; color: #555; text-transform: uppercase; }
+    .plan-table tr:hover { background: #f8f9fa; }
+
+    .shortfall-msg { color: #dc3545; font-weight: 600; font-size: 0.9em; margin-bottom: 12px; }
+    .err-msg { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; font-size: 0.88em; display: none; }
+    .err-msg.visible { display: block; }
+
+    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    @media (max-width: 600px) {
+      body { padding: 12px 10px; }
+      .card { padding: 14px 12px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>ใบกำกับพาเลท</h1>
+  <span class="badge badge-live">ADMIN</span>
+  <span class="email" id="elEmail">...</span>
+</div>
+
+<div id="errGlobal" class="err-msg"></div>
+
+<!-- ===== Card 1: รับเข้าผลิตใหม่ ===== -->
+<div class="card">
+  <h2>รับเข้าผลิตใหม่</h2>
+
+  <div class="radio-group">
+    <label><input type="radio" name="rcvMode" value="todayConfirmed" checked onchange="onRcvModeChange()"> วันนี้ทั้งหมด</label>
+    <label><input type="radio" name="rcvMode" value="mo" onchange="onRcvModeChange()"> SAP Order</label>
+    <label><input type="radio" name="rcvMode" value="palletId" onchange="onRcvModeChange()"> Pallet ID</label>
+  </div>
+
+  <div id="rcvInputWrap" style="display:none">
+    <input type="text" id="rcvValue" placeholder="ใส่ SAP Order หรือ Pallet ID">
+  </div>
+
+  <div class="btn-row">
+    <button class="btn btn-primary" id="btnReceive" onclick="doReceive()">พิมพ์ใบกำกับ</button>
+  </div>
+</div>
+
+<!-- ===== Card 2: แบ่งเบิกแตกย่อย (FIFO) ===== -->
+<div class="card">
+  <h2>แบ่งเบิกแตกย่อย (FIFO)</h2>
+
+  <label>Storage Location</label>
+  <select id="selSloc" onchange="onSlocChange()">
+    <option value="">-- กำลังโหลด --</option>
+  </select>
+
+  <label>Material</label>
+  <select id="selMaterial" onchange="onMaterialChange()">
+    <option value="">-- เลือก SLoc ก่อน --</option>
+  </select>
+  <div class="avail-info" id="elAvail"></div>
+
+  <label>จำนวนที่ต้องการเบิก</label>
+  <input type="number" id="inpQty" min="1" step="1" placeholder="จำนวน">
+
+  <label>เลขที่ใบเบิก / Ref.Doc (ไม่บังคับ)</label>
+  <input type="text" id="inpRefDoc" placeholder="Ref.Doc">
+
+  <div id="planResult"></div>
+
+  <div class="btn-row">
+    <button class="btn btn-secondary" id="btnPlan" onclick="doPlan()">ดูแผน FIFO</button>
+    <button class="btn btn-success" id="btnCommit" onclick="doCommit()" disabled>ยืนยัน + พิมพ์</button>
+  </div>
+</div>
+
+<script>
+var inFlight = false;
+var lastPlanOk = false;
+var materialsCache = [];
+
+function setFlight(on) {
+  inFlight = on;
+  var btns = document.querySelectorAll('.btn');
+  for (var i = 0; i < btns.length; i++) {
+    if (on) btns[i].setAttribute('data-prev-disabled', btns[i].disabled ? '1' : '0');
+    if (on) { btns[i].disabled = true; }
+    else if (btns[i].getAttribute('data-prev-disabled') === '0') { btns[i].disabled = false; }
+  }
+  if (!on) updateCommitBtn();
+}
+
+function showErr(msg) {
+  var el = document.getElementById('errGlobal');
+  el.textContent = typeof msg === 'string' ? msg : (msg && msg.message ? msg.message : String(msg));
+  el.classList.add('visible');
+  setTimeout(function() { el.classList.remove('visible'); }, 8000);
+}
+
+function updateCommitBtn() {
+  document.getElementById('btnCommit').disabled = !lastPlanOk || inFlight;
+}
+
+// ---- Card 1 ----
+function onRcvModeChange() {
+  var mode = document.querySelector('input[name="rcvMode"]:checked').value;
+  document.getElementById('rcvInputWrap').style.display = mode === 'todayConfirmed' ? 'none' : '';
+  if (mode !== 'todayConfirmed') document.getElementById('rcvValue').focus();
+}
+
+function doReceive() {
+  var mode = document.querySelector('input[name="rcvMode"]:checked').value;
+  var value = document.getElementById('rcvValue').value.trim();
+  if (mode !== 'todayConfirmed' && !value) { showErr('กรุณาระบุค่าค้นหา'); return; }
+
+  setFlight(true);
+  document.getElementById('btnReceive').innerHTML = '<span class="spinner"></span> กำลังโหลด...';
+  var win = window.open('', '_blank');
+
+  google.script.run
+    .withSuccessHandler(function(r) {
+      document.getElementById('btnReceive').textContent = 'พิมพ์ใบกำกับ';
+      setFlight(false);
+      if (!r.ok) { win.close(); showErr(r.error); return; }
+      win.document.open();
+      win.document.write(r.html);
+      win.document.close();
+    })
+    .withFailureHandler(function(e) {
+      document.getElementById('btnReceive').textContent = 'พิมพ์ใบกำกับ';
+      setFlight(false);
+      win.close();
+      showErr(e);
+    })
+    .slipBuildReceiveHtml({ mode: mode, value: value });
+}
+
+// ---- Card 2 ----
+function loadSlocs() {
+  google.script.run
+    .withSuccessHandler(function(r) {
+      var sel = document.getElementById('selSloc');
+      sel.innerHTML = '<option value="">-- เลือก --</option>';
+      if (!r.ok) { showErr(r.error); return; }
+      r.slocs.forEach(function(s) {
+        var o = document.createElement('option');
+        o.value = s; o.textContent = s;
+        sel.appendChild(o);
+      });
+    })
+    .withFailureHandler(function(e) { showErr(e); })
+    .slipGetStorageLocations();
+}
+
+function onSlocChange() {
+  var sloc = document.getElementById('selSloc').value;
+  var sel  = document.getElementById('selMaterial');
+  sel.innerHTML = '<option value="">-- กำลังโหลด --</option>';
+  document.getElementById('elAvail').textContent = '';
+  materialsCache = [];
+  lastPlanOk = false;
+  updateCommitBtn();
+  document.getElementById('planResult').innerHTML = '';
+
+  if (!sloc) { sel.innerHTML = '<option value="">-- เลือก SLoc ก่อน --</option>'; return; }
+
+  google.script.run
+    .withSuccessHandler(function(r) {
+      sel.innerHTML = '<option value="">-- เลือก --</option>';
+      if (!r.ok) { showErr(r.error); return; }
+      materialsCache = r.materials;
+      r.materials.forEach(function(m) {
+        var o = document.createElement('option');
+        o.value = m.material;
+        o.textContent = m.material + ' — ' + m.name;
+        sel.appendChild(o);
+      });
+    })
+    .withFailureHandler(function(e) { showErr(e); })
+    .slipGetMaterialsForSloc(sloc);
+}
+
+function onMaterialChange() {
+  var mat = document.getElementById('selMaterial').value;
+  var el  = document.getElementById('elAvail');
+  lastPlanOk = false;
+  updateCommitBtn();
+  document.getElementById('planResult').innerHTML = '';
+
+  if (!mat) { el.textContent = ''; return; }
+  var found = materialsCache.filter(function(m) { return m.material === mat; });
+  if (found.length) {
+    el.innerHTML = 'คงเหลือ: <b>' + found[0].availQty + '</b>';
+  } else {
+    el.textContent = '';
+  }
+}
+
+function doPlan() {
+  var material = document.getElementById('selMaterial').value;
+  var sloc     = document.getElementById('selSloc').value;
+  var qty      = Number(document.getElementById('inpQty').value);
+  if (!material || !sloc) { showErr('กรุณาเลือก SLoc และ Material'); return; }
+  if (!qty || qty <= 0)   { showErr('กรุณาระบุจำนวนที่ถูกต้อง'); return; }
+
+  setFlight(true);
+  lastPlanOk = false;
+  document.getElementById('btnPlan').innerHTML = '<span class="spinner"></span> กำลังคำนวณ...';
+  document.getElementById('planResult').innerHTML = '';
+
+  google.script.run
+    .withSuccessHandler(function(r) {
+      document.getElementById('btnPlan').textContent = 'ดูแผน FIFO';
+      setFlight(false);
+      if (!r.ok) { showErr(r.error); return; }
+      var plan = r.plan;
+      if (!plan.ok) {
+        document.getElementById('planResult').innerHTML =
+          '<div class="shortfall-msg">สต็อกไม่พอ: ต้องการ ' + qty +
+          ' มี ' + plan.totalAvail + ' ขาด ' + plan.shortfall + '</div>';
+        lastPlanOk = false;
+        updateCommitBtn();
+        return;
+      }
+      var h = '<table class="plan-table"><thead><tr><th>#</th><th>Pallet</th><th>Lot</th><th>เบิก</th><th>คงเหลือ</th></tr></thead><tbody>';
+      plan.allocations.forEach(function(a, i) {
+        h += '<tr><td>' + (i + 1) + '</td><td>' + esc(a.ParentPalletID) +
+          '</td><td>' + esc(a.LotNo) + '</td><td>' + a.takeQty +
+          '</td><td>' + a.remainingAfter + '</td></tr>';
+      });
+      h += '</tbody></table>';
+      document.getElementById('planResult').innerHTML = h;
+      lastPlanOk = true;
+      updateCommitBtn();
+    })
+    .withFailureHandler(function(e) {
+      document.getElementById('btnPlan').textContent = 'ดูแผน FIFO';
+      setFlight(false);
+      showErr(e);
+    })
+    .slipPlanPick(material, sloc, qty);
+}
+
+function doCommit() {
+  var material = document.getElementById('selMaterial').value;
+  var sloc     = document.getElementById('selSloc').value;
+  var qty      = Number(document.getElementById('inpQty').value);
+  var refDoc   = document.getElementById('inpRefDoc').value.trim();
+  if (!material || !sloc || !qty || qty <= 0) { showErr('ข้อมูลไม่ครบ'); return; }
+
+  setFlight(true);
+  lastPlanOk = false;
+  document.getElementById('btnCommit').innerHTML = '<span class="spinner"></span> กำลังเบิก...';
+  var win = window.open('', '_blank');
+
+  google.script.run
+    .withSuccessHandler(function(r) {
+      document.getElementById('btnCommit').textContent = 'ยืนยัน + พิมพ์';
+      setFlight(false);
+      if (!r.ok) {
+        win.close();
+        showErr('เบิกไม่ได้: ' + (r.error || ('ขาด ' + r.shortfall)));
+        return;
+      }
+      win.document.open();
+      win.document.write(r.html);
+      win.document.close();
+      document.getElementById('planResult').innerHTML = '';
+      onSlocChange();
+    })
+    .withFailureHandler(function(e) {
+      document.getElementById('btnCommit').textContent = 'ยืนยัน + พิมพ์';
+      setFlight(false);
+      win.close();
+      showErr(e);
+    })
+    .slipCommitPick(material, sloc, qty, refDoc);
+}
+
+function esc(s) {
+  var d = document.createElement('div');
+  d.appendChild(document.createTextNode(s));
+  return d.innerHTML;
+}
+
+// ---- Init ----
+google.script.run
+  .withSuccessHandler(function(email) {
+    document.getElementById('elEmail').textContent = email || '(no email)';
+  })
+  .getActiveUserEmail();
+
+loadSlocs();
+</script>
+
+</body>
+</html>
