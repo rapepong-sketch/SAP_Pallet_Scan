@@ -625,20 +625,20 @@ function listOverrideCandidates() {
  * Batch override-confirm. Applies the SAME reason to every selected pallet.
  * Fail-soft: one pallet's failure does not abort the batch. Admin-gated.
  * Delegates each pallet to confirmPalletOverride (Confirmation.gs).
- * @param {string[]} palletIds
+ * @param {Array<{palletId:string, qty:number|null}>} items
  * @param {string} reason  Mandatory, >= 5 chars.
  * @return {{success:boolean, results:Array, message?:string}}
  */
-function batchOverrideConfirm(palletIds, reason) {
+function batchOverrideConfirm(items, reason) {
   if (!isAdminUser_()) {
     return { success: false, results: [], message: 'ไม่มีสิทธิ์' };
   }
 
-  if (!Array.isArray(palletIds) || palletIds.length === 0) {
+  if (!Array.isArray(items) || items.length === 0) {
     return { success: false, results: [], message: 'กรุณาเลือกพาเลทอย่างน้อย 1 รายการ' };
   }
-  if (palletIds.length > 15) {
-    return { success: false, results: [], message: 'เลือกได้สูงสุด 15 พาเลทต่อครั้ง (เลือก ' + palletIds.length + ')' };
+  if (items.length > 15) {
+    return { success: false, results: [], message: 'เลือกได้สูงสุด 15 พาเลทต่อครั้ง (เลือก ' + items.length + ')' };
   }
 
   reason = String(reason || '').trim();
@@ -646,20 +646,29 @@ function batchOverrideConfirm(palletIds, reason) {
     return { success: false, results: [], message: 'ต้องระบุเหตุผล override (อย่างน้อย 5 ตัวอักษร)' };
   }
 
+  for (var v = 0; v < items.length; v++) {
+    if (!items[v] || !String(items[v].palletId || '').trim()) {
+      return { success: false, results: [], message: 'รายการที่ ' + (v + 1) + ' ไม่มี PalletID' };
+    }
+  }
+
   var results = [];
   var okCount = 0;
   var failCount = 0;
 
-  for (var i = 0; i < palletIds.length; i++) {
-    var pid = String(palletIds[i]).trim();
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    var pid = String(item.palletId).trim();
+    var qty = (item.qty != null) ? Number(item.qty) : null;
     try {
-      var res = confirmPalletOverride(pid, reason);
+      var res = confirmPalletOverride(pid, reason, qty);
       results.push({
         palletId:           pid,
         success:            res.success,
         message:            res.message || '',
         confirmationGroup:  res.confirmationGroup || '',
-        materialDocument:   res.materialDocument || ''
+        materialDocument:   res.materialDocument || '',
+        qtyConfirmed:       res.qtyConfirmed != null ? res.qtyConfirmed : null
       });
       if (res.success) { okCount++; } else { failCount++; }
     } catch (e) {
@@ -668,13 +677,14 @@ function batchOverrideConfirm(palletIds, reason) {
         success:            false,
         message:            e.message,
         confirmationGroup:  '',
-        materialDocument:   ''
+        materialDocument:   '',
+        qtyConfirmed:       null
       });
       failCount++;
     }
   }
 
-  logEvent('BATCH_OVERRIDE', 'DONE', 'ok=' + okCount + ' fail=' + failCount + ' total=' + palletIds.length);
+  logEvent('BATCH_OVERRIDE', 'DONE', 'ok=' + okCount + ' fail=' + failCount + ' total=' + items.length);
   return { success: true, results: results };
 }
 

@@ -119,6 +119,16 @@
     /* Override group headers */
     .group-header td { background: #e9ecef; font-weight: 700; font-size: 0.9em; border-bottom: 2px solid #dee2e6; }
     .group-count { font-weight: 400; color: #666; font-size: 0.85em; margin-left: 6px; }
+
+    /* Override qty input */
+    .ovr-qty { width: 68px; padding: 4px 6px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 0.88em; text-align: center; }
+    .ovr-qty:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
+    .ovr-qty.invalid { border-color: #dc3545; box-shadow: 0 0 0 2px rgba(220,53,69,0.15); }
+    .ovr-qty-hint { display: none; font-size: 0.72em; color: #dc3545; margin-top: 1px; white-space: nowrap; }
+    .ovr-qty.invalid + .ovr-qty-hint { display: block; }
+
+    /* Override modal reduction warning */
+    .ovr-reduced { color: #dc3545; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -244,13 +254,14 @@
             <th>MO</th>
             <th>Material</th>
             <th>จำนวน</th>
+            <th>จำนวนยืนยัน</th>
             <th>WorkCenter</th>
             <th>Final Op</th>
             <th>สถานะสแกน</th>
           </tr>
         </thead>
         <tbody id="overrideTableBody">
-          <tr><td colspan="8" class="empty">กดปุ่ม "โหลดรายการรอ override" เพื่อดูพาเลท</td></tr>
+          <tr><td colspan="9" class="empty">กดปุ่ม "โหลดรายการรอ override" เพื่อดูพาเลท</td></tr>
         </tbody>
       </table>
     </div>
@@ -673,7 +684,7 @@
 
     if (!overrideAllPallets.length) {
       document.getElementById('overrideFilterBar').style.display = 'none';
-      document.getElementById('overrideTableBody').innerHTML = '<tr><td colspan="8" class="empty">ไม่มีพาเลทรอ override</td></tr>';
+      document.getElementById('overrideTableBody').innerHTML = '<tr><td colspan="9" class="empty">ไม่มีพาเลทรอ override</td></tr>';
       document.getElementById('chkAllOverride').checked = false;
       document.getElementById('overrideSummary').textContent = '';
       updateOverrideSubmitBtn();
@@ -756,7 +767,7 @@
   function renderGroupedOverride(filtered) {
     var tbody = document.getElementById('overrideTableBody');
     if (!filtered.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">ไม่มีพาเลทตรงเงื่อนไข</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="empty">ไม่มีพาเลทตรงเงื่อนไข</td></tr>';
       document.getElementById('chkAllOverride').checked = false;
       return;
     }
@@ -780,16 +791,21 @@
       var gid = 'grp_' + g;
       html += '<tr class="group-header">' +
         '<td><input type="checkbox" class="group-chk" data-group="' + gid + '" onchange="toggleOverrideGroup(this)"></td>' +
-        '<td colspan="7">' + esc(loc || '(ไม่ระบุคลัง)') + '<span class="group-count"> (' + items.length + ' พาเลท)</span></td></tr>';
+        '<td colspan="8">' + esc(loc || '(ไม่ระบุคลัง)') + '<span class="group-count"> (' + items.length + ' พาเลท)</span></td></tr>';
       for (var i = 0; i < items.length; i++) {
         var p = items[i];
+        var maxQ = p.QtyPerPallet || 0;
         var chk = overrideCheckedSet.has(p.PalletID) ? ' checked' : '';
         html += '<tr data-group="' + gid + '">' +
           '<td><input type="checkbox" class="override-chk" value="' + esc(p.PalletID) + '"' + chk + ' onchange="onOverrideChkChange(this)"></td>' +
           '<td>' + esc(p.PalletID) + '</td>' +
           '<td>' + esc(p.ManufacturingOrder) + '</td>' +
           '<td>' + esc(p.Material) + (p.MaterialName ? ' / ' + esc(p.MaterialName) : '') + '</td>' +
-          '<td>' + p.QtyPerPallet + ' ' + esc(p.Unit || '') + '</td>' +
+          '<td>' + maxQ + ' ' + esc(p.Unit || '') + '</td>' +
+          '<td><input type="number" class="ovr-qty" value="' + maxQ + '" min="1" max="' + maxQ + '" step="1"' +
+            ' data-maxqty="' + maxQ + '" data-palletid="' + esc(p.PalletID) + '"' +
+            ' oninput="onOvrQtyInput(this)">' +
+            '<span class="ovr-qty-hint">ลดได้ไม่เกิน ' + maxQ + '</span></td>' +
           '<td>' + esc(p.WorkCenter || '-') + '</td>' +
           '<td>' + esc(p.FinalOperation || p.finalOperation || '-') + '</td>' +
           '<td>' + esc(p.ScanStatus || '-') + '</td></tr>';
@@ -806,6 +822,26 @@
     syncGroupCheckboxes();
     syncGlobalCheckbox();
     updateOverrideSubmitBtn();
+  }
+
+  function onOvrQtyInput(el) {
+    var maxQ = parseInt(el.getAttribute('data-maxqty'), 10) || 0;
+    var raw = el.value.trim();
+    var n = parseInt(raw, 10);
+    var invalid = raw === '' || isNaN(n) || n < 1 || n > maxQ || String(n) !== raw;
+    el.classList.toggle('invalid', invalid);
+    updateOverrideSubmitBtn();
+  }
+
+  function hasInvalidCheckedQty() {
+    var inputs = document.querySelectorAll('.ovr-qty');
+    for (var i = 0; i < inputs.length; i++) {
+      var inp = inputs[i];
+      if (!inp.classList.contains('invalid')) continue;
+      var pid = inp.getAttribute('data-palletid');
+      if (overrideCheckedSet.has(pid)) return true;
+    }
+    return false;
   }
 
   function toggleOverrideGroup(el) {
@@ -876,9 +912,9 @@
 
     btn.textContent = 'Override confirm รายการที่เลือก (' + n + ')';
 
-    if (n === 0 || reason.length < 5) {
+    if (n === 0 || reason.length < 5 || hasInvalidCheckedQty()) {
       btn.disabled = true;
-      warn.style.display = 'none';
+      warn.style.display = n > 15 ? 'inline' : 'none';
     } else if (n > 15) {
       btn.disabled = true;
       warn.style.display = 'inline';
@@ -889,15 +925,32 @@
   }
 
   // ==== Override: modal ====
+  function getOverrideTickedItems() {
+    var items = [];
+    var inputs = document.querySelectorAll('.ovr-qty');
+    var qtyMap = {};
+    for (var i = 0; i < inputs.length; i++) {
+      qtyMap[inputs[i].getAttribute('data-palletid')] = {
+        qty: parseInt(inputs[i].value, 10),
+        maxQty: parseInt(inputs[i].getAttribute('data-maxqty'), 10)
+      };
+    }
+    overrideCheckedSet.forEach(function(pid) {
+      var info = qtyMap[pid];
+      items.push({ palletId: pid, qty: info ? info.qty : null, maxQty: info ? info.maxQty : null });
+    });
+    return items;
+  }
+
   function openOverrideModal() {
-    var ids = getOverrideTickedIds();
+    var tickedItems = getOverrideTickedItems();
     var reason = (document.getElementById('overrideReason').value || '').trim();
-    if (!ids.length || reason.length < 5) return;
+    if (!tickedItems.length || reason.length < 5) return;
 
     loadFlags();
     renderOverrideBadge();
 
-    document.getElementById('overrideModalCount').textContent = ids.length;
+    document.getElementById('overrideModalCount').textContent = tickedItems.length;
 
     var modeText = '';
     if (!flagState.sapWriteEnabled) {
@@ -913,8 +966,14 @@
     document.getElementById('overrideModalLiveWarn').style.display = isLive ? 'block' : 'none';
 
     var html = '';
-    for (var i = 0; i < ids.length; i++) {
-      html += '<li>' + esc(ids[i]) + '</li>';
+    for (var i = 0; i < tickedItems.length; i++) {
+      var t = tickedItems[i];
+      var reduced = (t.maxQty != null && t.qty != null && t.qty < t.maxQty);
+      html += '<li>' + esc(t.palletId) + ' — ' + (t.qty || '-');
+      if (reduced) {
+        html += ' <span class="ovr-reduced">ลดจาก ' + t.maxQty + ' → ' + t.qty + '</span>';
+      }
+      html += '</li>';
     }
     document.getElementById('overrideModalList').innerHTML = html;
     document.getElementById('overrideModalReason').textContent = reason;
@@ -932,9 +991,14 @@
 
   // ==== Override: confirm and send ====
   function doOverrideConfirm() {
-    var ids = getOverrideTickedIds();
+    var tickedItems = getOverrideTickedItems();
     var reason = (document.getElementById('overrideReason').value || '').trim();
-    if (!ids.length || reason.length < 5) return;
+    if (!tickedItems.length || reason.length < 5) return;
+
+    var payload = [];
+    for (var i = 0; i < tickedItems.length; i++) {
+      payload.push({ palletId: tickedItems[i].palletId, qty: tickedItems[i].qty });
+    }
 
     var btnSend = document.getElementById('btnOverrideConfirmSend');
     btnSend.disabled = true;
@@ -951,7 +1015,7 @@
         btnSend.disabled = false;
         btnSend.textContent = 'ยืนยัน Override';
       })
-      .batchOverrideConfirm(ids, reason);
+      .batchOverrideConfirm(payload, reason);
   }
 
   function lockOverrideUI(lock) {
@@ -992,10 +1056,12 @@
       var r = results[i];
       if (r.ok || r.success) {
         okCount++;
-        html += '<div class="item ok">✅ ' + esc(r.palletId || r.PalletID) +
-          (r.confirmationGroup ? ' — ConfGroup: ' + esc(r.confirmationGroup) : '') +
-          (r.materialDocument ? ' — MatDoc: ' + esc(r.materialDocument) : '') +
-          (r.message ? ' — ' + esc(r.message) : '') + '</div>';
+        html += '<div class="item ok">✅ ' + esc(r.palletId || r.PalletID);
+        if (r.qtyConfirmed != null) html += ' — qty: ' + r.qtyConfirmed;
+        if (r.confirmationGroup) html += ' — ConfGroup: ' + esc(r.confirmationGroup);
+        if (r.materialDocument) html += ' — MatDoc: ' + esc(r.materialDocument);
+        if (r.message) html += ' — ' + esc(r.message);
+        html += '</div>';
       } else {
         failCount++;
         html += '<div class="item fail">❌ ' + esc(r.palletId || r.PalletID) +

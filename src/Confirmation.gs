@@ -36,12 +36,15 @@ function padOperation_(v) {
  * Build the SAP order confirmation payload for one QC-passed pallet.
  * Pure read + transform — does not call SAP or write any sheet.
  * @param {string} palletId
+ * @param {number} [qtyOverride] — if provided (not null/undefined), use this
+ *   quantity instead of pallet.QtyPerPallet. Caller is responsible for the
+ *   upper-bound check; this function only guards > 0 and missing.
  * @return {{OrderID:string, OrderOperation:string, Sequence:string,
  *   ConfirmationYieldQuantity:string, ConfirmationScrapQuantity:string,
  *   ConfirmationUnit:string, Plant:string, IsFinalConfirmation:boolean,
  *   FinalConfirmationType:string}}
  */
-function buildConfirmationPayload_(palletId) {
+function buildConfirmationPayload_(palletId, qtyOverride) {
   const pallet = lookupPalletById_(palletId);
   if (!pallet) throw new Error('PalletID not found in PalletMaster: ' + palletId);
 
@@ -60,7 +63,7 @@ function buildConfirmationPayload_(palletId) {
       ' — cannot confirm');
   }
 
-  const qty = pallet.QtyPerPallet;
+  const qty = (qtyOverride != null) ? qtyOverride : pallet.QtyPerPallet;
   if (!qty || qty <= 0) {
     throw new Error('QtyPerPallet missing or invalid for PalletID: ' + palletId);
   }
@@ -555,12 +558,18 @@ function backfillMaterialDocument(palletId) {
  * QC_COMPLETE (e.g. operator missed scans) but HAS passed QC. Confirms the final
  * operation in SAP (auto-GR + backflush) exactly like confirmPallet, bypassing
  * the sequential-scan requirement, and records a mandatory audit trail.
+ *
+ * Optional qtyConfirmed lets admin REDUCE the confirmed quantity (never increase).
+ * If omitted/null/empty the pallet's original QtyPerPallet is used unchanged.
+ *
  * @param {string} palletId
  * @param {string} reason  Mandatory free-text override justification.
+ * @param {number|string} [qtyConfirmed] — reduced qty (must be > 0 and <= original).
  * @return {{success:boolean, message:string, dryRun?:boolean,
- *           confirmationGroup?:string, materialDocument?:string}}
+ *           confirmationGroup?:string, materialDocument?:string,
+ *           qtyConfirmed?:number}}
  */
-function confirmPalletOverride(palletId, reason) {
+function confirmPalletOverride(palletId, reason, qtyConfirmed) {
   // ---- 1. AUTHZ — server-side admin check ----
   var adminEmail = '';
   try { adminEmail = Session.getActiveUser().getEmail() || ''; } catch (_) {}
@@ -603,18 +612,37 @@ function confirmPalletOverride(palletId, reason) {
     return { success: false, message: 'QC ไม่ผ่าน — override ไม่ได้' };
   }
 
-  // ---- 6. Capture fromStatus for audit ----
-  var fromStatus = pallet.ScanStatus || '';
-
-  // ---- 7. DRY_RUN gate ----
-  if (!sapWriteEnabled_() || isDryRun_()) {
-    var detail = 'palletId=' + palletId + ' adminEmail=' + adminEmail +
-      ' reason=' + reason + ' fromStatus=' + fromStatus;
-    logEvent('OVERRIDE_CONFIRM', 'DRY_RUN', detail);
-    return { success: true, dryRun: true, message: 'DRY_RUN — would override-confirm ' + palletId };
+  // ---- 6. QTY guard — reduce-only, never exceed original ----
+  var originalQty = Number(pallet.QtyPerPallet);
+  var finalQty;
+  if (qtyConfirmed == null || qtyConfirmed === '') {
+    finalQty = originalQty;
+  } else {
+    var n = Number(qtyConfirmed);
+    if (!isFinite(n) || n <= 0 || n > originalQty) {
+      return { success: false, message: 'จำนวนต้องมากกว่า 0 และไม่เกิน ' + originalQty };
+    }
+    finalQty = n;
   }
 
-  // ---- 8. LIVE — build payload + POST + readback + writeback ----
+  // ---- 7. Capture fromStatus for audit ----
+  var fromStatus = pallet.ScanStatus || '';
+
+  // ---- 8. DRY_RUN gate ----
+  if (!sapWriteEnabled_() || isDryRun_()) {
+    var detail = JSON.stringify({
+      palletId: palletId, adminEmail: adminEmail, reason: reason,
+      fromStatus: fromStatus, qtyOriginal: originalQty, qtyConfirmed: finalQty
+    });
+    logEvent('OVERRIDE_CONFIRM', 'DRY_RUN', detail);
+    return {
+      success: true, dryRun: true, qtyConfirmed: finalQty,
+      message: 'DRY_RUN — would override-confirm ' + palletId +
+        ' qty=' + finalQty + (finalQty !== originalQty ? ' (reduced from ' + originalQty + ')' : '')
+    };
+  }
+
+  // ---- 9. LIVE — build payload + POST + readback + writeback ----
   try {
     // Build the same payload as buildConfirmationPayload_ but without QC_COMPLETE guard
     var mo = pallet.ManufacturingOrder;
@@ -628,8 +656,7 @@ function confirmPalletOverride(palletId, reason) {
       return { success: false, message: 'FinalOperation not cached for MO: ' + mo };
     }
 
-    var qty = pallet.QtyPerPallet;
-    if (!qty || qty <= 0) {
+    if (!finalQty || finalQty <= 0) {
       return { success: false, message: 'QtyPerPallet missing or invalid for PalletID: ' + palletId };
     }
 
@@ -637,7 +664,7 @@ function confirmPalletOverride(palletId, reason) {
       OrderID:                   orderId,
       OrderOperation:            padOperation_(finalOp),
       Sequence:                  '0',
-      ConfirmationYieldQuantity: String(qty),
+      ConfirmationYieldQuantity: String(finalQty),
       ConfirmationScrapQuantity: '0',
       ConfirmationUnit:          pallet.Unit || 'PC',
       Plant:                     CFG.PLANT,
@@ -651,7 +678,11 @@ function confirmPalletOverride(palletId, reason) {
       return { success: false, message: 'SAP write disabled' };
     }
     if (result.dryRun) {
-      return { success: true, dryRun: true, message: 'DRY_RUN — would override-confirm ' + palletId };
+      return {
+        success: true, dryRun: true, qtyConfirmed: finalQty,
+        message: 'DRY_RUN — would override-confirm ' + palletId +
+          ' qty=' + finalQty + (finalQty !== originalQty ? ' (reduced from ' + originalQty + ')' : '')
+      };
     }
 
     if (result.ok) {
@@ -673,35 +704,42 @@ function confirmPalletOverride(palletId, reason) {
         OverrideAt:             now.toISOString()
       });
 
-      // ---- 9. Audit log ----
-      logEvent('OVERRIDE_CONFIRM', 'OK',
-        'palletId=' + palletId + ' adminEmail=' + adminEmail +
-        ' reason=' + reason + ' fromStatus=' + fromStatus +
-        ' confirmationGroup=' + result.confirmationGroup);
+      // ---- 10. Audit log ----
+      var auditDetail = JSON.stringify({
+        palletId: palletId, adminEmail: adminEmail, reason: reason,
+        fromStatus: fromStatus, qtyOriginal: originalQty, qtyConfirmed: finalQty,
+        confirmationGroup: result.confirmationGroup
+      });
+      logEvent('OVERRIDE_CONFIRM', 'OK', auditDetail);
 
-      // ---- 10. Return ----
+      // ---- 11. Return ----
       return {
         success: true,
         confirmationGroup: result.confirmationGroup,
         materialDocument: matDoc.materialDocument,
-        message: 'Override confirm สำเร็จ'
+        qtyConfirmed: finalQty,
+        message: 'Override confirm สำเร็จ' +
+          (finalQty !== originalQty ? ' (ลดจำนวนจาก ' + originalQty + ' เป็น ' + finalQty + ')' : '')
       };
     }
 
     return { success: false, message: 'SAP POST returned unexpected result' };
 
   } catch (e) {
-    logEvent('OVERRIDE_CONFIRM', 'FAIL',
-      'palletId=' + palletId + ' adminEmail=' + adminEmail +
-      ' reason=' + reason + ' fromStatus=' + fromStatus +
-      ' error=' + e.message);
+    logEvent('OVERRIDE_CONFIRM', 'FAIL', JSON.stringify({
+      palletId: palletId, adminEmail: adminEmail, reason: reason,
+      fromStatus: fromStatus, qtyOriginal: originalQty, qtyConfirmed: finalQty,
+      error: e.message
+    }));
     return { success: false, message: 'Override confirm failed: ' + e.message };
   }
 }
 
-/** Editor test — DRY_RUN first. Swap palletId for a real candidate. */
+/** Editor test — DRY_RUN ON first. */
 function testConfirmPalletOverride() {
-  Logger.log(JSON.stringify(confirmPalletOverride('PL-1000034813-L02', 'ทดสอบ override — operator สแกนตกหล่น op กลาง'), null, 2));
+  Logger.log(JSON.stringify(
+    confirmPalletOverride('PL-TEST-OVR-A1', 'ทดสอบ override ลดจำนวน', 1),
+  null, 2));
 }
 
 /**

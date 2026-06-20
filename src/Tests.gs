@@ -1365,7 +1365,7 @@ function testStorageLocationBackfill() {
  * exercised. PalletIDs are clearly fake — WILL post to SAP if confirmed live,
  * so only confirm under DRY_RUN.
  *
- * Rows seeded (all MO 1000036050, FinalOperation 0030, QC_COMPLETE/PASS):
+ * Rows seeded (all MO 1000036350, FinalOperation 0030, QC_COMPLETE/PASS):
  *   PL-TEST-OVR-A1  ST39  TESTMAT-A
  *   PL-TEST-OVR-A2  ST39  TESTMAT-B
  *   PL-TEST-OVR-B1  PW30  TESTMAT-A
@@ -1407,11 +1407,11 @@ function seedOverrideTestPallet_() {
     }
     const vals = {
       PalletID:           c.id,
-      ManufacturingOrder: '1000036050',
+      ManufacturingOrder: '1000036350',
       Material:           c.mat,
       MaterialName:       c.matName,
       Batch:              '',
-      QtyPerPallet:       1,
+      QtyPerPallet:       10,
       Unit:               'PC',
       WorkCenter:         '',
       ProductionDate:     '',
@@ -1436,6 +1436,114 @@ function seedOverrideTestPallet_() {
     'Created ' + created.length + ' of ' + CANDIDATES.length + ': ' + created.join(', '));
   Logger.log('seedOverrideTestPallet_: created ' + created.length + ' row(s) — ' + created.join(', '));
   return created;
+}
+
+/**
+ * TEST ONLY: delete all fake override candidate rows — matches PalletIDs
+ * starting with 'PL-TEST-OVR' (new multi-row seeds) OR equal to
+ * 'PL-TEST-OVERRIDE-001' (legacy single-row seed). Safe to run repeatedly.
+ * @return {number} rows deleted
+ */
+/**
+ * Phase 3.5 diagnostic: explain why PL-TEST-OVR-* rows are filtered out of
+ * listOverrideCandidates(). Mirrors the EXACT same sheet access, column-name
+ * resolution, and filter logic from listOverrideCandidates (WebApp.gs).
+ *
+ * For every PalletMaster row whose PalletID starts with 'PL-TEST-OVR', logs a
+ * JSON object with raw field values and a boolean for each filter condition.
+ *
+ * READ-ONLY — no writes, no SAP calls.
+ */
+function diagWhyFiltered() {
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' diagWhyFiltered — PL-TEST-OVR-* filter diagnosis');
+  Logger.log('══════════════════════════════════════════');
+
+  // ---- PalletMaster (same access as listOverrideCandidates) ----
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) {
+    Logger.log('PalletMaster sheet empty or missing');
+    return;
+  }
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  // ---- ProductionOrders FinalOperation map (same as listOverrideCandidates) ----
+  var foMap = {};
+  var poSh = getSpreadsheet_().getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  if (poSh && poSh.getLastRow() >= 2) {
+    var poData = poSh.getDataRange().getValues();
+    var poHdr  = poData[0];
+    var poMoCol = poHdr.indexOf('ManufacturingOrder');
+    var poFoCol = poHdr.indexOf('FinalOperation');
+    if (poMoCol !== -1 && poFoCol !== -1) {
+      for (var p = 1; p < poData.length; p++) {
+        var poMo = String(poData[p][poMoCol] || '').trim();
+        var poFo = String(poData[p][poFoCol] || '').trim();
+        if (poMo) foMap[poMo] = poFo;
+      }
+    }
+  }
+
+  Logger.log('ProductionOrders foMap size: ' + Object.keys(foMap).length);
+
+  Logger.log('has 1000036350 (plain)? ' + ('1000036350' in foMap));
+  Logger.log('has 1000036350.0 ? ' + ('1000036350.0' in foMap));
+  Logger.log('sample keys: ' + Object.keys(foMap).slice(0,5).join(' | '));
+  Logger.log('val[1000036350]   = ' + foMap['1000036350']);
+  Logger.log('val[1000036350.0] = ' + foMap['1000036350.0']);
+
+  // ---- Scan PalletMaster for PL-TEST-OVR-* rows ----
+  var found = 0;
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r];
+    var palletId = String(row[idx['PalletID']] || '').trim();
+    if (palletId.indexOf('PL-TEST-OVR') !== 0) continue;
+    found++;
+
+    var scanStatus        = String(row[idx['ScanStatus']]        || '').trim();
+    var qcStatus          = String(row[idx['QCStatus']]          || '').trim();
+    var qcResult          = String(row[idx['QCResult']]          || '').trim();
+    var confirmationGroup = String(row[idx['ConfirmationGroup']] || '').trim();
+    var mo                = String(row[idx['ManufacturingOrder']]|| '').trim();
+
+    var moInFoMap    = foMap.hasOwnProperty(mo);
+    var finalOpVal   = moInFoMap ? foMap[mo] : '';
+
+    var pass_scan = scanStatus !== 'CONFIRMED';
+    var pass_cg   = confirmationGroup === '';
+    var pass_qc   = qcStatus === 'INSPECTED' && qcResult === 'PASS';
+    var pass_fin  = moInFoMap && finalOpVal !== '';
+
+    var allPass = pass_scan && pass_cg && pass_qc && pass_fin;
+
+    Logger.log(JSON.stringify({
+      PalletID:            palletId,
+      ScanStatus:          scanStatus,
+      QCStatus:            qcStatus,
+      QCResult:            qcResult,
+      ConfirmationGroup:   confirmationGroup,
+      ManufacturingOrder:  mo,
+      moInFoMap:           moInFoMap,
+      FinalOperation:      finalOpVal,
+      pass_scan:           pass_scan,
+      pass_cg:             pass_cg,
+      pass_qc:             pass_qc,
+      pass_fin:            pass_fin,
+      wouldBeIncluded:     allPass
+    }));
+  }
+
+  Logger.log('');
+  Logger.log('Total PL-TEST-OVR-* rows found: ' + found);
+  if (found === 0) {
+    Logger.log('No test rows found — run seedOverrideTestPallet_() first');
+  }
+  Logger.log('══════════════════════════════════════════');
 }
 
 /**
