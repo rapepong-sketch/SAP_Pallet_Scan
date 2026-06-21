@@ -408,15 +408,39 @@
     </div>
   </div>
 
+  <!-- QtyPerPallet reference -->
+  <div style="background:#ebf5fb; border-radius:8px; padding:8px 12px; margin-bottom:11px; font-size:14px;">
+    จำนวนต่อพาเลท: <strong id="f-qty-ref">0</strong> <span id="f-unit-ref">PCS</span>
+  </div>
+
   <div class="form-row">
     <div class="form-group">
-      <label>จำนวนดี (PCS) *</label>
-      <input type="number" id="f-good" min="0" value="0" inputmode="numeric">
+      <label>จำนวนดี (GoodQty) *</label>
+      <input type="number" id="f-good" min="0" value="0" step="1" inputmode="numeric" oninput="recalcYield()">
     </div>
     <div class="form-group">
-      <label>จำนวนเสีย (PCS)</label>
-      <input type="number" id="f-scrap" min="0" value="0" inputmode="numeric">
+      <label>จำนวนซ่อม (RepairQty)</label>
+      <input type="number" id="f-repair" min="0" value="0" step="1" inputmode="numeric" oninput="recalcYield()">
     </div>
+  </div>
+  <div class="form-row">
+    <div class="form-group">
+      <label>จำนวนเสีย (DefectQty)</label>
+      <input type="number" id="f-defect" min="0" value="0" step="1" inputmode="numeric" oninput="recalcYield()">
+    </div>
+    <div class="form-group">
+      <label>รอแปรสภาพ (AwaitConv)</label>
+      <input type="number" id="f-awaitconv" min="0" value="0" step="1" inputmode="numeric" oninput="recalcYield()">
+    </div>
+  </div>
+
+  <!-- Sum validation error -->
+  <div id="yield-sum-error" class="hidden" style="background:#fdeaea; color:#c0392b; border:1px solid #e74c3c; border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:14px; text-align:center;"></div>
+
+  <!-- Yield/Scrap preview badge -->
+  <div id="yield-preview" style="background:#f0f4f8; border:1px solid #d5dde8; border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:13px; text-align:center;">
+    ยอดส่ง SAP &rarr; <strong style="color:#27ae60">ดี(Yield): <span id="yield-val">0</span></strong>
+    | <strong style="color:#e74c3c">เสีย(Scrap): <span id="scrap-val">0</span></strong>
   </div>
 
   <button class="btn btn-success" id="btn-confirm" onclick="submitConfirm()">✅ ยืนยันงาน</button>
@@ -813,8 +837,13 @@ function applyLookupResult(result, opts) {
 
   populateOpsDropdown(currentOperations, currentOperationLogs, nextOpNo);
   document.getElementById('ops-final-flag').style.display = 'none';
-  document.getElementById('f-good').value  = currentPallet.QtyPerPallet || 0;
-  document.getElementById('f-scrap').value = 0;
+  document.getElementById('f-good').value      = currentPallet.QtyPerPallet || 0;
+  document.getElementById('f-repair').value    = 0;
+  document.getElementById('f-defect').value    = 0;
+  document.getElementById('f-awaitconv').value = 0;
+  document.getElementById('f-qty-ref').textContent  = currentPallet.QtyPerPallet || 0;
+  document.getElementById('f-unit-ref').textContent = currentPallet.Unit || 'PCS';
+  recalcYield();
 
   hide('pd-section');
   hide('result-section');
@@ -1024,17 +1053,52 @@ function populateOpsDropdown(operations, operationLogs, nextOperationNo) {
 // ============================================================
 // Submit
 // ============================================================
+function recalcYield() {
+  var good      = parseInt(document.getElementById('f-good').value, 10) || 0;
+  var repair    = parseInt(document.getElementById('f-repair').value, 10) || 0;
+  var defect    = parseInt(document.getElementById('f-defect').value, 10) || 0;
+  var awaitConv = parseInt(document.getElementById('f-awaitconv').value, 10) || 0;
+
+  var sum      = good + repair + defect + awaitConv;
+  var expected = currentPallet ? currentPallet.QtyPerPallet : 0;
+  var yieldQty = good + repair + awaitConv;
+  var scrapQty = defect;
+
+  document.getElementById('yield-val').textContent = yieldQty;
+  document.getElementById('scrap-val').textContent = scrapQty;
+
+  var errEl = document.getElementById('yield-sum-error');
+  var btn   = document.getElementById('btn-confirm');
+
+  if (sum !== expected) {
+    errEl.textContent = 'ยอดรวมต้องเท่ากับ QtyPerPallet (' + expected + ') — ตอนนี้ = ' + sum;
+    errEl.classList.remove('hidden');
+    btn.disabled = true;
+  } else {
+    errEl.classList.add('hidden');
+    btn.disabled = false;
+  }
+}
+
 function submitConfirm() {
   if (!currentPallet) { showMsg('error', 'ยังไม่มีข้อมูลพาเลท — สแกนก่อน'); return; }
 
-  var operator = document.getElementById('f-operator').value.trim();
-  var role     = document.getElementById('f-role').value;
-  var opNo     = document.getElementById('f-opno').value.trim();
-  var qtyGood  = parseInt(document.getElementById('f-good').value,  10) || 0;
-  var qtyScrap = parseInt(document.getElementById('f-scrap').value, 10) || 0;
+  var operator  = document.getElementById('f-operator').value.trim();
+  var role      = document.getElementById('f-role').value;
+  var opNo      = document.getElementById('f-opno').value.trim();
+  var goodQty   = parseInt(document.getElementById('f-good').value, 10) || 0;
+  var repairQty = parseInt(document.getElementById('f-repair').value, 10) || 0;
+  var defectQty = parseInt(document.getElementById('f-defect').value, 10) || 0;
+  var awaitConvQty = parseInt(document.getElementById('f-awaitconv').value, 10) || 0;
 
   if (!operator) { showMsg('error', 'กรุณาระบุชื่อผู้ปฏิบัติงาน'); return; }
   if (!role)     { showMsg('error', 'กรุณาเลือก Role'); return; }
+
+  var sum = goodQty + repairQty + defectQty + awaitConvQty;
+  if (sum !== currentPallet.QtyPerPallet) {
+    showMsg('error', 'ยอดรวม (' + sum + ') ไม่เท่ากับ QtyPerPallet (' + currentPallet.QtyPerPallet + ')');
+    return;
+  }
 
   var selOp   = document.getElementById('f-opno');
   var hasOp   = selOp.selectedIndex > 0;
@@ -1047,21 +1111,41 @@ function submitConfirm() {
   clearMsg();
   showMsg('info', '⏳ กำลังบันทึก…');
 
+  // Step 1: persist 4-bucket yield to PalletMaster
   google.script.run
-    .withSuccessHandler(onConfirmResult)
+    .withSuccessHandler(function (yieldResult) {
+      if (!yieldResult.ok) {
+        clearMsg();
+        showMsg('error', '❌ ' + (yieldResult.reason || 'บันทึกยอดไม่สำเร็จ'));
+        return;
+      }
+      // Step 2: existing confirm path (unchanged)
+      google.script.run
+        .withSuccessHandler(onConfirmResult)
+        .withFailureHandler(function (err) {
+          clearMsg();
+          showMsg('error', '❌ บันทึกไม่สำเร็จ: ' + (err.message || String(err)));
+        })
+        .confirmScan({
+          palletId: currentPallet.PalletID,
+          opNo:     opNo,
+          opText:   opText,
+          isFinal:  isFinal,
+          qtyGood:  goodQty,
+          qtyScrap: defectQty,
+          operator: operator,
+          role:     role
+        });
+    })
     .withFailureHandler(function (err) {
       clearMsg();
-      showMsg('error', '❌ บันทึกไม่สำเร็จ: ' + (err.message || String(err)));
+      showMsg('error', '❌ บันทึกยอดไม่สำเร็จ: ' + (err.message || String(err)));
     })
-    .confirmScan({
-      palletId: currentPallet.PalletID,
-      opNo:     opNo,
-      opText:   opText,
-      isFinal:  isFinal,
-      qtyGood:  qtyGood,
-      qtyScrap: qtyScrap,
-      operator: operator,
-      role:     role
+    .recordYieldBuckets(currentPallet.PalletID, {
+      GoodQty:      goodQty,
+      RepairQty:    repairQty,
+      DefectQty:    defectQty,
+      AwaitConvQty: awaitConvQty
     });
 }
 
@@ -1364,6 +1448,16 @@ function resetScanner() {
   document.getElementById('manual-id').value     = '';
   document.getElementById('img-preview').src     = '';
   document.getElementById('qr-input-file').value = '';
+
+  document.getElementById('f-good').value      = 0;
+  document.getElementById('f-repair').value    = 0;
+  document.getElementById('f-defect').value    = 0;
+  document.getElementById('f-awaitconv').value = 0;
+  document.getElementById('f-qty-ref').textContent  = '0';
+  document.getElementById('f-unit-ref').textContent = 'PCS';
+  document.getElementById('yield-val').textContent  = '0';
+  document.getElementById('scrap-val').textContent  = '0';
+  document.getElementById('yield-sum-error').classList.add('hidden');
 
   var btnConfirm = document.getElementById('btn-confirm');
   btnConfirm.disabled    = false;

@@ -909,6 +909,82 @@ function slipCommitPick(material, sloc, qty, refDoc) {
   }
 }
 
+// ============================================================================
+// Phase 3.5 Gate 3 — Yield Bucket persist (4 columns on PalletMaster)
+// ============================================================================
+
+/**
+ * Validate and persist 4-bucket yield values to PalletMaster.
+ * Idempotent: re-recording the same pallet overwrites the same 4 cells.
+ * Does NOT touch OperationLog, confirmation builder, or SAP payload.
+ *
+ * @param {string} palletId
+ * @param {{GoodQty:number, RepairQty:number, DefectQty:number, AwaitConvQty:number}} buckets
+ * @return {{ok:boolean, palletId?:string, buckets?:Object, derived?:{yield:number,scrap:number}, reason?:string}}
+ */
+function recordYieldBuckets(palletId, buckets) {
+  try {
+    palletId = String(palletId || '').trim();
+    buckets  = buckets || {};
+
+    var goodQty      = parseInt(buckets.GoodQty, 10);
+    var repairQty    = parseInt(buckets.RepairQty, 10);
+    var defectQty    = parseInt(buckets.DefectQty, 10);
+    var awaitConvQty = parseInt(buckets.AwaitConvQty, 10);
+
+    if (!palletId) {
+      return JSON.parse(JSON.stringify({ ok: false, reason: 'ไม่มี PalletID' }));
+    }
+
+    if ([goodQty, repairQty, defectQty, awaitConvQty].some(function (v) { return isNaN(v) || v < 0; })) {
+      logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'REJECT', 0, palletId + ' invalid values');
+      return JSON.parse(JSON.stringify({ ok: false, reason: 'ค่าต้องเป็นจำนวนเต็ม >= 0' }));
+    }
+
+    var pallet = lookupPalletById_(palletId);
+    if (!pallet) {
+      logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'REJECT', 0, palletId + ' not found');
+      return JSON.parse(JSON.stringify({ ok: false, reason: 'ไม่พบพาเลท: ' + palletId }));
+    }
+
+    var sum = goodQty + repairQty + defectQty + awaitConvQty;
+    if (sum !== pallet.QtyPerPallet) {
+      logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'REJECT', 0,
+        palletId + ' sum=' + sum + ' expected=' + pallet.QtyPerPallet);
+      return JSON.parse(JSON.stringify({
+        ok: false,
+        reason: 'ยอดรวม (' + sum + ') ไม่เท่ากับ QtyPerPallet (' + pallet.QtyPerPallet + ')'
+      }));
+    }
+
+    updatePalletScanFields_(palletId, {
+      GoodQty:      goodQty,
+      RepairQty:    repairQty,
+      DefectQty:    defectQty,
+      AwaitConvQty: awaitConvQty
+    });
+
+    var yieldQty = goodQty + repairQty + awaitConvQty;
+    var scrapQty = defectQty;
+
+    logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'OK', 0,
+      JSON.stringify({ palletId: palletId,
+        buckets: { G: goodQty, R: repairQty, D: defectQty, A: awaitConvQty },
+        yield: yieldQty, scrap: scrapQty }).slice(0, 500));
+
+    return JSON.parse(JSON.stringify({
+      ok: true,
+      palletId: palletId,
+      buckets: { GoodQty: goodQty, RepairQty: repairQty, DefectQty: defectQty, AwaitConvQty: awaitConvQty },
+      derived: { yield: yieldQty, scrap: scrapQty }
+    }));
+
+  } catch (e) {
+    logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'REJECT', 0, e.message);
+    return JSON.parse(JSON.stringify({ ok: false, reason: 'เกิดข้อผิดพลาด: ' + e.message }));
+  }
+}
+
 /** Format a Date or string to 'dd/MM/yyyy' for JSON transfer to the UI */
 function _fmtDateStr_(d) {
   if (!d) return '';
