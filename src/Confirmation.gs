@@ -893,6 +893,155 @@ function testBuildYieldBucketPayload() {
 }
 
 /**
+ * Self-cleaning test: seeds PL-TEST-FB-1 with ALL bucket columns EMPTY to verify
+ * the legacy fallback path in buildConfirmationPayload_. Two sub-tests:
+ *   1) No override → source=LEGACY, yield=1000, scrap=0
+ *   2) qtyOverride=800 → source=OVERRIDE, yield=800, scrap=0
+ * Deletes the test row on exit (try/finally). No SAP POST.
+ * Run from menu: 🏭 Pallet Tracker ▸ 🧪 [Test] Confirm Fallback (legacy)
+ */
+function TEST_confirmFallbackLegacy() {
+  var PALLET_ID = 'PL-TEST-FB-1';
+  var QTY       = 1000;
+  var sh        = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var hdr       = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx       = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  // ---- Find a real MO from an existing PalletMaster row that has FinalOperation cached ----
+  var donorMo = '';
+  var pmData  = sh.getDataRange().getValues();
+  for (var r = 1; r < pmData.length; r++) {
+    var mo = String(pmData[r][idx['ManufacturingOrder']] || '').trim();
+    if (mo && getFinalOperationCached_(mo)) {
+      donorMo = mo;
+      break;
+    }
+  }
+  if (!donorMo) throw new Error('TEST_confirmFallbackLegacy: no existing MO with FinalOperation found');
+  Logger.log('Using donor MO: ' + donorMo + ' (FinalOperation=' + getFinalOperationCached_(donorMo) + ')');
+
+  // ---- Seed test row — bucket columns deliberately EMPTY ----
+  var newRow = new Array(hdr.length).fill('');
+  newRow[idx['PalletID']]           = PALLET_ID;
+  newRow[idx['ManufacturingOrder']] = donorMo;
+  newRow[idx['Material']]           = 'TEST-FALLBACK';
+  newRow[idx['QtyPerPallet']]       = QTY;
+  newRow[idx['Unit']]               = 'PC';
+  newRow[idx['ScanStatus']]         = 'QC_COMPLETE';
+  if (idx['Plant'] !== undefined)   newRow[idx['Plant']] = CFG.PLANT;
+  sh.appendRow(newRow);
+  SpreadsheetApp.flush();
+  Logger.log('Seeded ' + PALLET_ID + ' with QtyPerPallet=' + QTY + ', all bucket columns EMPTY');
+
+  var pass = false;
+  var legacyPayload  = null;
+  var overridePayload = null;
+
+  try {
+    // ---- Sub-test 1: no qtyOverride → LEGACY path ----
+    Logger.log('');
+    Logger.log('── Sub-test 1: no qtyOverride (expect LEGACY, yield=1000, scrap=0) ──');
+    legacyPayload = buildConfirmationPayload_(PALLET_ID);
+
+    if (legacyPayload && legacyPayload.error) {
+      Logger.log('  ❌ FAIL — returned error: ' + legacyPayload.error);
+      return JSON.parse(JSON.stringify({ pass: false, legacyPayload: legacyPayload, overridePayload: null }));
+    }
+
+    var legacySource = readConfirmSource_(PALLET_ID);
+    Logger.log('  source path = ' + legacySource + ' (expected LEGACY)');
+    Logger.log('  yield = ' + legacyPayload.ConfirmationYieldQuantity + ' (expected 1000)');
+    Logger.log('  scrap = ' + legacyPayload.ConfirmationScrapQuantity + ' (expected 0)');
+    Logger.log('  payload = ' + JSON.stringify(legacyPayload, null, 2));
+
+    var legacyOk = legacyPayload.ConfirmationYieldQuantity === String(QTY) &&
+                   legacyPayload.ConfirmationScrapQuantity === '0' &&
+                   legacySource === 'LEGACY';
+    Logger.log(legacyOk ? '  ✅ Sub-test 1 PASSED' : '  ❌ Sub-test 1 FAILED');
+
+    // ---- Sub-test 2: qtyOverride=800 → OVERRIDE path ----
+    Logger.log('');
+    Logger.log('── Sub-test 2: qtyOverride=800 (expect OVERRIDE, yield=800, scrap=0) ──');
+    overridePayload = buildConfirmationPayload_(PALLET_ID, 800);
+
+    if (overridePayload && overridePayload.error) {
+      Logger.log('  ❌ FAIL — returned error: ' + overridePayload.error);
+      return JSON.parse(JSON.stringify({ pass: false, legacyPayload: legacyPayload, overridePayload: overridePayload }));
+    }
+
+    var overrideSource = readConfirmSource_(PALLET_ID);
+    Logger.log('  source path = ' + overrideSource + ' (expected OVERRIDE)');
+    Logger.log('  yield = ' + overridePayload.ConfirmationYieldQuantity + ' (expected 800)');
+    Logger.log('  scrap = ' + overridePayload.ConfirmationScrapQuantity + ' (expected 0)');
+    Logger.log('  payload = ' + JSON.stringify(overridePayload, null, 2));
+
+    var overrideOk = overridePayload.ConfirmationYieldQuantity === '800' &&
+                     overridePayload.ConfirmationScrapQuantity === '0' &&
+                     overrideSource === 'OVERRIDE';
+    Logger.log(overrideOk ? '  ✅ Sub-test 2 PASSED' : '  ❌ Sub-test 2 FAILED');
+
+    pass = legacyOk && overrideOk;
+
+  } finally {
+    // ---- Cleanup: delete test row (always runs) ----
+    Logger.log('');
+    Logger.log('── Cleanup ──');
+    var freshData = sh.getDataRange().getValues();
+    var deleted = false;
+    for (var d = freshData.length - 1; d >= 1; d--) {
+      if (String(freshData[d][idx['PalletID']] || '').trim() === PALLET_ID) {
+        sh.deleteRow(d + 1);
+        deleted = true;
+      }
+    }
+    SpreadsheetApp.flush();
+    var verifyGone = lookupPalletById_(PALLET_ID);
+    Logger.log('Row deleted: ' + deleted + ' | Verify gone: ' + (verifyGone === null));
+    if (verifyGone !== null) {
+      Logger.log('⚠️ WARNING: ' + PALLET_ID + ' still exists after cleanup!');
+    }
+  }
+
+  Logger.log('');
+  Logger.log(pass ? '✅ TEST_confirmFallbackLegacy PASSED' : '❌ TEST_confirmFallbackLegacy FAILED');
+
+  var detail = JSON.stringify({
+    donorMo: donorMo,
+    legacyYield:   legacyPayload  ? legacyPayload.ConfirmationYieldQuantity  : null,
+    legacyScrap:   legacyPayload  ? legacyPayload.ConfirmationScrapQuantity  : null,
+    overrideYield: overridePayload ? overridePayload.ConfirmationYieldQuantity : null,
+    overrideScrap: overridePayload ? overridePayload.ConfirmationScrapQuantity : null
+  });
+  logEvent('TEST_CONFIRM_FALLBACK', pass ? 'PASS' : 'FAIL', detail);
+
+  return JSON.parse(JSON.stringify({ pass: pass, legacyPayload: legacyPayload, overridePayload: overridePayload }));
+}
+
+/**
+ * Read the most recent CONFIRM/PAYLOAD source for a given palletId from EventLog.
+ * Scans bottom-up for the last matching entry and extracts 'source=XXX'.
+ * @param {string} palletId
+ * @return {string} source value (e.g. 'LEGACY', 'OVERRIDE', 'BUCKETS') or 'UNKNOWN'
+ */
+function readConfirmSource_(palletId) {
+  var elSh = getSpreadsheet_().getSheetByName(CFG.SHEETS.EVENT_LOG);
+  if (!elSh || elSh.getLastRow() < 2) return 'UNKNOWN';
+
+  var data = elSh.getDataRange().getValues();
+  for (var r = data.length - 1; r >= 1; r--) {
+    var fn       = String(data[r][1] || '').trim();
+    var endpoint = String(data[r][2] || '').trim();
+    var status   = String(data[r][3] || '').trim();
+    if (fn === 'CONFIRM' && endpoint === 'PAYLOAD' && status.indexOf(palletId) !== -1) {
+      var match = status.match(/source=(\S+)/);
+      return match ? match[1] : 'UNKNOWN';
+    }
+  }
+  return 'UNKNOWN';
+}
+
+/**
  * Test harness: backfill GRMaterialDocument for PL-1000035952-L01 and verify.
  */
 function testBackfillOne() {

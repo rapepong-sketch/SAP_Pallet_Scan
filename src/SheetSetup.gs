@@ -60,6 +60,7 @@ function onOpen() {
     .addItem('🔄 Migrate: Add OL Bucket Columns',             'runOperationLogMigration')
     .addSeparator()
     .addItem('🧪 [Test] Yield Bucket Payload',                 'testBuildYieldBucketPayload')
+    .addItem('🧪 [Test] Confirm Fallback (legacy)',              'TEST_confirmFallbackLegacy')
     .addToUi();
 }
 
