@@ -289,6 +289,7 @@
 <div class="mode-toggle" id="mode-toggle">
   <button class="mode-btn active" id="mode-btn-scan" onclick="switchMode('scan')">📷 สแกนยืนยัน</button>
   <button class="mode-btn" id="mode-btn-count" onclick="switchMode('count')">📋 นับสต๊อก</button>
+  <button class="mode-btn" id="mode-btn-qc" onclick="switchMode('qc')">🔍 ตรวจงาน/QC</button>
 </div>
 
 <!-- Global message banner -->
@@ -621,6 +622,88 @@
   <div id="count-result-body"></div>
   <button class="btn btn-outline" style="width:100%; margin-top:12px;" onclick="backToCountScan()">
     ← กลับไปสแกนต่อ
+  </button>
+</div>
+
+<!-- ═══════════════════════ QC MODE SECTIONS ═════════════════════════════ -->
+
+<!-- QCM: Scanner input -->
+<div class="section hidden" id="qcm-scan-section">
+  <div class="section-title">🔍 สแกน QR พาเลท (ตรวจงาน)</div>
+  <input type="file" id="qcm-qr-input" accept="image/*" capture="environment" style="display:none">
+  <div style="text-align:center; margin:20px 0 8px;">
+    <button style="
+      width:100%; min-height:80px; font-size:24px;
+      background:#8e44ad; color:white; border:none;
+      border-radius:12px; cursor:pointer;
+      display:flex; align-items:center; justify-content:center; gap:12px;
+      font-family:inherit; font-weight:bold;
+      box-shadow:0 3px 8px rgba(142,68,173,.35);
+      transition:opacity .15s, transform .1s;"
+      onclick="document.getElementById('qcm-qr-input').click()">
+      📷 ถ่ายรูป QR Code
+    </button>
+    <p style="color:#666; margin-top:8px; font-size:14px;">
+      สแกน QR พาเลทเพื่อตรวจสอบ PD / QC
+    </p>
+  </div>
+  <div class="divider"></div>
+  <span class="manual-label">หรือพิมพ์ Pallet ID</span>
+  <div class="manual-row">
+    <input type="text" id="qcm-manual-id" placeholder="PL-000001234567-L01"
+           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    <button class="btn btn-secondary" onclick="qcmManualLookup()">ค้นหา</button>
+  </div>
+</div>
+
+<!-- QCM: Pallet card -->
+<div class="section hidden" id="qcm-pallet-section">
+  <div class="section-title">📦 ข้อมูลพาเลท</div>
+  <div id="qcm-pallet-info" class="info-grid"></div>
+  <div class="rescan-row">
+    <button class="btn btn-outline" onclick="qcmReset()" style="padding:8px 20px;font-size:14px">
+      🔄 สแกนพาเลทใหม่
+    </button>
+  </div>
+</div>
+
+<!-- QCM: PD inspection panel -->
+<div class="section hidden" id="qcm-pd-section">
+  <div class="section-title">🔶 PD สุ่มตรวจ (ตรวจได้ทุกขั้นตอน)</div>
+  <p style="font-size:13px; color:#7f8c8d; margin-bottom:11px;">
+    เลือกขั้นตอนที่ต้องการตรวจ — ข้ามได้ถ้าไม่ต้องการตรวจ
+  </p>
+  <div id="qcm-pd-ops-container"></div>
+</div>
+
+<!-- QCM: QC inspection panel -->
+<div class="section hidden" id="qcm-qc-section">
+  <div class="section-title">🔍 ตรวจสอบคุณภาพ (QC) — ทั้งพาเลท</div>
+  <div id="qcm-qc-gate-msg" class="hidden" style="background:#fff3cd; color:#856404; border:1px solid #f1c40f; border-radius:8px; padding:10px 14px; margin-bottom:11px; font-size:14px;"></div>
+
+  <div class="form-group">
+    <label>ผู้ตรวจสอบ QC *</label>
+    <input type="text" id="qcm-qc-inspector" placeholder="ชื่อผู้ตรวจสอบ QC" autocomplete="name">
+  </div>
+
+  <div style="display:flex; gap:10px; margin-bottom:11px;">
+    <button type="button" id="qcm-qc-btn-pass" class="btn" onclick="qcmSetQcResult('PASS')"
+            style="flex:1; min-height:58px; font-size:16px; background:#27ae60; color:#fff;">
+      ✅ PASS
+    </button>
+    <button type="button" id="qcm-qc-btn-fail" class="btn" onclick="qcmSetQcResult('FAIL')"
+            style="flex:1; min-height:58px; font-size:16px; background:#e74c3c; color:#fff;">
+      ❌ FAIL
+    </button>
+  </div>
+
+  <div class="form-group hidden" id="qcm-qc-note-group">
+    <label id="qcm-qc-note-label">หมายเหตุ</label>
+    <input type="text" id="qcm-qc-note" placeholder="ระบุสาเหตุ/หมายเหตุ">
+  </div>
+
+  <button class="btn btn-success hidden" id="qcm-qc-btn-submit" onclick="qcmSubmitQcResult()">
+    💾 บันทึกผล QC
   </button>
 </div>
 
@@ -1401,6 +1484,7 @@ function cancelAutoReset() {
 }
 
 function maybeAutoReset() {
+  if (currentMode === 'qc') return;
   var formVisible = !document.getElementById('form-section').classList.contains('hidden');
   var pdVisible   = !document.getElementById('pd-section').classList.contains('hidden');
   var qcVisible   = !document.getElementById('qc-section').classList.contains('hidden');
@@ -1674,12 +1758,24 @@ function showTransferResult(type, title, detail) {
 // ============================================================
 // Count mode — stock count session
 // ============================================================
-var currentMode       = 'scan'; // 'scan' | 'count'
+var currentMode       = 'scan'; // 'scan' | 'count' | 'qc'
 var countSessionId    = null;
 var countSloc         = null;
 var countScanTotal    = 0;
 var countQrListenerAttached = false;
 var countRpcTimer     = null;
+
+// QC mode (qcm) — separate from inline #pd-section / #qc-section
+var qcmPallet              = null;
+var qcmPalletId            = null;
+var qcmOps                 = [];
+var qcmOpLogs              = [];
+var qcmAllOpsConfirmed     = false;
+var qcmQcDone              = false;
+var qcmQcResult            = null;
+var qcmConfirmedOps        = [];
+var qcmPdResults           = {};
+var qcmQrListenerAttached  = false;
 
 function countRpcTimeout(label) {
   return setTimeout(function () {
@@ -1697,13 +1793,18 @@ function switchMode(mode) {
   currentMode = mode;
   document.getElementById('mode-btn-scan').className  = 'mode-btn' + (mode === 'scan'  ? ' active' : '');
   document.getElementById('mode-btn-count').className = 'mode-btn' + (mode === 'count' ? ' active' : '');
+  document.getElementById('mode-btn-qc').className    = 'mode-btn' + (mode === 'qc'    ? ' active' : '');
 
   if (mode === 'scan') {
     hide('count-setup-section');
     hide('count-scan-section');
     hide('count-result-section');
+    hide('qcm-scan-section');
+    hide('qcm-pallet-section');
+    hide('qcm-pd-section');
+    hide('qcm-qc-section');
     show('scan-section');
-  } else {
+  } else if (mode === 'count') {
     resetScanner();
     hide('scan-section');
     hide('pallet-section');
@@ -1716,6 +1817,10 @@ function switchMode(mode) {
     hide('transfer-section');
     hide('transfer-result-section');
     hide('transfer-rescan-section');
+    hide('qcm-scan-section');
+    hide('qcm-pallet-section');
+    hide('qcm-pd-section');
+    hide('qcm-qc-section');
 
     if (countSessionId) {
       show('count-scan-section');
@@ -1724,6 +1829,25 @@ function switchMode(mode) {
       show('count-setup-section');
     }
     hide('count-result-section');
+  } else if (mode === 'qc') {
+    resetScanner();
+    hide('scan-section');
+    hide('pallet-section');
+    hide('timeline-section');
+    hide('form-section');
+    hide('pd-section');
+    hide('result-section');
+    hide('qc-section');
+    hide('next-scan-section');
+    hide('transfer-section');
+    hide('transfer-result-section');
+    hide('transfer-rescan-section');
+    hide('count-setup-section');
+    hide('count-scan-section');
+    hide('count-result-section');
+    qcmReset();
+    initQcmQrScanner();
+    show('qcm-scan-section');
   }
 }
 
@@ -1953,6 +2077,361 @@ function renderCountSummaryTable(lines, isReconcile) {
 function backToCountScan() {
   hide('count-result-section');
   show('count-scan-section');
+}
+
+// ============================================================
+// QC Mode (qcm) — standalone inspection mode for supervisor/QC
+// Own state, own sections, does NOT touch scan-mode globals.
+// ============================================================
+
+function initQcmQrScanner() {
+  if (qcmQrListenerAttached) return;
+  qcmQrListenerAttached = true;
+
+  document.getElementById('qcm-qr-input').addEventListener('change', function (e) {
+    var file = e.target.files[0];
+    if (!file) return;
+
+    showMsg('info', '⏳ กำลังอ่าน QR Code...');
+
+    html5QrCode.scanFile(file, true).then(function (decoded) {
+      if (navigator.vibrate) navigator.vibrate(200);
+      clearMsg();
+      var palletId = parseQrPayload(decoded);
+      if (!palletId) {
+        showMsg('error', 'QR code ไม่ถูกต้อง — ต้องเป็น PALLET|... format');
+        return;
+      }
+      document.getElementById('qcm-manual-id').value = palletId;
+      qcmDoLookup(palletId);
+    }).catch(function () {
+      showMsg('error', '❌ ไม่พบ QR Code ในรูป — ลองถ่ายใหม่');
+    });
+
+    e.target.value = '';
+  });
+}
+
+function qcmManualLookup() {
+  var id = document.getElementById('qcm-manual-id').value.trim();
+  if (!id) { showMsg('error', 'กรุณาพิมพ์ PalletID'); return; }
+  qcmDoLookup(id);
+}
+
+function qcmDoLookup(palletId) {
+  clearMsg();
+  hide('qcm-pallet-section');
+  hide('qcm-pd-section');
+  hide('qcm-qc-section');
+  showMsg('info', '⏳ กำลังค้นหาพาเลท ' + palletId + ' …');
+
+  google.script.run
+    .withSuccessHandler(qcmOnLookupResult)
+    .withFailureHandler(function (err) {
+      clearMsg();
+      showMsg('error', '❌ เกิดข้อผิดพลาด: ' + (err.message || String(err)));
+    })
+    .lookupPallet(palletId);
+}
+
+function qcmOnLookupResult(result) {
+  clearMsg();
+  if (!result.found) {
+    showMsg('error', '❌ ' + (result.error || 'ไม่พบพาเลท'));
+    return;
+  }
+
+  qcmPallet          = result.pallet;
+  qcmPalletId        = result.pallet.PalletID;
+  qcmOps             = result.operations    || [];
+  qcmOpLogs          = result.operationLogs || [];
+  qcmAllOpsConfirmed = !!result.allOpsConfirmed;
+  qcmQcDone          = !!result.qcDone;
+  qcmQcResult        = null;
+
+  qcmRenderPalletCard(qcmPallet);
+  show('qcm-pallet-section');
+
+  qcmRenderPdPanel();
+  qcmRenderQcPanel();
+
+  document.getElementById('qcm-pallet-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function qcmRenderPalletCard(p) {
+  var status    = p.ScanStatus || p.Status || 'CREATED';
+  var chipClass = 'chip chip-' + statusChipClass(status);
+  var rows = [
+    ['PalletID',         esc(p.PalletID)],
+    ['ใบสั่งผลิต (MO)',  esc(p.ManufacturingOrder)],
+    ['วัสดุ',            esc(p.Material)],
+    ['ชื่อวัสดุ',        esc(p.MaterialName || '—')],
+    ['แบตช์',            esc(p.Batch || '—')],
+    ['จำนวน/พาเลท',     esc(String(p.QtyPerPallet)) + ' ' + esc(p.Unit || '')],
+    ['พาเลทที่',         esc(String(p.PalletSeq)) + ' / ' + esc(String(p.TotalPallets))],
+    ['สถานะ',           '<span class="' + chipClass + '">' + esc(status) + '</span>']
+  ];
+  if (p.QCStatus === 'INSPECTED') {
+    rows.push(['QC ผลตรวจ', esc(p.QCResult || '-') + (p.QCResultNote ? ' — ' + esc(p.QCResultNote) : '')]);
+  }
+  var html = rows.map(function (r) {
+    var isHtml = r[1].indexOf('<') !== -1;
+    return '<div class="info-label">' + r[0] + '</div>' +
+           '<div class="info-value' + (isHtml ? '' : ' normal') + '">' + r[1] + '</div>';
+  }).join('');
+  document.getElementById('qcm-pallet-info').innerHTML = html;
+}
+
+// ── QCM PD panel — list all OP-confirmed ops for optional PD inspection ──
+
+function qcmRenderPdPanel() {
+  var container = document.getElementById('qcm-pd-ops-container');
+  container.innerHTML = '';
+  qcmPdResults = {};
+
+  qcmConfirmedOps = qcmOps.filter(function (op) {
+    return qcmOpLogs.some(function (l) { return l.operationNo === op.opNo; });
+  });
+
+  if (!qcmConfirmedOps.length) {
+    container.innerHTML = '<p style="color:#888; text-align:center; font-size:14px;">ยังไม่มีขั้นตอนที่ OP บันทึก</p>';
+    show('qcm-pd-section');
+    return;
+  }
+
+  qcmConfirmedOps.forEach(function (op, idx) {
+    var log = qcmOpLogs.find(function (l) { return l.operationNo === op.opNo; });
+    var label = op.opNo + (op.opText ? ' — ' + op.opText : '') + (op.workCenter ? ' (' + op.workCenter + ')' : '');
+    if (op.isFinal) label += ' ★ สุดท้าย';
+
+    var card = document.createElement('div');
+    card.style.cssText = 'background:#f8f9fa; border:1px solid #ddd; border-radius:8px; padding:12px; margin-bottom:10px;';
+    card.id = 'qcm-pd-card-' + idx;
+
+    var headerHtml = '<strong>' + esc(label) + '</strong>';
+    if (log && log.opBy) headerHtml += '<div style="font-size:12px; color:#666; margin-top:2px;">บันทึกโดย: ' + esc(log.opBy) + '</div>';
+
+    if (log && log.pdResult) {
+      var pdBg = log.pdResult === 'PASS' ? '#eafaf1' : '#fdeaea';
+      var pdColor = log.pdResult === 'PASS' ? '#27ae60' : '#e74c3c';
+      var pdIcon = log.pdResult === 'PASS' ? '✅' : '❌';
+      card.innerHTML = headerHtml +
+        '<div style="margin-top:8px; padding:8px; background:' + pdBg + '; border-radius:6px; text-align:center;">' +
+          '<span style="font-size:16px; color:' + pdColor + '; font-weight:bold;">' + pdIcon + ' PD ' + esc(log.pdResult) + '</span>' +
+          (log.pdBy ? '<div style="font-size:12px; color:#666;">โดย: ' + esc(log.pdBy) + '</div>' : '') +
+          (log.pdNote ? '<div style="font-size:12px; color:#666;">หมายเหตุ: ' + esc(log.pdNote) + '</div>' : '') +
+        '</div>';
+    } else {
+      card.innerHTML = headerHtml +
+        '<div style="margin-top:10px;">' +
+          '<div class="form-group" style="margin-bottom:8px;">' +
+            '<label style="font-size:12px;">ผู้ตรวจสอบ PD *</label>' +
+            '<input type="text" id="qcm-pd-inspector-' + idx + '" placeholder="ชื่อผู้ตรวจสอบ PD" autocomplete="name" style="padding:8px 10px; font-size:14px;">' +
+          '</div>' +
+          '<div style="display:flex; gap:8px; margin-bottom:8px;">' +
+            '<button type="button" id="qcm-pd-btn-pass-' + idx + '" class="btn" onclick="qcmSetPdResult(' + idx + ',\'PASS\')" style="flex:1; min-height:44px; font-size:14px; background:#27ae60; color:#fff;">✅ PASS</button>' +
+            '<button type="button" id="qcm-pd-btn-fail-' + idx + '" class="btn" onclick="qcmSetPdResult(' + idx + ',\'FAIL\')" style="flex:1; min-height:44px; font-size:14px; background:#e74c3c; color:#fff;">❌ FAIL</button>' +
+          '</div>' +
+          '<div class="form-group hidden" id="qcm-pd-note-group-' + idx + '" style="margin-bottom:8px;">' +
+            '<label id="qcm-pd-note-label-' + idx + '" style="font-size:12px;">หมายเหตุ</label>' +
+            '<input type="text" id="qcm-pd-note-' + idx + '" placeholder="ระบุหมายเหตุ" style="padding:8px 10px; font-size:14px;">' +
+          '</div>' +
+          '<button class="btn btn-primary hidden" id="qcm-pd-btn-submit-' + idx + '" onclick="qcmSubmitPdInspection(' + idx + ')" style="font-size:14px; padding:10px;">💾 บันทึกผล PD</button>' +
+        '</div>';
+    }
+
+    container.appendChild(card);
+  });
+
+  show('qcm-pd-section');
+}
+
+function qcmSetPdResult(idx, result) {
+  qcmPdResults[idx] = result;
+
+  document.getElementById('qcm-pd-btn-pass-' + idx).style.opacity = result === 'PASS' ? '1' : '0.4';
+  document.getElementById('qcm-pd-btn-fail-' + idx).style.opacity = result === 'FAIL' ? '1' : '0.4';
+
+  var noteGroup = document.getElementById('qcm-pd-note-group-' + idx);
+  var noteLabel = document.getElementById('qcm-pd-note-label-' + idx);
+  noteGroup.classList.remove('hidden');
+  noteLabel.textContent = result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุ (ถ้ามี)';
+
+  document.getElementById('qcm-pd-btn-submit-' + idx).classList.remove('hidden');
+}
+
+function qcmSubmitPdInspection(idx) {
+  if (!qcmPallet) return;
+  var op = qcmConfirmedOps[idx];
+  if (!op) return;
+  var opNo = op.opNo;
+  var result = qcmPdResults[idx];
+  if (!result) { showMsg('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
+
+  var inspector = document.getElementById('qcm-pd-inspector-' + idx).value.trim();
+  var note      = document.getElementById('qcm-pd-note-' + idx).value.trim();
+
+  if (!inspector) { showMsg('error', 'กรุณากรอกชื่อผู้ตรวจสอบ PD'); return; }
+  if (result === 'FAIL' && !note) { showMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน'); return; }
+
+  var btn = document.getElementById('qcm-pd-btn-submit-' + idx);
+  btn.disabled    = true;
+  btn.textContent = '⏳ กำลังบันทึก...';
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (!res.success) {
+        btn.disabled    = false;
+        btn.textContent = '💾 บันทึกผล PD';
+        showMsg('error', '❌ ' + (res.message || 'บันทึก PD ไม่สำเร็จ'));
+        return;
+      }
+
+      showMsg('success', '✅ บันทึกผล PD สำเร็จ — ' + op.opNo);
+
+      var log = qcmOpLogs.find(function (l) { return l.operationNo === opNo; });
+      if (log) {
+        log.pdResult = result;
+        log.pdBy     = inspector;
+        log.pdNote   = note;
+      }
+      qcmRenderPdPanel();
+    })
+    .withFailureHandler(function (err) {
+      btn.disabled    = false;
+      btn.textContent = '💾 บันทึกผล PD';
+      showMsg('error', '❌ บันทึก PD ไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .savePdInspection({
+      palletId:    qcmPallet.PalletID,
+      operationNo: opNo,
+      result:      result,
+      inspector:   inspector,
+      note:        note
+    });
+}
+
+// ── QCM QC panel — whole-pallet QC inspection ──
+
+function qcmRenderQcPanel() {
+  var gateMsgEl = document.getElementById('qcm-qc-gate-msg');
+
+  if (qcmQcDone) {
+    gateMsgEl.innerHTML = '🔍 QC ตรวจแล้ว: <strong>' + esc(qcmPallet.QCResult || '-') + '</strong>' +
+      (qcmPallet.QCResultNote ? ' — ' + esc(qcmPallet.QCResultNote) : '');
+    gateMsgEl.style.background = '#d4edda';
+    gateMsgEl.style.color = '#155724';
+    gateMsgEl.style.borderColor = '#27ae60';
+    gateMsgEl.classList.remove('hidden');
+    hide('qcm-qc-note-group');
+    document.getElementById('qcm-qc-btn-submit').classList.add('hidden');
+    document.getElementById('qcm-qc-btn-pass').disabled = true;
+    document.getElementById('qcm-qc-btn-pass').style.opacity = '0.4';
+    document.getElementById('qcm-qc-btn-fail').disabled = true;
+    document.getElementById('qcm-qc-btn-fail').style.opacity = '0.4';
+    show('qcm-qc-section');
+    return;
+  }
+
+  if (!qcmAllOpsConfirmed) {
+    gateMsgEl.innerHTML = '⚠️ ยังมีขั้นตอนที่ OP ยังไม่บันทึก — ต้องบันทึกครบทุกขั้นตอนก่อน QC';
+    gateMsgEl.style.background = '#fff3cd';
+    gateMsgEl.style.color = '#856404';
+    gateMsgEl.style.borderColor = '#f1c40f';
+    gateMsgEl.classList.remove('hidden');
+  } else {
+    gateMsgEl.classList.add('hidden');
+  }
+
+  qcmQcResult = null;
+  document.getElementById('qcm-qc-inspector').value = '';
+  document.getElementById('qcm-qc-note').value = '';
+  hide('qcm-qc-note-group');
+
+  var btnSubmit = document.getElementById('qcm-qc-btn-submit');
+  btnSubmit.classList.add('hidden');
+  btnSubmit.disabled    = false;
+  btnSubmit.textContent = '💾 บันทึกผล QC';
+
+  var btnPass = document.getElementById('qcm-qc-btn-pass');
+  var btnFail = document.getElementById('qcm-qc-btn-fail');
+  btnPass.disabled = false; btnPass.style.opacity = '1';
+  btnFail.disabled = false; btnFail.style.opacity = '1';
+
+  show('qcm-qc-section');
+}
+
+function qcmSetQcResult(result) {
+  qcmQcResult = result;
+  document.getElementById('qcm-qc-btn-pass').style.opacity = result === 'PASS' ? '1' : '0.4';
+  document.getElementById('qcm-qc-btn-fail').style.opacity = result === 'FAIL' ? '1' : '0.4';
+
+  var noteLabel = document.getElementById('qcm-qc-note-label');
+  noteLabel.textContent = result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุเพิ่มเติม (ถ้ามี)';
+  show('qcm-qc-note-group');
+  document.getElementById('qcm-qc-btn-submit').classList.remove('hidden');
+}
+
+function qcmSubmitQcResult() {
+  if (!qcmPallet) return;
+  if (!qcmQcResult) { showMsg('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
+
+  var inspector = document.getElementById('qcm-qc-inspector').value.trim();
+  var note      = document.getElementById('qcm-qc-note').value.trim();
+
+  if (!inspector) { showMsg('error', 'กรุณากรอกชื่อผู้ตรวจสอบ QC'); return; }
+  if (qcmQcResult === 'FAIL' && !note) { showMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน'); return; }
+
+  var btn = document.getElementById('qcm-qc-btn-submit');
+  btn.disabled    = true;
+  btn.textContent = '⏳ กำลังบันทึก...';
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (!res.success) {
+        btn.disabled    = false;
+        btn.textContent = '💾 บันทึกผล QC';
+        showMsg('error', '❌ ' + (res.message || 'บันทึก QC ไม่สำเร็จ'));
+        return;
+      }
+
+      showMsg('success', '✅ ' + (res.message || 'บันทึก QC สำเร็จ'));
+      btn.textContent = '✅ บันทึกแล้ว';
+      document.getElementById('qcm-qc-btn-pass').disabled = true;
+      document.getElementById('qcm-qc-btn-fail').disabled = true;
+
+      qcmDoLookup(qcmPallet.PalletID);
+    })
+    .withFailureHandler(function (err) {
+      btn.disabled    = false;
+      btn.textContent = '💾 บันทึกผล QC';
+      showMsg('error', '❌ บันทึก QC ไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .saveQcResult({
+      palletId:  qcmPallet.PalletID,
+      result:    qcmQcResult,
+      inspector: inspector,
+      note:      note
+    });
+}
+
+// ── QCM reset — clears qc-mode state only ──
+
+function qcmReset() {
+  qcmPallet          = null;
+  qcmPalletId        = null;
+  qcmOps             = [];
+  qcmOpLogs          = [];
+  qcmAllOpsConfirmed = false;
+  qcmQcDone          = false;
+  qcmQcResult        = null;
+  qcmConfirmedOps    = [];
+  qcmPdResults       = {};
+  document.getElementById('qcm-manual-id').value = '';
+  hide('qcm-pallet-section');
+  hide('qcm-pd-section');
+  hide('qcm-qc-section');
+  clearMsg();
 }
 </script>
 </body>
