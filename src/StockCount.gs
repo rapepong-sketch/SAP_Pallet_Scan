@@ -252,68 +252,86 @@ function reconcileCountWithSAP(sloc) {
       }));
     }
 
-    // Collect unique materials
-    var materials = {};
-    summary.lines.forEach(function (line) { materials[line.material] = true; });
+    // Re-aggregate count summary to Material+SLoc grain (sum across batches)
+    var countByMat = {};
+    summary.lines.forEach(function (line) {
+      var mat = line.material;
+      if (!countByMat[mat]) {
+        countByMat[mat] = { countedQty: 0, unit: line.unit };
+      }
+      countByMat[mat].countedQty += line.countedQty;
+    });
 
-    // Fetch SAP stock per Material+SLoc — keyed by Material|Batch
+    // Fetch SAP stock per Material+SLoc via A_MatlStkInAcctMod
     var sapStockMap = {};
-    Object.keys(materials).forEach(function (mat) {
+    var sapErrors   = {};
+    Object.keys(countByMat).forEach(function (mat) {
       try {
-        var path = MATERIAL_STOCK_SRV_SC_ + 'A_MaterialStock';
+        var path = MATERIAL_STOCK_SRV_SC_ + 'A_MatlStkInAcctMod';
         var data = sapGet(path, {
           '$filter': "Material eq '" + mat + "' and Plant eq '" + CFG.PLANT + "'",
-          '$top': '50'
+          '$top': '200'
         }, 'STOCK_COUNT.reconcile');
 
         var rows = (data.d && data.d.results) || [];
-        rows.forEach(function (row) {
-          var rSloc  = String(row.StorageLocation || '').trim();
-          if (rSloc !== sloc) return;
 
-          var rBatch = String(row.Batch || '').trim();
-          var key    = mat + '|' + rBatch;
-
-          var qty = 0;
-          var qtyFields = Object.keys(row).filter(function (k) {
-            return /qty|quantity|stock/i.test(k) && k !== '__metadata';
-          });
-          qtyFields.forEach(function (qf) {
-            var v = parseFloat(row[qf]);
-            if (!isNaN(v) && v > qty) qty = v;
-          });
-
-          sapStockMap[key] = (sapStockMap[key] || 0) + qty;
+        var slocRows = rows.filter(function (row) {
+          return String(row.StorageLocation || '').trim() === sloc;
         });
+
+        // Log stock-type breakdown for diagnostics
+        var byType = {};
+        var totalAllTypes = 0;
+        slocRows.forEach(function (row) {
+          var stkType = String(row.InventoryStockType || '').trim();
+          var qty = parseFloat(row.MatlWrhsStkQtyInMatlBaseUnit) || 0;
+          if (!byType[stkType]) byType[stkType] = 0;
+          byType[stkType] += qty;
+          totalAllTypes += qty;
+        });
+
+        // Sum unrestricted stock only (InventoryStockType '01')
+        var unrestrictedQty = byType['01'] || 0;
+        sapStockMap[mat] = unrestrictedQty;
+
+        var typeBreakdown = Object.keys(byType).map(function (t) {
+          return t + '=' + byType[t];
+        }).join(', ');
+
+        logEvent('RECONCILE_SAP', 'STOCK_FETCHED', mat + '/' + sloc, 0,
+          'unrestricted=' + unrestrictedQty + ' allTypes=' + totalAllTypes +
+          ' breakdown=[' + typeBreakdown + '] slocRows=' + slocRows.length +
+          ' totalRows=' + rows.length);
+
       } catch (e) {
-        summary.lines.forEach(function (line) {
-          if (line.material === mat) {
-            line._sapError = e.message;
-          }
-        });
+        sapErrors[mat] = e.message;
+        logEvent('RECONCILE_SAP', 'SAP_ERROR', mat + '/' + sloc, 0, e.message);
       }
     });
 
-    // Build variance lines
-    var resultLines = summary.lines.map(function (line) {
-      var key    = line.material + '|' + line.batch;
-      var sapQty = sapStockMap.hasOwnProperty(key) ? sapStockMap[key] : null;
-      var sapErr = line._sapError || null;
+    // Build variance lines — one row per Material (batch-agnostic)
+    var resultLines = Object.keys(countByMat).sort().map(function (mat) {
+      var counted = countByMat[mat];
+      var sapErr  = sapErrors[mat] || null;
+      var sapQty  = sapStockMap.hasOwnProperty(mat) ? sapStockMap[mat] : null;
 
       if (sapErr) sapQty = null;
 
-      var variance = sapQty !== null ? line.countedQty - sapQty : null;
+      var variance = sapQty !== null ? counted.countedQty - sapQty : null;
       var status;
-      if (sapQty === null)  status = 'SAP_ERROR';
+      if (sapQty === null)     status = 'SAP_ERROR';
       else if (variance === 0) status = 'OK';
       else if (variance > 0)   status = 'SURPLUS';
       else                     status = 'DEFICIT';
 
+      logEvent('RECONCILE_SAP', status, mat + '/' + sloc, 0,
+        'counted=' + counted.countedQty + ' sap=' + sapQty + ' var=' + variance);
+
       return {
-        material:   line.material,
-        batch:      line.batch,
-        unit:       line.unit,
-        countedQty: line.countedQty,
+        material:   mat,
+        batch:      'ALL',
+        unit:       counted.unit,
+        countedQty: counted.countedQty,
         sapQty:     sapQty,
         variance:   variance,
         status:     status,
@@ -325,7 +343,8 @@ function reconcileCountWithSAP(sloc) {
     writeReconcileSheet_(summary.sessionId, sloc, resultLines);
 
     logEvent('STOCK_COUNT', 'RECONCILE',
-      summary.sessionId + ' lines=' + resultLines.length, 0, '');
+      summary.sessionId + ' lines=' + resultLines.length, 0,
+      'grain=Material+SLoc');
 
     return JSON.parse(JSON.stringify({
       sessionId: summary.sessionId, sloc: sloc, lines: resultLines
