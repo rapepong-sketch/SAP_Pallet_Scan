@@ -490,6 +490,7 @@ function saveQcResult(params) {
       QCStatus:     'INSPECTED',
       QCResult:     result,
       QCResultNote: note,
+      QCInspector:  inspector,
       ScanStatus:   'QC_COMPLETE'
     });
 
