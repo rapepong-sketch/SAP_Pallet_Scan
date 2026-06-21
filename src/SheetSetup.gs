@@ -56,6 +56,7 @@ function onOpen() {
     .addItem('🔧 Backfill WorkCenter',                      'backfillWorkCenter')
     .addSeparator()
     .addItem('🔍 [Diag] Yield Bucket Diagnostic',             'runYieldBucketDiagnostic')
+    .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',        'runYieldBucketMigration')
     .addToUi();
 }
 

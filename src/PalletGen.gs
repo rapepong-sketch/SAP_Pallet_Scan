@@ -10,9 +10,10 @@
 
 var PM_SHEET = 'PalletMaster';
 /**
- * 36-col layout — identical to CFG.HEADERS.PALLET_MASTER.
+ * 40-col layout — identical to CFG.HEADERS.PALLET_MASTER.
  * Indices 22-26 are Phase 3 SAP writeback columns added in the 28→33 migration.
  * Indices 33-35 are Phase 3.5 override audit columns.
+ * Indices 36-39 are Phase 3.5 Gate 2 yield-bucket columns.
  * buildPalletRow_() maps by name, so callers that don't set the new keys
  * automatically get '' for those columns.
  */
@@ -52,11 +53,15 @@ var PM_HEADERS = [
   'QCResultNote',            // 32
   'OverrideBy',              // 33
   'OverrideReason',          // 34
-  'OverrideAt'               // 35
+  'OverrideAt',              // 35
+  'GoodQty',                 // 36 — Phase 3.5 yield bucket
+  'RepairQty',               // 37 — Phase 3.5 yield bucket
+  'DefectQty',               // 38 — Phase 3.5 yield bucket
+  'AwaitConvQty'             // 39 — Phase 3.5 yield bucket
 ];
 
 /**
- * Build a 36-col PalletMaster row array aligned to PM_HEADERS (= CFG layout).
+ * Build a 40-col PalletMaster row array aligned to PM_HEADERS (= CFG layout).
  * values = object keyed by column name; missing keys get ''.
  * Always use this instead of positional arrays — immune to column reorder.
  */
