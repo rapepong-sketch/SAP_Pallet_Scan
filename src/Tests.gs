@@ -1589,8 +1589,13 @@ function cleanupOverrideTestPallet_() {
 /**
  * Self-cleaning test for the auto-cache FinalOperation warm path used by
  * allocatePallets(). Picks one MO that already has FinalOperation cached,
- * clears it, calls getFinalOperationForMo_() to re-warm, asserts the value
- * matches computeFinalOperation_() of the routing, then restores original.
+ * clears it, calls getFinalOperationForMo_() to re-warm, asserts the
+ * normalized value matches computeFinalOperation_() of the routing, then
+ * restores original.
+ *
+ * Compares via _normOpNo_ (4-digit zero-pad) because Sheets coerces
+ * '0010' → 10 on read-back. Production is safe: padOperation_() in the
+ * confirmation payload re-pads before sending to SAP.
  */
 function TEST_autoCacheFinalOp() {
   var fn = 'TEST_autoCacheFinalOp';
@@ -1643,9 +1648,15 @@ function TEST_autoCacheFinalOp() {
     try { ops = JSON.parse(opsJsonStr); } catch (pe) { /* empty */ }
     var expected = computeFinalOperation_(ops);
 
-    var pass = repopulated === expected && warmedValue === expected;
-    var detail = 'mo=' + testMo + ' expected=' + expected +
-                 ' repopulated=' + repopulated + ' returned=' + warmedValue;
+    var normRepop    = _normOpNo_(repopulated);
+    var normExpected = _normOpNo_(expected);
+    var normReturned = _normOpNo_(warmedValue);
+
+    var pass = normRepop === normExpected && normReturned === normExpected;
+    var detail = 'mo=' + testMo +
+                 ' expected=' + expected + ' repopulated=' + repopulated +
+                 ' returned=' + warmedValue +
+                 ' norm=' + normExpected + '/' + normRepop + '/' + normReturned;
 
     Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
     logEvent(fn, testMo, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
