@@ -1,10 +1,13 @@
 /**
- * Confirmation.gs — Phase 3 Step 2c/2d: SAP Order Confirmation + Batch Confirm
- * ==============================================================================
+ * Confirmation.gs — Phase 3 Step 2c/2d + Phase 3.5 Gate 4: SAP Order Confirmation
+ * ==================================================================================
  * Step 2c: Builds the API_PROD_ORDER_CONFIRMATION_2_SRV payload for a QC-passed
  * pallet, POSTs to SAP (gated by SAP_WRITE_ENABLED + DRY_RUN), reads back
  * MaterialDocument, writes results to PalletMaster.
  * Step 2d: Admin batch confirmation — listConfirmablePallets() + batchConfirmPallets().
+ * Gate 4: buildConfirmationPayload_ reads 4-bucket yield (GoodQty, RepairQty,
+ *   DefectQty, AwaitConvQty) from PalletMaster. yield=Good+Repair+AwaitConv,
+ *   scrap=Defect. Legacy fallback when buckets are empty.
  *
  * Reuses:
  *  - lookupPalletById_()        (PalletSheet.gs)      — PalletMaster row by PalletID
@@ -35,14 +38,19 @@ function padOperation_(v) {
 /**
  * Build the SAP order confirmation payload for one QC-passed pallet.
  * Pure read + transform — does not call SAP or write any sheet.
+ *
+ * Phase 3.5 Gate 4: reads 4-bucket yield columns from PalletMaster.
+ *   yield = GoodQty + RepairQty + AwaitConvQty
+ *   scrap = DefectQty
+ * Fallback: if all 4 buckets are empty (legacy pallet), uses QtyPerPallet / scrap 0.
+ * qtyOverride is IGNORED when buckets are present; only applies in legacy fallback.
+ *
  * @param {string} palletId
- * @param {number} [qtyOverride] — if provided (not null/undefined), use this
- *   quantity instead of pallet.QtyPerPallet. Caller is responsible for the
- *   upper-bound check; this function only guards > 0 and missing.
+ * @param {number} [qtyOverride] — reduce-only admin override (legacy path only).
  * @return {{OrderID:string, OrderOperation:string, Sequence:string,
  *   ConfirmationYieldQuantity:string, ConfirmationScrapQuantity:string,
  *   ConfirmationUnit:string, Plant:string, IsFinalConfirmation:boolean,
- *   FinalConfirmationType:string}}
+ *   FinalConfirmationType:string}|{error:string}}
  */
 function buildConfirmationPayload_(palletId, qtyOverride) {
   const pallet = lookupPalletById_(palletId);
@@ -63,17 +71,61 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
       ' — cannot confirm');
   }
 
-  const qty = (qtyOverride != null) ? qtyOverride : pallet.QtyPerPallet;
-  if (!qty || qty <= 0) {
-    throw new Error('QtyPerPallet missing or invalid for PalletID: ' + palletId);
+  // ---- Phase 3.5 Gate 4: 4-bucket yield resolution ----
+  var good     = (pallet.GoodQty     != null && pallet.GoodQty     !== '') ? Number(pallet.GoodQty)     : NaN;
+  var repair   = (pallet.RepairQty   != null && pallet.RepairQty   !== '') ? Number(pallet.RepairQty)   : NaN;
+  var defect   = (pallet.DefectQty   != null && pallet.DefectQty   !== '') ? Number(pallet.DefectQty)   : NaN;
+  var awaitCnv = (pallet.AwaitConvQty!= null && pallet.AwaitConvQty!== '') ? Number(pallet.AwaitConvQty): NaN;
+
+  var bucketsPresent = !isNaN(good) || !isNaN(repair) || !isNaN(defect) || !isNaN(awaitCnv);
+
+  var yieldQty, scrapQty, source;
+
+  if (bucketsPresent) {
+    // Treat any remaining NaN as 0 (partial fill = zero for that bucket)
+    good     = isNaN(good)     ? 0 : good;
+    repair   = isNaN(repair)   ? 0 : repair;
+    defect   = isNaN(defect)   ? 0 : defect;
+    awaitCnv = isNaN(awaitCnv) ? 0 : awaitCnv;
+
+    // Validate sum == QtyPerPallet
+    var bucketSum = good + repair + defect + awaitCnv;
+    if (bucketSum !== pallet.QtyPerPallet) {
+      var msg = 'Bucket sum mismatch for ' + palletId + ': Good(' + good +
+        ')+Repair(' + repair + ')+Defect(' + defect + ')+AwaitConv(' + awaitCnv +
+        ')=' + bucketSum + ' ≠ QtyPerPallet(' + pallet.QtyPerPallet + ')';
+      logEvent('CONFIRM', 'ERROR', msg);
+      return { error: msg };
+    }
+
+    yieldQty = good + repair + awaitCnv;
+    scrapQty = defect;
+    source   = 'BUCKETS';
+
+    if (qtyOverride != null) {
+      logEvent('CONFIRM', 'WARN', palletId + ' qtyOverride=' + qtyOverride +
+        ' IGNORED — buckets are source of truth (yield=' + yieldQty + ' scrap=' + scrapQty + ')');
+    }
+  } else {
+    // Legacy fallback: no bucket data recorded
+    var qty = (qtyOverride != null) ? qtyOverride : pallet.QtyPerPallet;
+    if (!qty || qty <= 0) {
+      throw new Error('QtyPerPallet missing or invalid for PalletID: ' + palletId);
+    }
+    yieldQty = qty;
+    scrapQty = 0;
+    source   = (qtyOverride != null) ? 'OVERRIDE' : 'LEGACY';
   }
+
+  logEvent('CONFIRM', 'PAYLOAD', palletId + ' source=' + source +
+    ' yield=' + yieldQty + ' scrap=' + scrapQty);
 
   return {
     OrderID:                   orderId,
     OrderOperation:            padOperation_(finalOp),
     Sequence:                  '0',
-    ConfirmationYieldQuantity: String(qty),
-    ConfirmationScrapQuantity: '0',
+    ConfirmationYieldQuantity: String(yieldQty),
+    ConfirmationScrapQuantity: String(scrapQty),
     ConfirmationUnit:          pallet.Unit || 'PC',
     Plant:                     CFG.PLANT,
     IsFinalConfirmation:       true,
@@ -100,6 +152,10 @@ function dryRunConfirmation_(palletId) {
 
     if (isDryRun_()) {
       const payload = buildConfirmationPayload_(palletId);
+      if (payload && payload.error) {
+        logEvent('CONFIRM', 'ERROR', palletId + ' ' + payload.error);
+        throw new Error(payload.error);
+      }
       logEvent('CONFIRM', 'DRYRUN', JSON.stringify(payload));
       return payload;
     }
@@ -291,6 +347,10 @@ function confirmPallet(palletId) {
 
     // ---- Build + POST ----
     var payload = buildConfirmationPayload_(palletId);
+    if (payload && payload.error) {
+      logEvent('CONFIRM', 'ERROR', palletId + ' ' + payload.error);
+      throw new Error(payload.error);
+    }
     var result = postConfirmation_(payload);
 
     if (result.skipped || result.dryRun) return result;
@@ -740,6 +800,96 @@ function testConfirmPalletOverride() {
   Logger.log(JSON.stringify(
     confirmPalletOverride('PL-TEST-OVR-A1', 'ทดสอบ override ลดจำนวน', 1),
   null, 2));
+}
+
+// ============================================================================
+// Phase 3.5 Gate 4 — TEST: buildConfirmationPayload_ with 4-bucket yield
+// ============================================================================
+
+/**
+ * Self-cleaning test: seeds a fake pallet PL-TEST-BUCKET-G4 with 4-bucket
+ * yield data (Good=440, Repair=5, AwaitConv=3, Defect=2, QtyPerPallet=450),
+ * runs buildConfirmationPayload_, asserts yield==448 & scrap==2, then deletes
+ * the test row. Run from menu: 🏭 Pallet Tracker ▸ 🧪 [Test] Yield Bucket Payload.
+ */
+function testBuildYieldBucketPayload() {
+  var PALLET_ID = 'PL-TEST-BUCKET-G4';
+  var MO        = '0000099999';
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  // ---- Seed test row ----
+  var newRow = new Array(hdr.length).fill('');
+  newRow[idx['PalletID']]           = PALLET_ID;
+  newRow[idx['ManufacturingOrder']] = MO;
+  newRow[idx['Material']]           = 'TEST-MAT-001';
+  newRow[idx['QtyPerPallet']]       = 450;
+  newRow[idx['Unit']]               = 'PC';
+  newRow[idx['ScanStatus']]         = 'QC_COMPLETE';
+  newRow[idx['GoodQty']]            = 440;
+  newRow[idx['RepairQty']]          = 5;
+  newRow[idx['DefectQty']]          = 2;
+  newRow[idx['AwaitConvQty']]       = 3;
+  if (idx['Plant'] !== undefined)   newRow[idx['Plant']] = CFG.PLANT;
+  sh.appendRow(newRow);
+
+  // Seed FinalOperation cache so getFinalOperationCached_ resolves
+  var foSh = getSpreadsheet_().getSheetByName('ProductionOrders');
+  var foHdr = foSh.getRange(1, 1, 1, foSh.getLastColumn()).getValues()[0];
+  var foIdx = {};
+  foHdr.forEach(function(h, i) { foIdx[h] = i; });
+  var foRow = new Array(foHdr.length).fill('');
+  foRow[foIdx['ManufacturingOrder']] = MO;
+  foRow[foIdx['FinalOperation']]     = '0040';
+  if (foIdx['Material'] !== undefined) foRow[foIdx['Material']] = 'TEST-MAT-001';
+  foSh.appendRow(foRow);
+
+  SpreadsheetApp.flush();
+
+  var testPassed = false;
+  var payload;
+  try {
+    payload = buildConfirmationPayload_(PALLET_ID);
+
+    if (payload && payload.error) {
+      Logger.log('FAIL — buildConfirmationPayload_ returned error: ' + payload.error);
+    } else {
+      var yieldVal = Number(payload.ConfirmationYieldQuantity);
+      var scrapVal = Number(payload.ConfirmationScrapQuantity);
+
+      Logger.log('yield = ' + yieldVal + ' (expected 448)');
+      Logger.log('scrap = ' + scrapVal + ' (expected 2)');
+      Logger.log('payload = ' + JSON.stringify(payload, null, 2));
+
+      if (yieldVal === 448 && scrapVal === 2) {
+        Logger.log('PASS — yield and scrap match expected values');
+        testPassed = true;
+      } else {
+        Logger.log('FAIL — yield or scrap mismatch');
+      }
+    }
+  } catch (e) {
+    Logger.log('FAIL — exception: ' + e.message);
+  }
+
+  // ---- Cleanup: delete test rows ----
+  var pmData = sh.getDataRange().getValues();
+  for (var r = pmData.length - 1; r >= 1; r--) {
+    if (String(pmData[r][idx['PalletID']] || '').trim() === PALLET_ID) {
+      sh.deleteRow(r + 1);
+    }
+  }
+  var foData = foSh.getDataRange().getValues();
+  for (var r2 = foData.length - 1; r2 >= 1; r2--) {
+    if (String(foData[r2][foIdx['ManufacturingOrder']] || '').trim() === MO) {
+      foSh.deleteRow(r2 + 1);
+    }
+  }
+
+  Logger.log(testPassed ? '✅ TEST PASSED' : '❌ TEST FAILED');
+  return payload;
 }
 
 /**

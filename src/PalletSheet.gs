@@ -474,7 +474,11 @@ function lookupPalletById_(palletId) {
       GRMaterialDocument: String(data[r][idx['GRMaterialDocument']] || '').trim(),
       QCStatus:           String(data[r][idx['QCStatus']]           || '').trim(),
       QCResult:           String(data[r][idx['QCResult']]           || '').trim(),
-      QCResultNote:       String(data[r][idx['QCResultNote']]       || '').trim()
+      QCResultNote:       String(data[r][idx['QCResultNote']]       || '').trim(),
+      GoodQty:            idx['GoodQty']      !== undefined ? data[r][idx['GoodQty']]      : null,
+      RepairQty:          idx['RepairQty']    !== undefined ? data[r][idx['RepairQty']]    : null,
+      DefectQty:          idx['DefectQty']    !== undefined ? data[r][idx['DefectQty']]    : null,
+      AwaitConvQty:       idx['AwaitConvQty'] !== undefined ? data[r][idx['AwaitConvQty']] : null
     };
   }
   return null;
