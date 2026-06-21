@@ -57,6 +57,7 @@ function onOpen() {
     .addSeparator()
     .addItem('🔍 [Diag] Yield Bucket Diagnostic',             'runYieldBucketDiagnostic')
     .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',        'runYieldBucketMigration')
+    .addItem('🔄 Migrate: Add OL Bucket Columns',             'runOperationLogMigration')
     .addToUi();
 }
 

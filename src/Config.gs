@@ -142,7 +142,9 @@ const CFG = {
       'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
       'GoodQty', 'ScrapQty', 'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
       // Phase 3 Step 1 Enhancement v2: PD inspection columns (written by savePdInspection())
-      'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
+      'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp',
+      // Phase 3.5 Gate 3: 4-bucket yield columns
+      'RepairQty', 'AwaitConvQty'
     ],
 
     INSPECTION_LOTS: [

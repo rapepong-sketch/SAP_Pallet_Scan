@@ -18,7 +18,9 @@ const OL_HEADERS = [
   'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
   'GoodQty', 'ScrapQty', 'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
   // Phase 3 Step 1 Enhancement v2: PD inspection columns (written by savePdInspection())
-  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
+  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp',
+  // Phase 3.5 Gate 3: 4-bucket yield (RepairQty + AwaitConvQty appended after PDTimestamp)
+  'RepairQty', 'AwaitConvQty'
 ];
 
 // ============================================================================
@@ -107,6 +109,8 @@ function _normOpNo_(v) {
  *   operationText: string   — e.g. 'Assembly Final Check'
  *   goodQty:       number
  *   scrapQty:      number
+ *   repairQty:     number   — Phase 3.5 4-bucket
+ *   awaitConvQty:  number   — Phase 3.5 4-bucket
  *   operator:      string   — employee ID or name
  *   role:          string   — 'OP' | 'PD' | 'QC'
  *   result:        string   — 'PASS' | 'FAIL'
@@ -130,7 +134,10 @@ function logOperation(entry) {
     String(entry.role      || '').trim(),
     String(entry.result    || '').trim(),
     now,
-    String(entry.source    || 'SYSTEM').trim()
+    String(entry.source    || 'SYSTEM').trim(),
+    '', '', '', '',
+    Number(entry.repairQty)    || 0,
+    Number(entry.awaitConvQty) || 0
   ];
 
   if (CFG.DRY_RUN) {

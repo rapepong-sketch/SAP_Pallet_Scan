@@ -161,3 +161,104 @@ function logAndReturn_(status, extra) {
   logEvent('MIGRATE_YIELD_BUCKETS', 'PalletMaster', status, 0, detail);
   return JSON.parse(JSON.stringify(result));
 }
+
+// ============================================================================
+// OperationLog schema migration — append RepairQty + AwaitConvQty
+// ============================================================================
+
+/** @const {string[]} New columns to append to OperationLog. */
+var OL_NEW_COLS_ = ['RepairQty', 'AwaitConvQty'];
+
+/**
+ * Menu-callable wrapper for OperationLog migration.
+ */
+function runOperationLogMigration() {
+  var result = migrateOperationLogBuckets();
+  var json = JSON.stringify(result, null, 2);
+  Logger.log(json);
+  var escaped = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  var html = HtmlService.createHtmlOutput(
+    '<pre style="font-size:12px;white-space:pre-wrap;max-width:100%">' + escaped + '</pre>'
+  ).setWidth(800).setHeight(500).setTitle('OperationLog Migration');
+  SpreadsheetApp.getUi().showModelessDialog(html, 'OperationLog Migration — Gate 3');
+}
+
+/**
+ * Append RepairQty + AwaitConvQty headers to OperationLog.
+ * Idempotent — returns ALREADY_MIGRATED if both exist.
+ * Backs up OperationLog first.
+ * @return {Object} JSON-safe result
+ */
+function migrateOperationLogBuckets() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName(CFG.SHEETS.OPERATION_LOG);
+  if (!sh) {
+    return olLogAndReturn_('PRECONDITION_FAILED', { detail: 'OperationLog sheet not found' });
+  }
+
+  var headers = readHeaderRow_(sh);
+  var idx = buildHeaderMap_(headers);
+
+  var allExist = OL_NEW_COLS_.every(function (c) { return idx[c] !== undefined; });
+  if (allExist) {
+    return olLogAndReturn_('ALREADY_MIGRATED', {
+      detail: 'RepairQty + AwaitConvQty already present',
+      finalHeaderCount: headers.length,
+      headerMapSnapshot: idx
+    });
+  }
+
+  if (headers[headers.length - 1] !== 'PDTimestamp') {
+    return olLogAndReturn_('PRECONDITION_FAILED', {
+      detail: 'Expected last header "PDTimestamp", found "' + headers[headers.length - 1] + '"',
+      headerMapSnapshot: idx
+    });
+  }
+
+  var tz = 'Asia/Bangkok';
+  var stamp = Utilities.formatDate(new Date(), tz, 'yyyyMMdd_HHmmss');
+  var backupName = 'OperationLog_bak_' + stamp;
+  var backupSh = sh.copyTo(ss);
+  backupSh.setName(backupName);
+
+  var nextCol = headers.length + 1;
+  sh.getRange(1, nextCol, 1, OL_NEW_COLS_.length).setValues([OL_NEW_COLS_]);
+
+  var newHeaders = readHeaderRow_(sh);
+  var newIdx = buildHeaderMap_(newHeaders);
+  var verified = OL_NEW_COLS_.every(function (c) { return newIdx[c] !== undefined; });
+
+  if (!verified) {
+    return olLogAndReturn_('VERIFY_FAILED', {
+      detail: 'Post-migration verify failed',
+      backupSheet: backupName,
+      finalHeaderCount: newHeaders.length,
+      headerMapSnapshot: newIdx
+    });
+  }
+
+  return olLogAndReturn_('OK', {
+    backupSheet: backupName,
+    columnsAdded: OL_NEW_COLS_,
+    finalHeaderCount: newHeaders.length,
+    headerMapSnapshot: newIdx
+  });
+}
+
+/**
+ * Log OperationLog migration event and return a JSON-safe result.
+ * @param {string} status
+ * @param {Object} extra
+ * @return {Object}
+ */
+function olLogAndReturn_(status, extra) {
+  var result = Object.assign({ status: status }, extra || {});
+  var detail = JSON.stringify({
+    status: status,
+    backup: extra.backupSheet || null,
+    cols: extra.columnsAdded || null,
+    hdrCount: extra.finalHeaderCount || null
+  });
+  logEvent('MIGRATE_OL_BUCKETS', 'OperationLog', status, 0, detail);
+  return JSON.parse(JSON.stringify(result));
+}

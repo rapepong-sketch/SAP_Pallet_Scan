@@ -415,17 +415,17 @@
 
   <div class="form-row">
     <div class="form-group">
-      <label>จำนวนดี (GoodQty) *</label>
+      <label>จำนวนดี (Good) *</label>
       <input type="number" id="f-good" min="0" value="0" step="1" inputmode="numeric" oninput="recalcYield()">
     </div>
     <div class="form-group">
-      <label>จำนวนซ่อม (RepairQty)</label>
+      <label>จำนวนซ่อม (Repair)</label>
       <input type="number" id="f-repair" min="0" value="0" step="1" inputmode="numeric" oninput="recalcYield()">
     </div>
   </div>
   <div class="form-row">
     <div class="form-group">
-      <label>จำนวนเสีย (DefectQty)</label>
+      <label>จำนวนเสีย (Defect)</label>
       <input type="number" id="f-defect" min="0" value="0" step="1" inputmode="numeric" oninput="recalcYield()">
     </div>
     <div class="form-group">
@@ -437,9 +437,10 @@
   <!-- Sum validation error -->
   <div id="yield-sum-error" class="hidden" style="background:#fdeaea; color:#c0392b; border:1px solid #e74c3c; border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:14px; text-align:center;"></div>
 
-  <!-- Yield/Scrap preview badge -->
-  <div id="yield-preview" style="background:#f0f4f8; border:1px solid #d5dde8; border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:13px; text-align:center;">
-    ยอดส่ง SAP &rarr; <strong style="color:#27ae60">ดี(Yield): <span id="yield-val">0</span></strong>
+  <!-- Yield/Scrap preview badge — applies only at final operation -->
+  <div id="yield-preview" class="hidden" style="background:#f0f4f8; border:1px solid #d5dde8; border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:13px; text-align:center;">
+    <div style="font-size:11px; color:#888; margin-bottom:4px;">ส่ง SAP (เฉพาะ op สุดท้าย)</div>
+    <strong style="color:#27ae60">ดี(Yield): <span id="yield-val">0</span></strong>
     | <strong style="color:#e74c3c">เสีย(Scrap): <span id="scrap-val">0</span></strong>
   </div>
 
@@ -682,6 +683,7 @@ window.addEventListener('load', function () {
     var selected = this.options[this.selectedIndex];
     var flagEl   = document.getElementById('ops-final-flag');
     flagEl.style.display = (selected && selected.dataset.isFinal === 'true') ? 'block' : 'none';
+    recalcYield();
   });
 });
 
@@ -1067,11 +1069,18 @@ function recalcYield() {
   document.getElementById('yield-val').textContent = yieldQty;
   document.getElementById('scrap-val').textContent = scrapQty;
 
+  // Show preview only when the selected operation is the final one
+  var selOp   = document.getElementById('f-opno');
+  var isFinal = selOp.selectedIndex > 0 &&
+                selOp.options[selOp.selectedIndex].dataset.isFinal === 'true';
+  var previewEl = document.getElementById('yield-preview');
+  if (isFinal) { previewEl.classList.remove('hidden'); } else { previewEl.classList.add('hidden'); }
+
   var errEl = document.getElementById('yield-sum-error');
   var btn   = document.getElementById('btn-confirm');
 
   if (sum !== expected) {
-    errEl.textContent = 'ยอดรวมต้องเท่ากับ QtyPerPallet (' + expected + ') — ตอนนี้ = ' + sum;
+    errEl.textContent = 'ยอดรวมต้องเท่ากับ ' + expected + ' — ตอนนี้ = ' + sum;
     errEl.classList.remove('hidden');
     btn.disabled = true;
   } else {
@@ -1083,12 +1092,12 @@ function recalcYield() {
 function submitConfirm() {
   if (!currentPallet) { showMsg('error', 'ยังไม่มีข้อมูลพาเลท — สแกนก่อน'); return; }
 
-  var operator  = document.getElementById('f-operator').value.trim();
-  var role      = document.getElementById('f-role').value;
-  var opNo      = document.getElementById('f-opno').value.trim();
-  var goodQty   = parseInt(document.getElementById('f-good').value, 10) || 0;
-  var repairQty = parseInt(document.getElementById('f-repair').value, 10) || 0;
-  var defectQty = parseInt(document.getElementById('f-defect').value, 10) || 0;
+  var operator     = document.getElementById('f-operator').value.trim();
+  var role         = document.getElementById('f-role').value;
+  var opNo         = document.getElementById('f-opno').value.trim();
+  var goodQty      = parseInt(document.getElementById('f-good').value, 10) || 0;
+  var repairQty    = parseInt(document.getElementById('f-repair').value, 10) || 0;
+  var defectQty    = parseInt(document.getElementById('f-defect').value, 10) || 0;
   var awaitConvQty = parseInt(document.getElementById('f-awaitconv').value, 10) || 0;
 
   if (!operator) { showMsg('error', 'กรุณาระบุชื่อผู้ปฏิบัติงาน'); return; }
@@ -1111,41 +1120,23 @@ function submitConfirm() {
   clearMsg();
   showMsg('info', '⏳ กำลังบันทึก…');
 
-  // Step 1: persist 4-bucket yield to PalletMaster
   google.script.run
-    .withSuccessHandler(function (yieldResult) {
-      if (!yieldResult.ok) {
-        clearMsg();
-        showMsg('error', '❌ ' + (yieldResult.reason || 'บันทึกยอดไม่สำเร็จ'));
-        return;
-      }
-      // Step 2: existing confirm path (unchanged)
-      google.script.run
-        .withSuccessHandler(onConfirmResult)
-        .withFailureHandler(function (err) {
-          clearMsg();
-          showMsg('error', '❌ บันทึกไม่สำเร็จ: ' + (err.message || String(err)));
-        })
-        .confirmScan({
-          palletId: currentPallet.PalletID,
-          opNo:     opNo,
-          opText:   opText,
-          isFinal:  isFinal,
-          qtyGood:  goodQty,
-          qtyScrap: defectQty,
-          operator: operator,
-          role:     role
-        });
-    })
+    .withSuccessHandler(onConfirmResult)
     .withFailureHandler(function (err) {
       clearMsg();
-      showMsg('error', '❌ บันทึกยอดไม่สำเร็จ: ' + (err.message || String(err)));
+      showMsg('error', '❌ บันทึกไม่สำเร็จ: ' + (err.message || String(err)));
     })
-    .recordYieldBuckets(currentPallet.PalletID, {
-      GoodQty:      goodQty,
-      RepairQty:    repairQty,
-      DefectQty:    defectQty,
-      AwaitConvQty: awaitConvQty
+    .confirmScan({
+      palletId:     currentPallet.PalletID,
+      opNo:         opNo,
+      opText:       opText,
+      isFinal:      isFinal,
+      qtyGood:      goodQty,
+      qtyScrap:     defectQty,
+      qtyRepair:    repairQty,
+      qtyAwaitConv: awaitConvQty,
+      operator:     operator,
+      role:         role
     });
 }
 
@@ -1458,6 +1449,7 @@ function resetScanner() {
   document.getElementById('yield-val').textContent  = '0';
   document.getElementById('scrap-val').textContent  = '0';
   document.getElementById('yield-sum-error').classList.add('hidden');
+  document.getElementById('yield-preview').classList.add('hidden');
 
   var btnConfirm = document.getElementById('btn-confirm');
   btnConfirm.disabled    = false;

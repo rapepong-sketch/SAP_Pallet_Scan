@@ -213,15 +213,17 @@ function lookupPallet(palletId) {
  */
 function confirmScan(params) {
   try {
-    params         = params || {};
-    const palletId = String(params.palletId || '').trim();
-    const opNo     = _normOpNo_(params.opNo);
-    const opText   = String(params.opText   || '').trim();
-    const isFinal  = params.isFinal === true || params.isFinal === 'true';
-    const qtyGood  = Number(params.qtyGood)  || 0;
-    const qtyScrap = Number(params.qtyScrap) || 0;
-    const operator = String(params.operator  || '').trim();
-    const role     = String(params.role      || '').trim();
+    params            = params || {};
+    const palletId    = String(params.palletId || '').trim();
+    const opNo        = _normOpNo_(params.opNo);
+    const opText      = String(params.opText   || '').trim();
+    const isFinal     = params.isFinal === true || params.isFinal === 'true';
+    const qtyGood     = Number(params.qtyGood)      || 0;
+    const qtyScrap    = Number(params.qtyScrap)      || 0;
+    const qtyRepair   = Number(params.qtyRepair)     || 0;
+    const qtyAwaitConv = Number(params.qtyAwaitConv) || 0;
+    const operator    = String(params.operator  || '').trim();
+    const role        = String(params.role      || '').trim();
 
     if (!palletId) return { success: false, sapSent: false, message: 'ไม่มี PalletID', logId: null };
     if (!operator) return { success: false, sapSent: false, message: 'กรุณาระบุชื่อผู้ปฏิบัติงาน', logId: null };
@@ -229,6 +231,23 @@ function confirmScan(params) {
 
     const pallet = lookupPalletById_(palletId);
     if (!pallet) return { success: false, sapSent: false, message: 'ไม่พบพาเลท: ' + palletId, logId: null };
+
+    // === 4-bucket validation (server-side) ===
+    if ([qtyGood, qtyRepair, qtyScrap, qtyAwaitConv].some(function (v) { return v < 0 || !Number.isInteger(v); })) {
+      logEvent('RECORD_OP_BUCKETS', 'OperationLog', 'REJECT', 0,
+        palletId + ' op=' + opNo + ' invalid bucket values');
+      return { success: false, sapSent: false, message: 'ค่าต้องเป็นจำนวนเต็ม >= 0', logId: null };
+    }
+    const bucketSum = qtyGood + qtyRepair + qtyScrap + qtyAwaitConv;
+    if (bucketSum !== pallet.QtyPerPallet) {
+      logEvent('RECORD_OP_BUCKETS', 'OperationLog', 'REJECT', 0,
+        palletId + ' op=' + opNo + ' sum=' + bucketSum + ' expected=' + pallet.QtyPerPallet);
+      return {
+        success: false, sapSent: false,
+        message: 'ยอดรวม (' + bucketSum + ') ไม่เท่ากับ QtyPerPallet (' + pallet.QtyPerPallet + ')',
+        logId: null
+      };
+    }
 
     // === Idempotency gate — check before ANY write ===
     if (pallet.ScanStatus === 'CONFIRMED') {
@@ -248,7 +267,6 @@ function confirmScan(params) {
     }
 
     // === Sequential gate — operation N can't start until N-1 has OP confirm ===
-    // PD inspection is optional random sampling and does NOT block the next operation.
     if (opNo) {
       const operations = getOperationsForOrder(pallet.ManufacturingOrder);
       const opIndex     = operations.findIndex(function (o) { return o.opNo === opNo; });
@@ -264,12 +282,11 @@ function confirmScan(params) {
               logId: null
             };
           }
-          // PD result is NOT checked here — PD is optional/random sampling.
         }
       }
     }
 
-    // 1. Append to OperationLog (always — not gated by DRY_RUN)
+    // 1. Append to OperationLog with all 4 buckets
     const logId = logOperation_({
       palletId:      palletId,
       mo:            pallet.ManufacturingOrder,
@@ -277,19 +294,38 @@ function confirmScan(params) {
       operationText: opText,
       goodQty:       qtyGood,
       scrapQty:      qtyScrap,
+      repairQty:     qtyRepair,
+      awaitConvQty:  qtyAwaitConv,
       operator:      operator,
       role:          role,
       result:        'PASS',
       source:        'MOBILE'
     });
 
-    // 2. Every routing operation now has an OP confirm? PD is optional sampling
-    // and does not gate this — QC unlocks as soon as this is true.
+    // 2. Determine if this is the final operation via routing
+    const isFinalOp = _isFinalOperation_(pallet.ManufacturingOrder, opNo);
+
+    // 3. If final op, mirror 4 buckets to PalletMaster
+    if (isFinalOp) {
+      updatePalletScanFields_(palletId, {
+        GoodQty:      qtyGood,
+        RepairQty:    qtyRepair,
+        DefectQty:    qtyScrap,
+        AwaitConvQty: qtyAwaitConv
+      });
+    }
+
+    const yieldQty = qtyGood + qtyRepair + qtyAwaitConv;
+    const scrapQty = qtyScrap;
+    logEvent('RECORD_OP_BUCKETS', 'OperationLog', 'OK', 0,
+      JSON.stringify({ palletId: palletId, opNo: opNo, isFinalOp: isFinalOp,
+        buckets: { G: qtyGood, R: qtyRepair, D: qtyScrap, A: qtyAwaitConv },
+        yield: yieldQty, scrap: scrapQty }).slice(0, 500));
+
+    // 4. Every routing operation now has an OP confirm?
     const allOperationsDone = checkAllOperationsDone_(palletId);
 
-    // 3. Update PalletMaster scan fields — ScanStatus only reaches CONFIRMED via
-    // SAP order confirmation (Phase 3 Step 2); PD_COMPLETE here means every
-    // operation has an OP confirm (PD sampling result, if any, doesn't matter).
+    // 5. Update PalletMaster scan fields
     updatePalletScanFields_(palletId, {
       ScanStatus: allOperationsDone ? 'PD_COMPLETE' : 'SCANNED',
       ScannedAt:  new Date(),
@@ -302,7 +338,7 @@ function confirmScan(params) {
 
     const doneSuffix = allOperationsDone ? ' — ครบทุกขั้นตอน พร้อมให้ QC ตรวจ' : '';
 
-    // 4. SAP gate — Step 1: write always off
+    // 6. SAP gate
     if (!sapWriteEnabled_()) {
       return {
         success: true,
@@ -313,7 +349,6 @@ function confirmScan(params) {
       };
     }
 
-    // SAP enabled — stub for Step 2
     return {
       success: true,
       sapSent: false,
@@ -327,6 +362,20 @@ function confirmScan(params) {
       'palletId=' + (params && params.palletId) + ' role=' + (params && params.role));
     return { success: false, sapSent: false, message: 'เกิดข้อผิดพลาด: ' + e.message, logId: null };
   }
+}
+
+/**
+ * Check if the given operation is the final operation for a MO's routing.
+ * Uses the same routing logic as getOperationsForOrder / the UI's isFinal flag.
+ * @param {string} mo — ManufacturingOrder
+ * @param {string} opNo — normalized operation number
+ * @return {boolean}
+ */
+function _isFinalOperation_(mo, opNo) {
+  if (!mo || !opNo) return false;
+  var operations = getOperationsForOrder(mo);
+  if (!operations.length) return false;
+  return operations[operations.length - 1].opNo === opNo;
 }
 
 /**
@@ -906,82 +955,6 @@ function slipCommitPick(material, sloc, qty, refDoc) {
     return { ok: true, pickId: result.pickId, html: html };
   } catch (err) {
     return { ok: false, error: String(err) };
-  }
-}
-
-// ============================================================================
-// Phase 3.5 Gate 3 — Yield Bucket persist (4 columns on PalletMaster)
-// ============================================================================
-
-/**
- * Validate and persist 4-bucket yield values to PalletMaster.
- * Idempotent: re-recording the same pallet overwrites the same 4 cells.
- * Does NOT touch OperationLog, confirmation builder, or SAP payload.
- *
- * @param {string} palletId
- * @param {{GoodQty:number, RepairQty:number, DefectQty:number, AwaitConvQty:number}} buckets
- * @return {{ok:boolean, palletId?:string, buckets?:Object, derived?:{yield:number,scrap:number}, reason?:string}}
- */
-function recordYieldBuckets(palletId, buckets) {
-  try {
-    palletId = String(palletId || '').trim();
-    buckets  = buckets || {};
-
-    var goodQty      = parseInt(buckets.GoodQty, 10);
-    var repairQty    = parseInt(buckets.RepairQty, 10);
-    var defectQty    = parseInt(buckets.DefectQty, 10);
-    var awaitConvQty = parseInt(buckets.AwaitConvQty, 10);
-
-    if (!palletId) {
-      return JSON.parse(JSON.stringify({ ok: false, reason: 'ไม่มี PalletID' }));
-    }
-
-    if ([goodQty, repairQty, defectQty, awaitConvQty].some(function (v) { return isNaN(v) || v < 0; })) {
-      logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'REJECT', 0, palletId + ' invalid values');
-      return JSON.parse(JSON.stringify({ ok: false, reason: 'ค่าต้องเป็นจำนวนเต็ม >= 0' }));
-    }
-
-    var pallet = lookupPalletById_(palletId);
-    if (!pallet) {
-      logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'REJECT', 0, palletId + ' not found');
-      return JSON.parse(JSON.stringify({ ok: false, reason: 'ไม่พบพาเลท: ' + palletId }));
-    }
-
-    var sum = goodQty + repairQty + defectQty + awaitConvQty;
-    if (sum !== pallet.QtyPerPallet) {
-      logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'REJECT', 0,
-        palletId + ' sum=' + sum + ' expected=' + pallet.QtyPerPallet);
-      return JSON.parse(JSON.stringify({
-        ok: false,
-        reason: 'ยอดรวม (' + sum + ') ไม่เท่ากับ QtyPerPallet (' + pallet.QtyPerPallet + ')'
-      }));
-    }
-
-    updatePalletScanFields_(palletId, {
-      GoodQty:      goodQty,
-      RepairQty:    repairQty,
-      DefectQty:    defectQty,
-      AwaitConvQty: awaitConvQty
-    });
-
-    var yieldQty = goodQty + repairQty + awaitConvQty;
-    var scrapQty = defectQty;
-
-    logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'OK', 0,
-      JSON.stringify({ palletId: palletId,
-        buckets: { G: goodQty, R: repairQty, D: defectQty, A: awaitConvQty },
-        yield: yieldQty, scrap: scrapQty }).slice(0, 500));
-
-    return JSON.parse(JSON.stringify({
-      ok: true,
-      palletId: palletId,
-      buckets: { GoodQty: goodQty, RepairQty: repairQty, DefectQty: defectQty, AwaitConvQty: awaitConvQty },
-      derived: { yield: yieldQty, scrap: scrapQty }
-    }));
-
-  } catch (e) {
-    logEvent('RECORD_YIELD_BUCKETS', 'PalletMaster', 'REJECT', 0, e.message);
-    return JSON.parse(JSON.stringify({ ok: false, reason: 'เกิดข้อผิดพลาด: ' + e.message }));
   }
 }
 
