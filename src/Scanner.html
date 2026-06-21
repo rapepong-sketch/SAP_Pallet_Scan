@@ -1933,8 +1933,8 @@ function renderCountSummaryTable(lines, isReconcile) {
     html += '<td style="text-align:right;">' + esc(String(line.countedQty)) + '</td>';
 
     if (isReconcile) {
-      html += '<td style="text-align:right;">' + (line.sapQty !== null ? esc(String(line.sapQty)) : '—') + '</td>';
-      html += '<td style="text-align:right;">' + (line.variance !== null ? esc(String(line.variance)) : '—') + '</td>';
+      html += '<td style="text-align:right;">' + (line.sapQty != null ? esc(String(line.sapQty)) : '—') + '</td>';
+      html += '<td style="text-align:right;">' + (line.variance != null ? esc(String(line.variance)) : '—') + '</td>';
       var statusLabel = line.status === 'OK' ? '✅ ตรง' :
                         line.status === 'SURPLUS' ? '⬆️ เกิน' :
                         line.status === 'DEFICIT' ? '⬇️ ขาด' : '⚠️ SAP Error';
