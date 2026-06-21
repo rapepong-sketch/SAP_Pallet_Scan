@@ -10,10 +10,11 @@
 
 var PM_SHEET = 'PalletMaster';
 /**
- * 40-col layout — identical to CFG.HEADERS.PALLET_MASTER.
+ * 41-col layout — identical to CFG.HEADERS.PALLET_MASTER.
  * Indices 22-26 are Phase 3 SAP writeback columns added in the 28→33 migration.
  * Indices 33-35 are Phase 3.5 override audit columns.
  * Indices 36-39 are Phase 3.5 Gate 2 yield-bucket columns.
+ * Index 40 is Phase 4.5 Gate 3a QCInspector column.
  * buildPalletRow_() maps by name, so callers that don't set the new keys
  * automatically get '' for those columns.
  */
@@ -57,11 +58,12 @@ var PM_HEADERS = [
   'GoodQty',                 // 36 — Phase 3.5 yield bucket
   'RepairQty',               // 37 — Phase 3.5 yield bucket
   'DefectQty',               // 38 — Phase 3.5 yield bucket
-  'AwaitConvQty'             // 39 — Phase 3.5 yield bucket
+  'AwaitConvQty',            // 39 — Phase 3.5 yield bucket
+  'QCInspector'              // 40 — Phase 4.5 Gate 3a
 ];
 
 /**
- * Build a 40-col PalletMaster row array aligned to PM_HEADERS (= CFG layout).
+ * Build a 41-col PalletMaster row array aligned to PM_HEADERS (= CFG layout).
  * values = object keyed by column name; missing keys get ''.
  * Always use this instead of positional arrays — immune to column reorder.
  */
@@ -665,7 +667,7 @@ function hardResetPalletMaster() {
   ui.alert('✅ Done', 'Deleted ' + dataRows + ' rows. Run "Rebuild PM Header" next.', ui.ButtonSet.OK);
 }
 
-/** Step 3b: Rebuild header row to match PM_HEADERS exactly (33 columns). Run from editor. */
+/** Step 3b: Rebuild header row to match PM_HEADERS exactly. Run from editor. */
 function rebuildPalletMasterHeader() {
   var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
   var sh = ss.getSheetByName(PM_SHEET);

@@ -74,6 +74,7 @@ function onOpen() {
     .addItem('🔄 Migrate: Add OL Bucket Columns',       'runOperationLogMigration')
     .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets')
     .addItem('🔄 Migrate: FinalOp Leading Zeros',       'migrateFinalOpLeadingZeros')
+    .addItem('🔒 Migrate: Add QCInspector column',      'runQCInspectorMigration')
     .addSeparator()
     .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets');
 
