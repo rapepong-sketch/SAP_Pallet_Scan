@@ -268,8 +268,11 @@ function reconcileCountWithSAP(sloc) {
     Object.keys(countByMat).forEach(function (mat) {
       try {
         var path = MATERIAL_STOCK_SRV_SC_ + 'A_MatlStkInAcctMod';
+        var filterStr = "Material eq '" + mat + "' and Plant eq '" + CFG.PLANT + "'";
+        logEvent('RECONCILE_SAP', 'FETCH_URL', path, 0,
+          '$filter=' + filterStr + ' entity=A_MatlStkInAcctMod');
         var data = sapGet(path, {
-          '$filter': "Material eq '" + mat + "' and Plant eq '" + CFG.PLANT + "'",
+          '$filter': filterStr,
           '$top': '200'
         }, 'STOCK_COUNT.reconcile');
 
