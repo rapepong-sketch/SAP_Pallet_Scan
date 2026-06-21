@@ -16,11 +16,9 @@
 const OL_SHEET = 'OperationLog';
 const OL_HEADERS = [
   'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
-  'GoodQty', 'ScrapQty', 'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
-  // Phase 3 Step 1 Enhancement v2: PD inspection columns (written by savePdInspection())
-  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp',
-  // Phase 3.5 Gate 3: 4-bucket yield (RepairQty + AwaitConvQty appended after PDTimestamp)
-  'RepairQty', 'AwaitConvQty'
+  'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty',
+  'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
+  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
 ];
 
 // ============================================================================
@@ -122,23 +120,27 @@ function logOperation(entry) {
   const now   = new Date();
   const logId = `${entry.palletId}-${entry.operationNo}-${entry.role}-${now.getTime()}`;
 
-  const row = [
-    logId,
-    String(entry.palletId      || '').trim(),
-    String(entry.mo            || '').trim(),
-    _normOpNo_(entry.operationNo),
-    String(entry.operationText || '').trim(),
-    Number(entry.goodQty)  || 0,
-    Number(entry.scrapQty) || 0,
-    String(entry.operator  || '').trim(),
-    String(entry.role      || '').trim(),
-    String(entry.result    || '').trim(),
-    now,
-    String(entry.source    || 'SYSTEM').trim(),
-    '', '', '', '',
-    Number(entry.repairQty)    || 0,
-    Number(entry.awaitConvQty) || 0
-  ];
+  const vals = {
+    LogID:         logId,
+    PalletID:      String(entry.palletId      || '').trim(),
+    ManufacturingOrder: String(entry.mo        || '').trim(),
+    OperationNo:   _normOpNo_(entry.operationNo),
+    OperationText: String(entry.operationText || '').trim(),
+    GoodQty:       Number(entry.goodQty)  || 0,
+    ScrapQty:      Number(entry.scrapQty) || 0,
+    RepairQty:     Number(entry.repairQty)    || 0,
+    AwaitConvQty:  Number(entry.awaitConvQty) || 0,
+    Operator:      String(entry.operator  || '').trim(),
+    Role:          String(entry.role      || '').trim(),
+    Result:        String(entry.result    || '').trim(),
+    LoggedAt:      now,
+    Source:        String(entry.source    || 'SYSTEM').trim(),
+    PDResult:      '',
+    PDInspector:   '',
+    PDNote:        '',
+    PDTimestamp:   ''
+  };
+  const row = OL_HEADERS.map(function (h) { return vals[h] !== undefined ? vals[h] : ''; });
 
   if (CFG.DRY_RUN) {
     logEvent('OP_LOG', '-', 'DRY_RUN', 0,
@@ -290,4 +292,196 @@ function _fmtLogTimestamp_(d) {
     return Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd/MM/yyyy HH:mm');
   }
   return String(d);
+}
+
+// ============================================================================
+// Phase 3.5 Gate 5A — Reorder OperationLog bucket columns
+// ============================================================================
+
+/** @const {string[]} Target header order after reorder (18 cols). */
+var OL_TARGET_ORDER_ = [
+  'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
+  'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty',
+  'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
+  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
+];
+
+/**
+ * Reorder OperationLog columns so RepairQty + AwaitConvQty sit next to ScrapQty.
+ * Data-preserving: reads all rows keyed by header name, rebuilds in target order.
+ * Creates a timestamped backup before any change. Spot-checks 3 rows after.
+ * @return {Object} JSON-safe result
+ */
+function reorderOperationLogBuckets() {
+  var ss = SpreadsheetApp.openById(CFG.SHEET_ID);
+  var sh = ss.getSheetByName(OL_SHEET);
+  if (!sh) {
+    return _olReorderResult_('PRECONDITION_FAILED', { detail: 'OperationLog sheet not found' });
+  }
+
+  var lastRow = sh.getLastRow();
+  var lastCol = sh.getLastColumn();
+  if (lastRow < 1 || lastCol < 1) {
+    return _olReorderResult_('PRECONDITION_FAILED', { detail: 'Sheet is empty' });
+  }
+
+  // ---- Read current headers ----
+  var oldHeaders = sh.getRange(1, 1, 1, lastCol).getValues()[0]
+    .map(function (h) { return String(h).trim(); });
+
+  if (oldHeaders.length !== 18) {
+    return _olReorderResult_('PRECONDITION_FAILED', {
+      detail: 'Expected 18 headers, found ' + oldHeaders.length,
+      currentHeaders: oldHeaders
+    });
+  }
+
+  // Verify all target headers exist in current sheet
+  for (var t = 0; t < OL_TARGET_ORDER_.length; t++) {
+    if (oldHeaders.indexOf(OL_TARGET_ORDER_[t]) === -1) {
+      return _olReorderResult_('PRECONDITION_FAILED', {
+        detail: 'Missing header: ' + OL_TARGET_ORDER_[t],
+        currentHeaders: oldHeaders
+      });
+    }
+  }
+
+  // Check if already in target order
+  var alreadyOrdered = oldHeaders.every(function (h, i) { return h === OL_TARGET_ORDER_[i]; });
+  if (alreadyOrdered) {
+    return _olReorderResult_('ALREADY_ORDERED', {
+      detail: 'Headers already in target order',
+      finalOrder: oldHeaders
+    });
+  }
+
+  // ---- STEP 2: Backup ----
+  var tz = 'Asia/Bangkok';
+  var stamp = Utilities.formatDate(new Date(), tz, 'yyyyMMdd_HHmmss');
+  var backupName = 'OperationLog_bak_' + stamp;
+  var backupSh = sh.copyTo(ss);
+  backupSh.setName(backupName);
+
+  // ---- Read all data ----
+  var allData = sh.getDataRange().getValues();
+  var oldIdx = {};
+  oldHeaders.forEach(function (h, i) { oldIdx[h] = i; });
+
+  // ---- Snapshot 3 rows for spot-check (before reorder) ----
+  var spotCheckRows = [];
+  var checkFields = ['LogID', 'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty'];
+  var sampleIndices = [];
+  if (lastRow >= 2) {
+    sampleIndices.push(1); // first data row
+    if (lastRow >= 3) sampleIndices.push(Math.floor((lastRow - 1) / 2) + 1); // middle
+    if (lastRow >= 4) sampleIndices.push(lastRow - 1); // last data row (0-based in allData)
+  }
+  sampleIndices.forEach(function (ri) {
+    if (ri >= allData.length) return;
+    var snap = {};
+    checkFields.forEach(function (f) {
+      snap[f] = allData[ri][oldIdx[f]];
+    });
+    spotCheckRows.push(snap);
+  });
+
+  // ---- STEP 3: Rebuild rows in target order ----
+  var newData = [OL_TARGET_ORDER_.slice()];
+  for (var r = 1; r < allData.length; r++) {
+    var newRow = OL_TARGET_ORDER_.map(function (h) {
+      return allData[r][oldIdx[h]];
+    });
+    newData.push(newRow);
+  }
+
+  // ---- Write back ----
+  sh.clearContents();
+  sh.getRange(1, 1, newData.length, OL_TARGET_ORDER_.length).setValues(newData);
+
+  // Re-apply header formatting
+  sh.getRange(1, 1, 1, OL_TARGET_ORDER_.length)
+    .setFontWeight('bold')
+    .setBackground('#0b5394')
+    .setFontColor('#ffffff');
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(1, 220);
+  _forceTextColumns_(sh, OL_TARGET_ORDER_);
+
+  // ---- STEP 4: Postcondition verify ----
+  var verifiedHeaders = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+    .map(function (h) { return String(h).trim(); });
+
+  var headerOk = verifiedHeaders.length === 18 &&
+    verifiedHeaders.every(function (h, i) { return h === OL_TARGET_ORDER_[i]; });
+
+  if (!headerOk) {
+    return _olReorderResult_('VERIFY_FAILED', {
+      detail: 'Header mismatch after reorder',
+      backupSheet: backupName,
+      expected: OL_TARGET_ORDER_,
+      actual: verifiedHeaders
+    });
+  }
+
+  // Spot-check: re-read and compare
+  var newIdx = {};
+  OL_TARGET_ORDER_.forEach(function (h, i) { newIdx[h] = i; });
+  var newAllData = sh.getDataRange().getValues();
+  var spotCheck = [];
+  var spotOk = true;
+
+  spotCheckRows.forEach(function (snap, si) {
+    var ri = sampleIndices[si];
+    if (ri >= newAllData.length) { spotOk = false; return; }
+    var check = { logId: snap.LogID, match: true, fields: {} };
+    checkFields.forEach(function (f) {
+      var oldVal = snap[f];
+      var newVal = newAllData[ri][newIdx[f]];
+      var match = String(oldVal) === String(newVal);
+      check.fields[f] = { old: oldVal, new: newVal, match: match };
+      if (!match) { check.match = false; spotOk = false; }
+    });
+    spotCheck.push(check);
+  });
+
+  if (!spotOk) {
+    return _olReorderResult_('VERIFY_FAILED', {
+      detail: 'Spot-check data mismatch — restore from backup: ' + backupName,
+      backupSheet: backupName,
+      spotCheck: spotCheck
+    });
+  }
+
+  // ---- STEP 5: Log event ----
+  var resultObj = {
+    status: 'OK',
+    backupSheet: backupName,
+    finalOrder: OL_TARGET_ORDER_,
+    spotCheck: spotCheck
+  };
+  logEvent('REORDER_OPLOG_BUCKETS', 'OperationLog', 'OK', 0,
+    JSON.stringify({ backup: backupName, order: OL_TARGET_ORDER_.join(',') }).slice(0, 500));
+
+  return JSON.parse(JSON.stringify(resultObj));
+}
+
+/**
+ * Menu-callable wrapper for reorderOperationLogBuckets.
+ */
+function runReorderOperationLogBuckets() {
+  var result = reorderOperationLogBuckets();
+  var json = JSON.stringify(result, null, 2);
+  Logger.log(json);
+  var escaped = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  var html = HtmlService.createHtmlOutput(
+    '<pre style="font-size:12px;white-space:pre-wrap;max-width:100%">' + escaped + '</pre>'
+  ).setWidth(800).setHeight(500).setTitle('Reorder OL Buckets');
+  SpreadsheetApp.getUi().showModelessDialog(html, 'Reorder OperationLog Buckets — Gate 5A');
+}
+
+function _olReorderResult_(status, extra) {
+  var result = Object.assign({ status: status }, extra || {});
+  logEvent('REORDER_OPLOG_BUCKETS', 'OperationLog', status, 0,
+    JSON.stringify({ status: status, detail: extra.detail || '' }).slice(0, 500));
+  return JSON.parse(JSON.stringify(result));
 }

@@ -58,6 +58,7 @@ function onOpen() {
     .addItem('🔍 [Diag] Yield Bucket Diagnostic',             'runYieldBucketDiagnostic')
     .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',        'runYieldBucketMigration')
     .addItem('🔄 Migrate: Add OL Bucket Columns',             'runOperationLogMigration')
+    .addItem('🔄 Reorder: OL Bucket Columns',                 'runReorderOperationLogBuckets')
     .addSeparator()
     .addItem('🧪 [Test] Yield Bucket Payload',                 'testBuildYieldBucketPayload')
     .addItem('🧪 [Test] Confirm Fallback (legacy)',              'TEST_confirmFallbackLegacy')
