@@ -5,11 +5,33 @@
  *         InspectionLots, EventLog, ErrorLog
  */
 
-/** สร้าง custom menu เมื่อเปิด Spreadsheet */
+/**
+ * สร้าง custom menu เมื่อเปิด Spreadsheet — Phase 3.5 Gate 5B category layout.
+ * Every addItem references an existing function; no functions created or removed.
+ */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
-  // Phase 3: Feature flag submenu — ห้ามสร้าง onOpen ซ้ำ, เพิ่ม submenu ที่นี่เท่านั้น
+  // ── ▶ งานประจำ ──────────────────────────────────────────────────────────
+  const dailyMenu = ui.createMenu('▶ งานประจำ')
+    .addItem('🖨️ สั่งพิมพ์ใบติดตามพาเลท (Multi-Material)',  'printRequestDialog')
+    .addItem('🖨️ พิมพ์ซ้ำ (ใส่ MO หรือ PalletID)',          'reprintDialog')
+    .addItem('🖨️ พิมพ์ใบกำกับพาเลท (รับเข้าผลิตใหม่)',    'slipPrintDialog')
+    .addItem('🔁 พิมพ์ซ้ำใบกำกับ (รับเข้า)',              'reprintReceiveDialog')
+    .addSeparator()
+    .addItem('✂️ แบ่งเบิกแตกย่อย (FIFO)',                  'pickDialog')
+    .addSeparator()
+    .addItem('📋 รายงานสรุปวันนี้',                        'reportTodayDialog')
+    .addItem('📅 รายงานตามวันที่',                         'reportPickDateDialog');
+
+  // ── ⚙ ตั้งค่า / ซิงค์ ──────────────────────────────────────────────────
+  const larkMenu = ui.createMenu('🔔 Lark Notify')
+    .addItem('🔔 ส่งสรุปวันนี้เข้า Lark',      'sendTodayReportLarkDialog')
+    .addItem('⚙️ ตั้งค่า Lark Webhook',        'setLarkWebhookDialog')
+    .addSeparator()
+    .addItem('⏰ เปิดส่งอัตโนมัติ 18:00',      'installLarkDailyTrigger')
+    .addItem('⏹️ ปิดส่งอัตโนมัติ',             'removeLarkDailyTrigger');
+
   const flagMenu = ui.createMenu('⚙️ Pallet SAP Toggle')
     .addItem('🔴 ปิด SAP write (ทดสอบ)',      'flagDisableSapWrite')
     .addItem('🟢 เปิด SAP write',             'flagEnableSapWrite')
@@ -20,48 +42,43 @@ function onOpen() {
     .addItem('📊 ดูสถานะ flag',                'flagShowStatus')
     .addItem('↩️ รีเซ็ตเป็น default ปลอดภัย', 'flagSetDefaults');
 
+  const settingsMenu = ui.createMenu('⚙ ตั้งค่า / ซิงค์')
+    .addItem('🔧 Setup Sheets',                'setupSheets')
+    .addItem('🔌 Test SAP Connection',         'testSapConnection')
+    .addItem('📥 Pull Production Orders',      'pullProductionOrders')
+    .addItem('🗑️ Clear Old Orders',            'clearOldOrders')
+    .addSeparator()
+    .addItem('🔄 Sync Material Master',        'syncMaterialMaster')
+    .addItem('🔤 Sync Material Names from SAP','syncMaterialNames')
+    .addSeparator()
+    .addSubMenu(larkMenu)
+    .addSubMenu(flagMenu);
+
+  // ── 🧪 Diagnostic / Test ────────────────────────────────────────────────
+  const diagMenu = ui.createMenu('🧪 Diagnostic / Test')
+    .addItem('🔍 [Diag] Yield Bucket Diagnostic',       'runYieldBucketDiagnostic')
+    .addItem('🔧 [Admin] Debug PM Schema',               'debugPalletMasterSchema')
+    .addSeparator()
+    .addItem('🧪 [Test] Yield Bucket Payload',           'testBuildYieldBucketPayload')
+    .addItem('🧪 [Test] Confirm Fallback (legacy)',      'TEST_confirmFallbackLegacy');
+
+  // ── 🔒 Admin ────────────────────────────────────────────────────────────
+  const adminMenu = ui.createMenu('🔒 Admin')
+    .addItem('🔧 [Admin] Reset PalletMaster Data',      'hardResetPalletMaster')
+    .addItem('🔧 [Admin] Rebuild PM Header',             'rebuildPalletMasterHeader')
+    .addItem('🔧 Backfill MaterialName',                 'backfillMaterialName')
+    .addItem('🔧 Backfill WorkCenter',                   'backfillWorkCenter')
+    .addSeparator()
+    .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',  'runYieldBucketMigration')
+    .addItem('🔄 Migrate: Add OL Bucket Columns',       'runOperationLogMigration')
+    .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets');
+
+  // ── Top-level menu ──────────────────────────────────────────────────────
   ui.createMenu('🏭 Pallet Tracker')
-    .addItem('🔧 Setup Sheets',                              'setupSheets')
-    .addItem('🔌 Test SAP Connection',                       'testSapConnection')
-    .addItem('📥 Pull Production Orders',                    'pullProductionOrders')
-    .addItem('🗑️  Clear Old Orders',                         'clearOldOrders')
-    .addSeparator()
-    .addItem('🔄 Sync Material Master',                      'syncMaterialMaster')
-    .addItem('🔤 Sync Material Names from SAP',              'syncMaterialNames')
-    .addItem('🖨️ สั่งพิมพ์ใบติดตามพาเลท (Multi-Material)',  'printRequestDialog')
-    .addItem('🖨️ พิมพ์ซ้ำ (ใส่ MO หรือ PalletID)',          'reprintDialog')
-    .addItem('🖨️ พิมพ์ใบกำกับพาเลท (รับเข้าผลิตใหม่)',    'slipPrintDialog')
-    .addItem('✂️ แบ่งเบิกแตกย่อย (FIFO)',                  'pickDialog')
-    .addItem('📋 รายงานสรุปวันนี้',                        'reportTodayDialog')
-    .addItem('📅 รายงานตามวันที่',                         'reportPickDateDialog')
-    .addItem('🔁 พิมพ์ซ้ำใบกำกับ (รับเข้า)',              'reprintReceiveDialog')
-    .addSeparator()
-    .addSubMenu(ui.createMenu('🔔 Lark Notify')
-      .addItem('🔔 ส่งสรุปวันนี้เข้า Lark',      'sendTodayReportLarkDialog')
-      .addItem('⚙️ ตั้งค่า Lark Webhook',        'setLarkWebhookDialog')
-      .addSeparator()
-      .addItem('⏰ เปิดส่งอัตโนมัติ 18:00',      'installLarkDailyTrigger')
-      .addItem('⏹️ ปิดส่งอัตโนมัติ',             'removeLarkDailyTrigger'))
-    .addSubMenu(flagMenu)
-    .addSeparator()
-    .addItem('⚙️ Setup MOQ Config (deprecated)',             'setupMoqConfig')
-    .addItem('📦 Generate Pallets (deprecated)',             'generatePallets')
-    .addItem('📦 Generate Pallets 1 Order (deprecated)',     'generatePalletsForOrder')
-    .addItem('🖨️  Print Old Labels (deprecated)',            'printLabelsDialog')
-    .addSeparator()
-    .addItem('🔧 [Admin] Reset PalletMaster Data',          'hardResetPalletMaster')
-    .addItem('🔧 [Admin] Rebuild PM Header',                'rebuildPalletMasterHeader')
-    .addItem('🔧 [Admin] Debug PM Schema',                  'debugPalletMasterSchema')
-    .addItem('🔧 Backfill MaterialName',                    'backfillMaterialName')
-    .addItem('🔧 Backfill WorkCenter',                      'backfillWorkCenter')
-    .addSeparator()
-    .addItem('🔍 [Diag] Yield Bucket Diagnostic',             'runYieldBucketDiagnostic')
-    .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',        'runYieldBucketMigration')
-    .addItem('🔄 Migrate: Add OL Bucket Columns',             'runOperationLogMigration')
-    .addItem('🔄 Reorder: OL Bucket Columns',                 'runReorderOperationLogBuckets')
-    .addSeparator()
-    .addItem('🧪 [Test] Yield Bucket Payload',                 'testBuildYieldBucketPayload')
-    .addItem('🧪 [Test] Confirm Fallback (legacy)',              'TEST_confirmFallbackLegacy')
+    .addSubMenu(dailyMenu)
+    .addSubMenu(settingsMenu)
+    .addSubMenu(diagMenu)
+    .addSubMenu(adminMenu)
     .addToUi();
 }
 
