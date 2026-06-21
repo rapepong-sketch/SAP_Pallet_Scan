@@ -71,7 +71,9 @@ function onOpen() {
     .addSeparator()
     .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',  'runYieldBucketMigration')
     .addItem('🔄 Migrate: Add OL Bucket Columns',       'runOperationLogMigration')
-    .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets');
+    .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets')
+    .addSeparator()
+    .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets');
 
   // ── Top-level menu ──────────────────────────────────────────────────────
   ui.createMenu('🏭 Pallet Tracker')

@@ -654,6 +654,7 @@ function listOverrideCandidates() {
       if (String(row[idx['ConfirmationGroup']] || '').trim() !== '') continue;
       if (String(row[idx['QCStatus']] || '').trim() !== 'INSPECTED') continue;
       if (String(row[idx['QCResult']] || '').trim() !== 'PASS') continue;
+      if (/^PL-TEST-/i.test(String(row[idx['PalletID']] || '').trim())) continue;
 
       var mo = String(row[idx['ManufacturingOrder']] || '').trim();
 

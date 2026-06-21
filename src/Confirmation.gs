@@ -426,6 +426,9 @@ function listConfirmablePallets() {
     var status = String(row[idx['ScanStatus']] || '').trim();
     if (status !== 'QC_COMPLETE') continue;
 
+    var pid = String(row[idx['PalletID']] || '').trim();
+    if (/^PL-TEST-/i.test(pid)) continue;
+
     var mo  = String(row[idx['ManufacturingOrder']] || '').trim();
     var qty = Number(row[idx['QtyPerPallet']]) || 0;
 

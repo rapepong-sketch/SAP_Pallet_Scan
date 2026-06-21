@@ -832,3 +832,121 @@ function generatePalletsForOrder() {
   var result = generatePallets(resp.getResponseText().trim());
   ui.alert(result.summary);
 }
+
+// ============================================================================
+// Admin — Delete Test Pallets (PL-TEST-* prefix)
+// ============================================================================
+
+/**
+ * Delete all PalletMaster rows whose PalletID starts with 'PL-TEST-'
+ * (case-insensitive). Backs up the sheet first, skips any row that is
+ * already CONFIRMED or has a non-empty ConfirmationGroup, deletes
+ * bottom-to-top, verifies postcondition, and logs the operation.
+ *
+ * @return {{deleted:string[], skipped:string[], backupSheet:string, finalRowCount:number}}
+ */
+function deleteTestPallets() {
+  var ui = SpreadsheetApp.getUi();
+  var ss = getSpreadsheet_();
+  var sh = ss.getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) {
+    ui.alert('PalletMaster is empty — nothing to delete.');
+    return JSON.parse(JSON.stringify({ deleted: [], skipped: [], backupSheet: '', finalRowCount: 0 }));
+  }
+
+  // ---- 1. Backup ----
+  var now = new Date();
+  var bkk = Utilities.formatDate(now, 'Asia/Bangkok', 'yyyyMMdd_HHmmss');
+  var backupName = 'PalletMaster_bak_' + bkk;
+  sh.copyTo(ss).setName(backupName);
+  SpreadsheetApp.flush();
+
+  // ---- 2. Scan for PL-TEST-* rows ----
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  var palletIdCol = idx['PalletID'];
+  var statusCol   = idx['ScanStatus'];
+  var cgCol       = idx['ConfirmationGroup'];
+
+  var toDelete = [];
+  var toSkip   = [];
+
+  for (var r = 1; r < data.length; r++) {
+    var pid = String(data[r][palletIdCol] || '').trim();
+    if (!/^PL-TEST-/i.test(pid)) continue;
+
+    var scanStatus = String(data[r][statusCol] || '').trim();
+    var cgVal = (cgCol !== undefined) ? String(data[r][cgCol] || '').trim() : '';
+
+    if (scanStatus === 'CONFIRMED' || cgVal !== '') {
+      toSkip.push(pid);
+    } else {
+      toDelete.push({ palletId: pid, rowNum: r + 1 });
+    }
+  }
+
+  // ---- Confirm with admin ----
+  if (toDelete.length === 0 && toSkip.length === 0) {
+    ui.alert('No PL-TEST-* rows found in PalletMaster.');
+    return JSON.parse(JSON.stringify({ deleted: [], skipped: [], backupSheet: backupName, finalRowCount: sh.getLastRow() - 1 }));
+  }
+
+  var confirmMsg = 'Backup: ' + backupName + '\n\n' +
+    'Delete ' + toDelete.length + ' test pallet(s):\n' +
+    toDelete.map(function(d) { return '  ' + d.palletId + ' (row ' + d.rowNum + ')'; }).join('\n') +
+    (toSkip.length ? '\n\nSkip (confirmed): ' + toSkip.join(', ') : '') +
+    '\n\nProceed?';
+
+  var resp = ui.alert('🧹 Delete Test Pallets', confirmMsg, ui.ButtonSet.YES_NO);
+  if (resp !== ui.Button.YES) {
+    ui.alert('Cancelled.');
+    return JSON.parse(JSON.stringify({ deleted: [], skipped: toSkip, backupSheet: backupName, finalRowCount: sh.getLastRow() - 1 }));
+  }
+
+  // ---- 3. Delete bottom-to-top ----
+  toDelete.sort(function(a, b) { return b.rowNum - a.rowNum; });
+  var deletedIds = [];
+  for (var d = 0; d < toDelete.length; d++) {
+    sh.deleteRow(toDelete[d].rowNum);
+    deletedIds.push(toDelete[d].palletId);
+  }
+  SpreadsheetApp.flush();
+
+  // ---- 4. Postcondition: verify zero PL-TEST-* remain (except skipped) ----
+  var postData = sh.getDataRange().getValues();
+  var remaining = [];
+  for (var p = 1; p < postData.length; p++) {
+    var pid2 = String(postData[p][palletIdCol] || '').trim();
+    if (/^PL-TEST-/i.test(pid2)) remaining.push(pid2);
+  }
+  var unexpected = remaining.filter(function(id) { return toSkip.indexOf(id) === -1; });
+  var finalRowCount = postData.length - 1;
+
+  // ---- 5. Log ----
+  var detail = JSON.stringify({
+    deleted: deletedIds,
+    skipped: toSkip,
+    remaining: remaining,
+    backupSheet: backupName,
+    finalRowCount: finalRowCount
+  });
+  logEvent('DELETE_TEST_PALLETS', unexpected.length === 0 ? 'OK' : 'WARN', detail);
+
+  // ---- 6. Report ----
+  var summaryMsg = '✅ Deleted ' + deletedIds.length + ' test pallet(s).\n' +
+    'Backup: ' + backupName + '\n' +
+    (toSkip.length ? 'Skipped (confirmed): ' + toSkip.join(', ') + '\n' : '') +
+    (unexpected.length ? '⚠️ Unexpected remaining: ' + unexpected.join(', ') + '\n' : '') +
+    'Final row count: ' + finalRowCount;
+  ui.alert('🧹 Result', summaryMsg, ui.ButtonSet.OK);
+
+  return JSON.parse(JSON.stringify({
+    deleted: deletedIds,
+    skipped: toSkip,
+    backupSheet: backupName,
+    finalRowCount: finalRowCount
+  }));
+}
