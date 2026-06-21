@@ -54,6 +54,8 @@ function onOpen() {
     .addItem('🔧 [Admin] Debug PM Schema',                  'debugPalletMasterSchema')
     .addItem('🔧 Backfill MaterialName',                    'backfillMaterialName')
     .addItem('🔧 Backfill WorkCenter',                      'backfillWorkCenter')
+    .addSeparator()
+    .addItem('🔍 [Diag] Yield Bucket Diagnostic',             'runYieldBucketDiagnostic')
     .addToUi();
 }
 
