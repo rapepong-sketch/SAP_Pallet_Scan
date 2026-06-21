@@ -1581,3 +1581,77 @@ function cleanupOverrideTestPallet_() {
   Logger.log('cleanupOverrideTestPallet_: deleted ' + toDelete.length + ' row(s)');
   return toDelete.length;
 }
+
+// ============================================================================
+// Phase 5: TEST — Auto-cache FinalOperation at pallet generation
+// ============================================================================
+
+/**
+ * Self-cleaning test for the auto-cache FinalOperation warm path used by
+ * allocatePallets(). Picks one MO that already has FinalOperation cached,
+ * clears it, calls getFinalOperationForMo_() to re-warm, asserts the value
+ * matches computeFinalOperation_() of the routing, then restores original.
+ */
+function TEST_autoCacheFinalOp() {
+  var fn = 'TEST_autoCacheFinalOp';
+  var t0 = Date.now();
+
+  var sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) throw new Error(fn + ': ProductionOrders sheet is empty');
+
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var moCol      = hdr.indexOf('ManufacturingOrder');
+  var foCol      = hdr.indexOf('FinalOperation');
+  var opsJsonCol = hdr.indexOf('OperationsJSON');
+  if (moCol === -1 || foCol === -1 || opsJsonCol === -1) {
+    throw new Error(fn + ': required columns not found');
+  }
+
+  var data = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
+  var testMo = '';
+  var originalFinalOp = '';
+  var testRowNum = -1;
+
+  for (var i = 0; i < data.length; i++) {
+    var mo = String(data[i][moCol] || '').trim();
+    var fo = String(data[i][foCol] || '').trim();
+    var oj = String(data[i][opsJsonCol] || '').trim();
+    if (mo && fo && oj) {
+      testMo = mo;
+      originalFinalOp = fo;
+      testRowNum = i + 2;
+      break;
+    }
+  }
+  if (!testMo) throw new Error(fn + ': no MO with FinalOperation+OperationsJSON found');
+
+  Logger.log(fn + ': testMo=' + testMo + ' originalFinalOp=' + originalFinalOp);
+
+  var foCell = sh.getRange(testRowNum, foCol + 1);
+  foCell.setValue('');
+  SpreadsheetApp.flush();
+
+  try {
+    var warmedValue = getFinalOperationForMo_(testMo);
+    SpreadsheetApp.flush();
+
+    var repopulated = String(sh.getRange(testRowNum, foCol + 1).getValue() || '').trim();
+
+    var opsJsonStr = String(sh.getRange(testRowNum, opsJsonCol + 1).getValue() || '').trim();
+    var ops = [];
+    try { ops = JSON.parse(opsJsonStr); } catch (pe) { /* empty */ }
+    var expected = computeFinalOperation_(ops);
+
+    var pass = repopulated === expected && warmedValue === expected;
+    var detail = 'mo=' + testMo + ' expected=' + expected +
+                 ' repopulated=' + repopulated + ' returned=' + warmedValue;
+
+    Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
+    logEvent(fn, testMo, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
+  } finally {
+    foCell.setValue(originalFinalOp);
+    SpreadsheetApp.flush();
+    Logger.log(fn + ': restored FinalOperation=' + originalFinalOp + ' for ' + testMo);
+  }
+}

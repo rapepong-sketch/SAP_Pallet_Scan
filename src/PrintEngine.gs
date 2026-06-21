@@ -1,7 +1,8 @@
 /**
- * PrintEngine.gs — Phase 2.5
- * ===========================
+ * PrintEngine.gs — Phase 2.5 / Phase 5
+ * ======================================
  * FIFO pallet allocation + progressive printing (ทยอยพิมพ์ across sessions).
+ * Phase 5: auto-caches FinalOperation per MO during pallet generation.
  *
  * PalletID format: PL-{ManufacturingOrder}-L{seq} (e.g. PL-1000035048-L01)
  *   seq = 2-digit padded, extends to 3+ digits above 99 (idempotent across sessions)
@@ -243,6 +244,16 @@ function allocatePallets(requests) {
       }
 
       remaining -= toAllocate;
+
+      // Phase 5: auto-cache FinalOperation so confirm page never sees cold cache
+      try {
+        var finalOp = getFinalOperationForMo_(moKey);
+        if (finalOp) {
+          logEvent('AUTOCACHE_FINALOP', moKey, 'OK', 0, 'final=' + finalOp);
+        }
+      } catch (cacheErr) {
+        logEvent('AUTOCACHE_FINALOP', moKey, 'WARN', 0, String(cacheErr));
+      }
     });
 
     const shortfall    = Math.max(0, remaining);

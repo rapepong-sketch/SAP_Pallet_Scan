@@ -60,7 +60,8 @@ function onOpen() {
     .addItem('🔧 [Admin] Debug PM Schema',               'debugPalletMasterSchema')
     .addSeparator()
     .addItem('🧪 [Test] Yield Bucket Payload',           'testBuildYieldBucketPayload')
-    .addItem('🧪 [Test] Confirm Fallback (legacy)',      'TEST_confirmFallbackLegacy');
+    .addItem('🧪 [Test] Confirm Fallback (legacy)',      'TEST_confirmFallbackLegacy')
+    .addItem('🧪 [Test] Auto-cache FinalOp',              'TEST_autoCacheFinalOp');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
