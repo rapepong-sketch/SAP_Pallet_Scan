@@ -73,6 +73,7 @@ function onOpen() {
     .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',  'runYieldBucketMigration')
     .addItem('🔄 Migrate: Add OL Bucket Columns',       'runOperationLogMigration')
     .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets')
+    .addItem('🔄 Migrate: FinalOp Leading Zeros',       'migrateFinalOpLeadingZeros')
     .addSeparator()
     .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets');
 

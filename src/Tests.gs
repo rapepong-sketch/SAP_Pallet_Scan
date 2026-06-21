@@ -1589,13 +1589,12 @@ function cleanupOverrideTestPallet_() {
 /**
  * Self-cleaning test for the auto-cache FinalOperation warm path used by
  * allocatePallets(). Picks one MO that already has FinalOperation cached,
- * clears it, calls getFinalOperationForMo_() to re-warm, asserts the
- * normalized value matches computeFinalOperation_() of the routing, then
- * restores original.
- *
- * Compares via _normOpNo_ (4-digit zero-pad) because Sheets coerces
- * '0010' → 10 on read-back. Production is safe: padOperation_() in the
- * confirmation payload re-pads before sending to SAP.
+ * clears it, calls getFinalOperationForMo_() to re-warm, then asserts:
+ *  1. The STORED cell value is the exact 4-digit zero-padded string
+ *     (typeof string, getValue() === '0010') — locks in the storage fix.
+ *  2. The returned value and stored value match the routing's expected
+ *     final op when compared via _normOpNo_.
+ * Restores original value in finally block.
  */
 function TEST_autoCacheFinalOp() {
   var fn = 'TEST_autoCacheFinalOp';
@@ -1641,27 +1640,32 @@ function TEST_autoCacheFinalOp() {
     var warmedValue = getFinalOperationForMo_(testMo);
     SpreadsheetApp.flush();
 
-    var repopulated = String(sh.getRange(testRowNum, foCol + 1).getValue() || '').trim();
+    var storedRaw = sh.getRange(testRowNum, foCol + 1).getValue();
+    var storedStr = String(storedRaw == null ? '' : storedRaw).trim();
+    var storedType = typeof storedRaw;
 
     var opsJsonStr = String(sh.getRange(testRowNum, opsJsonCol + 1).getValue() || '').trim();
     var ops = [];
     try { ops = JSON.parse(opsJsonStr); } catch (pe) { /* empty */ }
     var expected = computeFinalOperation_(ops);
-
-    var normRepop    = _normOpNo_(repopulated);
     var normExpected = _normOpNo_(expected);
-    var normReturned = _normOpNo_(warmedValue);
 
-    var pass = normRepop === normExpected && normReturned === normExpected;
+    // Assert 1: stored cell is the exact 4-digit padded string
+    var storageOk = storedStr === normExpected && storedType === 'string';
+    // Assert 2: returned value normalizes to expected
+    var returnOk  = _normOpNo_(warmedValue) === normExpected;
+    var pass = storageOk && returnOk;
+
     var detail = 'mo=' + testMo +
-                 ' expected=' + expected + ' repopulated=' + repopulated +
+                 ' expected=' + normExpected +
+                 ' stored=' + storedStr + '(type=' + storedType + ')' +
                  ' returned=' + warmedValue +
-                 ' norm=' + normExpected + '/' + normRepop + '/' + normReturned;
+                 ' storageOk=' + storageOk + ' returnOk=' + returnOk;
 
     Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
     logEvent(fn, testMo, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
   } finally {
-    foCell.setValue(originalFinalOp);
+    foCell.setNumberFormat('@').setValue(_normOpNo_(originalFinalOp));
     SpreadsheetApp.flush();
     Logger.log(fn + ': restored FinalOperation=' + originalFinalOp + ' for ' + testMo);
   }

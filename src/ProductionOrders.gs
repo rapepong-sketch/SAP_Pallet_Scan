@@ -548,6 +548,8 @@ function fetchOperationsForMO_(mo) {
  * Read the cached final operation number for a MO from the ProductionOrders
  * sheet (fast sheet read, no SAP call). Phase 3 Step 2 uses this to build the
  * SAP confirmation payload without re-deriving the routing every scan.
+ * Returns a normalized 4-digit zero-padded string (e.g. '0010') regardless
+ * of whether the underlying cell holds 10, '10', or '0010' (legacy rows).
  * @param {string} mo
  * @return {string} cached final op number, or '' if not cached / MO not found
  */
@@ -565,7 +567,7 @@ function getFinalOperationCached_(mo) {
     const data = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
     for (let i = 0; i < data.length; i++) {
       if (String(data[i][moCol] || '').trim() === mo) {
-        return String(data[i][foCol] || '').trim();
+        return _normOpNo_(data[i][foCol]);
       }
     }
   } catch (e) {
@@ -576,6 +578,8 @@ function getFinalOperationCached_(mo) {
 
 /**
  * Write the final operation number for a MO into the FinalOperation column.
+ * Writes as plain-text 4-digit zero-padded string (same discipline as Batch)
+ * to prevent Sheets from coercing '0010' → number 10.
  * Skips the write when the cached value already matches — keeps this cheap
  * to call from getFinalOperationForMo_ on every cold-cache lookup.
  * @param {string} mo
@@ -583,7 +587,7 @@ function getFinalOperationCached_(mo) {
  */
 function cacheFinalOperation_(mo, finalOpNo) {
   mo = String(mo || '').trim();
-  finalOpNo = String(finalOpNo || '').trim();
+  finalOpNo = _normOpNo_(finalOpNo);
   if (!mo || !finalOpNo) return;
   try {
     const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
@@ -597,7 +601,9 @@ function cacheFinalOperation_(mo, finalOpNo) {
     for (let i = 0; i < keys.length; i++) {
       if (String(keys[i][0] || '').trim() === mo) {
         const cell = sh.getRange(i + 2, foCol + 1);
-        if (String(cell.getValue() || '').trim() !== finalOpNo) cell.setValue(finalOpNo);
+        if (_normOpNo_(cell.getValue()) !== finalOpNo) {
+          cell.setNumberFormat('@').setValue(finalOpNo);
+        }
         return;
       }
     }
@@ -735,7 +741,8 @@ function refreshOrderOperationCache(mo) {
 
     sh.getRange(rowNum, opsJsonCol + 1).setValue(cacheFields.opsJson);
     sh.getRange(rowNum, opsCol + 1).setValue(cacheFields.operationsStr);
-    sh.getRange(rowNum, finalOpCol + 1).setValue(finalOp);
+    var finalOpPadded = _normOpNo_(finalOp);
+    sh.getRange(rowNum, finalOpCol + 1).setNumberFormat('@').setValue(finalOpPadded);
 
     logEvent(fn, mo, 'OK', Date.now() - t0, 'final=' + finalOp + ' ops=' + ops.length);
 
@@ -849,4 +856,95 @@ function bulkRefreshStaleFinalOperations(opts) {
 function testBulkRefreshDryRun() {
   const result = bulkRefreshStaleFinalOperations({ dryRun: true });
   Logger.log('testBulkRefreshDryRun result: ' + JSON.stringify(result, null, 2));
+}
+
+// ============================================================================
+// MIGRATE — FinalOperation leading-zero fix (one-time, idempotent)
+// ============================================================================
+
+/**
+ * Phase 5: Migrate existing FinalOperation values to 4-digit zero-padded
+ * text strings. Same discipline as Batch — Sheets must not coerce '0010'
+ * to number 10. Backs up ProductionOrders first. Idempotent: re-running
+ * detects already-correct rows and skips them.
+ * @return {{backupName:string, fixed:number, alreadyCorrect:number, empty:number}}
+ */
+function migrateFinalOpLeadingZeros() {
+  var fn = 'migrateFinalOpLeadingZeros';
+  var t0 = Date.now();
+
+  try {
+    var ss = getSpreadsheet_();
+    var sh = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+    if (!sh) throw new Error('ProductionOrders sheet not found');
+    var lastRow = sh.getLastRow();
+    if (lastRow < 2) {
+      logEvent(fn, 'MIGRATE_FINALOP_PAD', 'OK', 0, 'No data rows');
+      return { backupName: '', fixed: 0, alreadyCorrect: 0, empty: 0 };
+    }
+
+    // Backup
+    var tz = 'Asia/Bangkok';
+    var stamp = Utilities.formatDate(new Date(), tz, 'yyyyMMdd_HHmmss');
+    var backupName = 'ProductionOrders_bak_' + stamp;
+    sh.copyTo(ss).setName(backupName);
+    Logger.log(fn + ': backup → ' + backupName);
+
+    var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    var foCol = hdr.indexOf('FinalOperation');
+    if (foCol === -1) throw new Error('FinalOperation column not found');
+
+    var dataRows = lastRow - 1;
+    var foRange = sh.getRange(2, foCol + 1, dataRows, 1);
+    var foVals  = foRange.getValues();
+
+    var fixed = 0;
+    var alreadyCorrect = 0;
+    var empty = 0;
+
+    for (var i = 0; i < foVals.length; i++) {
+      var raw = foVals[i][0];
+      var rawStr = String(raw == null ? '' : raw).trim();
+      if (!rawStr) { empty++; continue; }
+
+      var padded = _normOpNo_(rawStr);
+      if (rawStr === padded && typeof raw === 'string') {
+        alreadyCorrect++;
+      } else {
+        foVals[i][0] = padded;
+        fixed++;
+      }
+    }
+
+    if (fixed > 0) {
+      foRange.setNumberFormat('@').setValues(foVals);
+    } else {
+      foRange.setNumberFormat('@');
+    }
+    SpreadsheetApp.flush();
+
+    // Postcondition: verify every non-empty cell is a correct 4-digit string
+    var verify = sh.getRange(2, foCol + 1, dataRows, 1).getValues();
+    var bad = [];
+    for (var j = 0; j < verify.length; j++) {
+      var v = verify[j][0];
+      var vs = String(v == null ? '' : v).trim();
+      if (!vs) continue;
+      if (vs !== _normOpNo_(vs)) bad.push('row' + (j + 2) + '=' + vs);
+    }
+
+    var status = bad.length === 0 ? 'OK' : 'WARN';
+    var detail = 'fixed=' + fixed + ' alreadyCorrect=' + alreadyCorrect +
+                 ' empty=' + empty + ' backup=' + backupName;
+    if (bad.length > 0) detail += ' POSTCOND_FAIL=' + bad.slice(0, 5).join(',');
+
+    logEvent(fn, 'MIGRATE_FINALOP_PAD', status, Date.now() - t0, detail);
+    Logger.log(fn + ': ' + detail);
+
+    return { backupName: backupName, fixed: fixed, alreadyCorrect: alreadyCorrect, empty: empty };
+
+  } catch (e) {
+    logError(fn, 'MIGRATE_FINALOP_PAD', e.message, '');
+    throw e;
+  }
 }
