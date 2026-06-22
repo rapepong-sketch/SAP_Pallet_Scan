@@ -273,6 +273,17 @@
     /* ── Hidden ── */
     .hidden { display: none !important; }
 
+    /* ── Inline validation note ── */
+    .val-note {
+      color: #c0392b;
+      background: #fdeaea;
+      border: 1px solid #e74c3c;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
     /* ── Bottom padding so content clears mobile nav ── */
     .bottom-pad { height: 32px; }
   </style>
@@ -617,7 +628,9 @@
 
   <div class="form-group">
     <label>ผู้ตรวจสอบ QC *</label>
-    <input type="text" id="qcm-qc-inspector" placeholder="ชื่อผู้ตรวจสอบ QC" autocomplete="name">
+    <input type="text" id="qcm-qc-inspector" placeholder="ชื่อผู้ตรวจสอบ QC" autocomplete="name"
+           oninput="clearValNote('qcm-qc-inspector-val')">
+    <div id="qcm-qc-inspector-val" class="val-note hidden"></div>
   </div>
 
   <div style="display:flex; gap:10px; margin-bottom:11px;">
@@ -633,7 +646,9 @@
 
   <div class="form-group hidden" id="qcm-qc-note-group">
     <label id="qcm-qc-note-label">หมายเหตุ</label>
-    <input type="text" id="qcm-qc-note" placeholder="ระบุสาเหตุ/หมายเหตุ">
+    <input type="text" id="qcm-qc-note" placeholder="ระบุสาเหตุ/หมายเหตุ"
+           oninput="clearValNote('qcm-qc-note-val')">
+    <div id="qcm-qc-note-val" class="val-note hidden"></div>
   </div>
 
   <button class="btn btn-success hidden" id="qcm-qc-btn-submit" onclick="qcmSubmitQcResult()">
@@ -656,6 +671,9 @@ var currentAllOpsConfirmed = false; // server flag from lookupPallet — every r
 var pendingOpNo          = '';   // set by submitConfirm() just before the RPC, read by onConfirmResult()
 var html5QrCode          = null;  // Html5Qrcode instance — reused for every scanFile()
 var autoResetTimer       = null; // pending setTimeout id for auto-return-to-scan, or null
+var _savingConfirm       = false;
+var _savingPd            = {};
+var _savingQc            = false;
 
 // ============================================================
 // Init
@@ -1058,7 +1076,7 @@ function recalcYield() {
   var btn   = document.getElementById('btn-confirm');
 
   if (sum !== expected) {
-    errEl.textContent = 'ยอดรวมต้องเท่ากับ ' + expected + ' — ตอนนี้ = ' + sum;
+    errEl.textContent = 'ยอดรวม 4 ช่องต้องเท่ากับ ' + expected + ' (ตอนนี้ ' + sum + ')';
     errEl.classList.remove('hidden');
     btn.disabled = true;
   } else {
@@ -1068,6 +1086,7 @@ function recalcYield() {
 }
 
 function submitConfirm() {
+  if (_savingConfirm) return;
   if (!currentPallet) { showMsg('error', 'ยังไม่มีข้อมูลพาเลท — สแกนก่อน'); return; }
 
   var operator     = document.getElementById('f-operator').value.trim();
@@ -1083,7 +1102,9 @@ function submitConfirm() {
 
   var sum = goodQty + repairQty + defectQty + awaitConvQty;
   if (sum !== currentPallet.QtyPerPallet) {
-    showMsg('error', 'ยอดรวม (' + sum + ') ไม่เท่ากับ QtyPerPallet (' + currentPallet.QtyPerPallet + ')');
+    var errEl = document.getElementById('yield-sum-error');
+    errEl.textContent = 'ยอดรวม 4 ช่องต้องเท่ากับ ' + currentPallet.QtyPerPallet + ' (ตอนนี้ ' + sum + ')';
+    errEl.classList.remove('hidden');
     return;
   }
 
@@ -1094,12 +1115,24 @@ function submitConfirm() {
 
   pendingOpNo = opNo;
 
+  _savingConfirm = true;
+  var btn = document.getElementById('btn-confirm');
+  var origLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ กำลังบันทึก...';
   clearMsg();
-  showMsg('info', '⏳ กำลังบันทึก…');
 
   google.script.run
-    .withSuccessHandler(onConfirmResult)
+    .withSuccessHandler(function (result) {
+      _savingConfirm = false;
+      btn.disabled = false;
+      btn.textContent = origLabel;
+      onConfirmResult(result);
+    })
     .withFailureHandler(function (err) {
+      _savingConfirm = false;
+      btn.disabled = false;
+      btn.textContent = origLabel;
       clearMsg();
       showMsg('error', '❌ บันทึกไม่สำเร็จ: ' + (err.message || String(err)));
     })
@@ -1221,6 +1254,7 @@ function resetScanner() {
   document.getElementById('yield-sum-error').classList.add('hidden');
   document.getElementById('yield-preview').classList.add('hidden');
 
+  _savingConfirm = false;
   var btnConfirm = document.getElementById('btn-confirm');
   btnConfirm.disabled    = false;
   btnConfirm.textContent = '✅ ยืนยันงาน';
@@ -1259,6 +1293,19 @@ function esc(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function showValNote(id, msg) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+function clearValNote(id) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = '';
+  el.classList.add('hidden');
 }
 
 // ============================================================
@@ -1905,7 +1952,8 @@ function qcmRenderPdPanel() {
         '<div style="margin-top:10px;">' +
           '<div class="form-group" style="margin-bottom:8px;">' +
             '<label style="font-size:12px;">ผู้ตรวจสอบ PD *</label>' +
-            '<input type="text" id="qcm-pd-inspector-' + idx + '" placeholder="ชื่อผู้ตรวจสอบ PD" autocomplete="name" style="padding:8px 10px; font-size:14px;">' +
+            '<input type="text" id="qcm-pd-inspector-' + idx + '" placeholder="ชื่อผู้ตรวจสอบ PD" autocomplete="name" style="padding:8px 10px; font-size:14px;" oninput="clearValNote(\'qcm-pd-val-' + idx + '\')">' +
+            '<div id="qcm-pd-val-' + idx + '" class="val-note hidden"></div>' +
           '</div>' +
           '<div style="display:flex; gap:8px; margin-bottom:8px;">' +
             '<button type="button" id="qcm-pd-btn-pass-' + idx + '" class="btn" onclick="qcmSetPdResult(' + idx + ',\'PASS\')" style="flex:1; min-height:44px; font-size:14px; background:#27ae60; color:#fff;">✅ PASS</button>' +
@@ -1940,6 +1988,7 @@ function qcmSetPdResult(idx, result) {
 }
 
 function qcmSubmitPdInspection(idx) {
+  if (_savingPd[idx]) return;
   if (!qcmPallet) return;
   var op = qcmConfirmedOps[idx];
   if (!op) return;
@@ -1947,18 +1996,24 @@ function qcmSubmitPdInspection(idx) {
   var result = qcmPdResults[idx];
   if (!result) { showMsg('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
 
+  clearValNote('qcm-pd-val-' + idx);
   var inspector = document.getElementById('qcm-pd-inspector-' + idx).value.trim();
   var note      = document.getElementById('qcm-pd-note-' + idx).value.trim();
 
-  if (!inspector) { showMsg('error', 'กรุณากรอกชื่อผู้ตรวจสอบ PD'); return; }
+  if (!inspector) {
+    showValNote('qcm-pd-val-' + idx, 'กรุณากรอกชื่อผู้ตรวจสอบ PD');
+    return;
+  }
   if (result === 'FAIL' && !note) { showMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน'); return; }
 
+  _savingPd[idx] = true;
   var btn = document.getElementById('qcm-pd-btn-submit-' + idx);
   btn.disabled    = true;
   btn.textContent = '⏳ กำลังบันทึก...';
 
   google.script.run
     .withSuccessHandler(function (res) {
+      _savingPd[idx] = false;
       if (!res.success) {
         btn.disabled    = false;
         btn.textContent = '💾 บันทึกผล PD';
@@ -1977,6 +2032,7 @@ function qcmSubmitPdInspection(idx) {
       qcmRenderPdPanel();
     })
     .withFailureHandler(function (err) {
+      _savingPd[idx] = false;
       btn.disabled    = false;
       btn.textContent = '💾 บันทึกผล PD';
       showMsg('error', '❌ บันทึก PD ไม่สำเร็จ: ' + (err.message || String(err)));
@@ -2052,21 +2108,35 @@ function qcmSetQcResult(result) {
 }
 
 function qcmSubmitQcResult() {
+  if (_savingQc) return;
   if (!qcmPallet) return;
   if (!qcmQcResult) { showMsg('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
+
+  clearValNote('qcm-qc-inspector-val');
+  clearValNote('qcm-qc-note-val');
 
   var inspector = document.getElementById('qcm-qc-inspector').value.trim();
   var note      = document.getElementById('qcm-qc-note').value.trim();
 
-  if (!inspector) { showMsg('error', 'กรุณากรอกชื่อผู้ตรวจสอบ QC'); return; }
-  if (qcmQcResult === 'FAIL' && !note) { showMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน'); return; }
+  var valid = true;
+  if (!inspector) {
+    showValNote('qcm-qc-inspector-val', 'กรุณากรอกชื่อผู้ตรวจสอบ QC');
+    valid = false;
+  }
+  if (qcmQcResult === 'FAIL' && !note) {
+    showValNote('qcm-qc-note-val', 'กรุณาระบุหมายเหตุเมื่อผล QC = FAIL');
+    valid = false;
+  }
+  if (!valid) return;
 
+  _savingQc = true;
   var btn = document.getElementById('qcm-qc-btn-submit');
   btn.disabled    = true;
   btn.textContent = '⏳ กำลังบันทึก...';
 
   google.script.run
     .withSuccessHandler(function (res) {
+      _savingQc = false;
       if (!res.success) {
         btn.disabled    = false;
         btn.textContent = '💾 บันทึกผล QC';
@@ -2082,6 +2152,7 @@ function qcmSubmitQcResult() {
       qcmDoLookup(qcmPallet.PalletID);
     })
     .withFailureHandler(function (err) {
+      _savingQc = false;
       btn.disabled    = false;
       btn.textContent = '💾 บันทึกผล QC';
       showMsg('error', '❌ บันทึก QC ไม่สำเร็จ: ' + (err.message || String(err)));
@@ -2106,6 +2177,8 @@ function qcmReset() {
   qcmQcResult        = null;
   qcmConfirmedOps    = [];
   qcmPdResults       = {};
+  _savingPd           = {};
+  _savingQc           = false;
   document.getElementById('qcm-manual-id').value = '';
   hide('qcm-pallet-section');
   hide('qcm-pd-section');
