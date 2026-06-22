@@ -22,7 +22,10 @@ function onOpen() {
     .addItem('✂️ แบ่งเบิกแตกย่อย (FIFO)',                  'pickDialog')
     .addSeparator()
     .addItem('📋 รายงานสรุปวันนี้',                        'reportTodayDialog')
-    .addItem('📅 รายงานตามวันที่',                         'reportPickDateDialog');
+    .addItem('📅 รายงานตามวันที่',                         'reportPickDateDialog')
+    .addSeparator()
+    .addItem('📊 รายงาน Yield/QC',                         'yieldQcReportTodayDialog')
+    .addItem('📅 รายงาน Yield/QC ตามวันที่',               'yieldQcReportDateDialog');
 
   // ── ⚙ ตั้งค่า / ซิงค์ ──────────────────────────────────────────────────
   const larkMenu = ui.createMenu('🔔 Lark Notify')
@@ -63,7 +66,9 @@ function onOpen() {
     .addItem('🧪 [Test] Confirm Fallback (legacy)',      'TEST_confirmFallbackLegacy')
     .addItem('🧪 [Test] Auto-cache FinalOp',              'TEST_autoCacheFinalOp')
     .addSeparator()
-    .addItem('🧪 Phase 4.5: Run all tests',              'TEST_phase45_all_');
+    .addItem('🧪 Phase 4.5: Run all tests',              'TEST_phase45_all_')
+    .addSeparator()
+    .addItem('🧪 [Test] Yield/QC Report',                 'TEST_yieldQcReport_');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
