@@ -61,7 +61,9 @@ function onOpen() {
     .addSeparator()
     .addItem('🧪 [Test] Yield Bucket Payload',           'testBuildYieldBucketPayload')
     .addItem('🧪 [Test] Confirm Fallback (legacy)',      'TEST_confirmFallbackLegacy')
-    .addItem('🧪 [Test] Auto-cache FinalOp',              'TEST_autoCacheFinalOp');
+    .addItem('🧪 [Test] Auto-cache FinalOp',              'TEST_autoCacheFinalOp')
+    .addSeparator()
+    .addItem('🧪 Phase 4.5: Run all tests',              'TEST_phase45_all_');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
