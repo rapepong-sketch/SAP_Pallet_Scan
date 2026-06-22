@@ -788,10 +788,20 @@ function onScanSuccess(decoded) {
 // ============================================================
 function parseQrPayload(text) {
   text = (text || '').trim();
-  // Primary format: PALLET|{PalletID}|{MO}|{Material}|{Batch}|{Qty}
+  // Format A: PALLET|{PalletID}|{MO}|{Material}|{Batch}|{Qty}
   if (text.indexOf('PALLET|') === 0) {
     var parts = text.split('|');
     if (parts.length >= 2 && parts[1]) return parts[1].trim();
+  }
+  // Format B: P:{Material}|Q:{Qty}|L:{PalletID}|Loc:{SLoc}|
+  if (text.indexOf('P:') === 0) {
+    var segs = text.split('|');
+    for (var i = 0; i < segs.length; i++) {
+      if (segs[i].indexOf('L:') === 0) {
+        var candidate = segs[i].substring(2).trim();
+        if (/^PL-\d+-L\d+$/.test(candidate) || /^\d+-P\d{3}$/.test(candidate)) return candidate;
+      }
+    }
   }
   // Fallback: bare PalletID formats
   if (/^PL-\d+-L\d+$/.test(text) || /^\d+-P\d{3}$/.test(text)) return text;
@@ -1653,19 +1663,8 @@ function onCountScan(decoded) {
     return;
   }
 
-  // Parse PALLET| format
-  if (decoded.indexOf('PALLET|') === 0) {
-    var parts = decoded.split('|');
-    if (parts.length >= 2 && parts[1]) {
-      doCountScan(parts[1].trim());
-      return;
-    }
-  }
-  // Bare PalletID
-  if (/^PL-\d+-L\d+$/.test(decoded) || /^\d+-P\d{3}$/.test(decoded)) {
-    doCountScan(decoded);
-    return;
-  }
+  var pid = parseQrPayload(decoded);
+  if (pid) { doCountScan(pid); return; }
   addCountToast('err', 'QR ไม่ถูกต้อง: ' + decoded.substring(0, 40));
 }
 
