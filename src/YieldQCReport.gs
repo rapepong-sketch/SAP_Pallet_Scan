@@ -1,12 +1,15 @@
 /**
  * YieldQCReport.gs — Yield + QC snapshot report (menu-only, no web app)
  * ======================================================================
- * Phase 4.5C — multi-op-safe aggregation
+ * Phase 4.5C — model ก: output from OperationLog last-op per pallet
  *
  * CORE PRINCIPLE:
- *   OUTPUT (yield/scrap totals) has ONE source = PalletMaster final buckets,
- *   one row per pallet. OperationLog = per-operation throughput ONLY.
- *   Multi-op rows per pallet are EXPECTED → never sum OL into output.
+ *   OUTPUT per pallet = OperationLog LAST operation (highest OperationNo).
+ *     Good/Repair/AwaitConv = last op only.
+ *     Scrap = Σ ScrapQty across ALL ops (defects accumulate, gone forever).
+ *     Total = Good + Σ Scrap + Repair + AwaitConv.
+ *   PalletMaster final buckets are a partial mirror (only final-op-mirrored
+ *   pallets) — used for QC fields + cross-check, NOT as output source.
  *
  * READ-ONLY on OperationLog + PalletMaster. Writes only to YieldQCReport
  * snapshot sheet (clear+overwrite each run). NO SAP calls.
@@ -21,7 +24,7 @@ var YQR_SHEET = 'YieldQCReport';
 var TZ_ = 'Asia/Bangkok';
 
 // ============================================================================
-// Work-center resolver (future-proof for ActualMachine column)
+// Work-center resolver
 // ============================================================================
 
 var _wcCache_ = {};
@@ -58,67 +61,10 @@ function fmtPct_(val) {
 }
 
 // ============================================================================
-// buildPalletOutput_() — ONE record per pallet from PalletMaster final buckets
-// Feeds: Overall, By Material, Trend by Date
-// DefectQty (PM) == Scrap
+// Read raw OperationLog rows (all columns needed for both output + throughput)
 // ============================================================================
 
-function buildPalletOutput_() {
-  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
-  if (!sh || sh.getLastRow() < 2) return [];
-
-  var data = sh.getDataRange().getValues();
-  var hdr  = data[0];
-  var idx  = {};
-  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
-
-  var rows = [];
-  for (var r = 1; r < data.length; r++) {
-    var pid = String(data[r][idx['PalletID']] || '').trim();
-    if (!pid || /^PL-TEST/i.test(pid)) continue;
-
-    var wc = data[r][idx['WorkCenter']];
-    if (wc instanceof Date) wc = dateToWorkCenter_(wc);
-    wc = String(wc || '').trim();
-
-    // ProductionDate from SAP PO (MfgOrderPlannedStartDate) — the canonical pallet date
-    var prodDate = data[r][idx['ProductionDate']];
-    var prodDateStr = '';
-    if (prodDate instanceof Date && !isNaN(prodDate.getTime())) {
-      prodDateStr = Utilities.formatDate(prodDate, TZ_, 'yyyy-MM-dd');
-    }
-
-    rows.push({
-      palletId:     pid,
-      mo:           String(data[r][idx['ManufacturingOrder']] || '').trim(),
-      material:     String(data[r][idx['Material']]           || '').trim(),
-      materialName: String(data[r][idx['MaterialName']]       || '').trim(),
-      batch:        String(data[r][idx['Batch']]              || '').trim(),
-      qtyPerPallet: Number(data[r][idx['QtyPerPallet']])  || 0,
-      unit:         String(data[r][idx['Unit']]               || '').trim(),
-      workCenter:   wc,
-      prodDateStr:  prodDateStr,
-      scanStatus:   String(data[r][idx['ScanStatus']]         || '').trim(),
-      qcStatus:     String(data[r][idx['QCStatus']]           || '').trim(),
-      qcResult:     String(data[r][idx['QCResult']]           || '').trim(),
-      qcResultNote: String(data[r][idx['QCResultNote']]       || '').trim(),
-      qcInspector:  idx['QCInspector'] !== undefined
-                      ? String(data[r][idx['QCInspector']] || '').trim() : '',
-      good:         idx['GoodQty']      !== undefined ? (Number(data[r][idx['GoodQty']])      || 0) : 0,
-      scrap:        idx['DefectQty']    !== undefined ? (Number(data[r][idx['DefectQty']])    || 0) : 0,
-      repair:       idx['RepairQty']    !== undefined ? (Number(data[r][idx['RepairQty']])    || 0) : 0,
-      awaitConv:    idx['AwaitConvQty'] !== undefined ? (Number(data[r][idx['AwaitConvQty']]) || 0) : 0
-    });
-  }
-  return rows;
-}
-
-// ============================================================================
-// buildOpThroughput_() — per OperationLog row (multi-op per pallet expected)
-// Feeds: By Work Center/Machine only
-// ============================================================================
-
-function buildOpThroughput_() {
+function readOlRows_() {
   var sh = getSpreadsheet_().getSheetByName(OL_SHEET);
   if (!sh || sh.getLastRow() < 2) return [];
 
@@ -152,41 +98,149 @@ function buildOpThroughput_() {
 }
 
 // ============================================================================
-// Tripwire: compare OL last-op-per-pallet GoodQty vs PM GoodQty
+// Read PalletMaster (for QC fields, dates, material enrichment, PM cross-check)
 // ============================================================================
 
-function computeTripwire_(pmRows, olRows) {
-  // Sum PM good
-  var pmGoodSum = 0;
-  for (var p = 0; p < pmRows.length; p++) {
-    pmGoodSum += pmRows[p].good;
-  }
+function readPmRows_() {
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
 
-  // Find last op per pallet from OL (highest opNo per palletId)
-  var lastOpByPallet = {};
-  for (var o = 0; o < olRows.length; o++) {
-    var pid  = olRows[o].palletId;
-    var opNo = olRows[o].opNo;
-    if (!lastOpByPallet[pid] || opNo > lastOpByPallet[pid].opNo) {
-      lastOpByPallet[pid] = olRows[o];
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var rows = [];
+  for (var r = 1; r < data.length; r++) {
+    var pid = String(data[r][idx['PalletID']] || '').trim();
+    if (!pid || /^PL-TEST/i.test(pid)) continue;
+
+    var wc = data[r][idx['WorkCenter']];
+    if (wc instanceof Date) wc = dateToWorkCenter_(wc);
+    wc = String(wc || '').trim();
+
+    // ScannedAt = actual scan date; ProductionDate = SAP planned start
+    var scannedAt = data[r][idx['ScannedAt']];
+    var scannedDateStr = '';
+    if (scannedAt instanceof Date && !isNaN(scannedAt.getTime())) {
+      scannedDateStr = Utilities.formatDate(scannedAt, TZ_, 'yyyy-MM-dd');
     }
+    var prodDate = data[r][idx['ProductionDate']];
+    var prodDateStr = '';
+    if (prodDate instanceof Date && !isNaN(prodDate.getTime())) {
+      prodDateStr = Utilities.formatDate(prodDate, TZ_, 'yyyy-MM-dd');
+    }
+
+    rows.push({
+      palletId:     pid,
+      mo:           String(data[r][idx['ManufacturingOrder']] || '').trim(),
+      material:     String(data[r][idx['Material']]           || '').trim(),
+      materialName: String(data[r][idx['MaterialName']]       || '').trim(),
+      unit:         String(data[r][idx['Unit']]               || '').trim(),
+      workCenter:   wc,
+      scannedDateStr: scannedDateStr,
+      prodDateStr:    prodDateStr,
+      qcResult:     String(data[r][idx['QCResult']]           || '').trim(),
+      qcResultNote: String(data[r][idx['QCResultNote']]       || '').trim(),
+      qcInspector:  idx['QCInspector'] !== undefined
+                      ? String(data[r][idx['QCInspector']] || '').trim() : '',
+      pmGood:       idx['GoodQty']      !== undefined ? (Number(data[r][idx['GoodQty']])      || 0) : 0,
+      pmScrap:      idx['DefectQty']    !== undefined ? (Number(data[r][idx['DefectQty']])    || 0) : 0,
+      pmRepair:     idx['RepairQty']    !== undefined ? (Number(data[r][idx['RepairQty']])    || 0) : 0,
+      pmAwaitConv:  idx['AwaitConvQty'] !== undefined ? (Number(data[r][idx['AwaitConvQty']]) || 0) : 0,
+      hasPmMirror:  (idx['GoodQty'] !== undefined &&
+                     (Number(data[r][idx['GoodQty']]) || 0) +
+                     (Number(data[r][idx['DefectQty']]) || 0) +
+                     (Number(data[r][idx['RepairQty']]) || 0) +
+                     (Number(data[r][idx['AwaitConvQty']]) || 0)) > 0
+    });
   }
-  var olLastOpGoodSum = 0;
-  var keys = Object.keys(lastOpByPallet);
-  for (var k = 0; k < keys.length; k++) {
-    olLastOpGoodSum += lastOpByPallet[keys[k]].good;
+  return rows;
+}
+
+// ============================================================================
+// buildPalletOutput_() — per pallet from OL last-op (model ก)
+//   Good/Repair/AwaitConv = last op only
+//   Scrap = Σ across ALL ops
+// ============================================================================
+
+function buildPalletOutput_(olRows, pmByPallet) {
+  // Group OL rows by palletId
+  var byPallet = {};
+  for (var i = 0; i < olRows.length; i++) {
+    var pid = olRows[i].palletId;
+    if (!byPallet[pid]) byPallet[pid] = [];
+    byPallet[pid].push(olRows[i]);
   }
 
-  var diff = Math.abs(pmGoodSum - olLastOpGoodSum);
-  var maxVal = Math.max(pmGoodSum, olLastOpGoodSum, 1);
+  var output = [];
+  var pids = Object.keys(byPallet);
+  for (var p = 0; p < pids.length; p++) {
+    var pid  = pids[p];
+    var ops  = byPallet[pid];
+    var pm   = pmByPallet[pid] || {};
+
+    // Find last op (highest OperationNo)
+    var lastOp = ops[0];
+    var totalScrap = 0;
+    for (var j = 0; j < ops.length; j++) {
+      totalScrap += ops[j].scrap;
+      if (ops[j].opNo > lastOp.opNo) lastOp = ops[j];
+    }
+
+    // Best date: ScannedAt (actual) → ProductionDate (planned) → empty
+    var dateStr = pm.scannedDateStr || pm.prodDateStr || '';
+    var dateSource = pm.scannedDateStr ? 'scanned' : (pm.prodDateStr ? 'planned' : 'none');
+
+    output.push({
+      palletId:   pid,
+      mo:         lastOp.mo,
+      material:   pm.material   || '',
+      materialName: pm.materialName || '',
+      unit:       pm.unit       || '',
+      good:       lastOp.good,
+      scrap:      totalScrap,
+      repair:     lastOp.repair,
+      awaitConv:  lastOp.awaitConv,
+      dateStr:    dateStr,
+      dateSource: dateSource,
+      opCount:    ops.length
+    });
+  }
+  return output;
+}
+
+// ============================================================================
+// Tripwire — compare only the MIRRORED subset
+// ============================================================================
+
+function computeTripwire_(palletOutput, pmByPallet) {
+  var mirroredCount = 0, totalPallets = palletOutput.length;
+  var pmGoodSum = 0, olGoodSum = 0;
+
+  for (var i = 0; i < palletOutput.length; i++) {
+    var pid = palletOutput[i].palletId;
+    var pm  = pmByPallet[pid];
+    if (!pm || !pm.hasPmMirror) continue;
+
+    mirroredCount++;
+    pmGoodSum  += pm.pmGood;
+    olGoodSum  += palletOutput[i].good;
+  }
+
+  var diff    = Math.abs(pmGoodSum - olGoodSum);
+  var maxVal  = Math.max(pmGoodSum, olGoodSum, 1);
   var pctDiff = diff / maxVal;
 
   return {
     pmGood:         pmGoodSum,
-    olLastOpGood:   olLastOpGoodSum,
+    olLastOpGood:   olGoodSum,
     diff:           diff,
     pctDiff:        pctDiff,
-    mismatch:       pctDiff > 0.005
+    mismatch:       mirroredCount > 0 && pctDiff > 0.005,
+    mirroredCount:  mirroredCount,
+    totalPallets:   totalPallets,
+    mirrorPct:      pct_(mirroredCount, totalPallets)
   };
 }
 
@@ -197,17 +251,26 @@ function computeTripwire_(pmRows, olRows) {
 function buildYieldQCReport_() {
   _wcCache_ = {};
 
-  var pmRows = buildPalletOutput_();
-  var olRows = buildOpThroughput_();
+  var olRows = readOlRows_();
+  var pmRows = readPmRows_();
   var now    = Utilities.formatDate(new Date(), TZ_, 'yyyy-MM-dd HH:mm');
 
-  // ── OUTPUT totals from PalletMaster final buckets (one per pallet) ──
+  // PM lookup
+  var pmByPallet = {};
+  for (var p = 0; p < pmRows.length; p++) {
+    pmByPallet[pmRows[p].palletId] = pmRows[p];
+  }
+
+  // Per-pallet output from OL last-op
+  var palletOutput = buildPalletOutput_(olRows, pmByPallet);
+
+  // ── OUTPUT totals ──
   var totGood = 0, totScrap = 0, totRepair = 0, totAwait = 0;
-  for (var i = 0; i < pmRows.length; i++) {
-    totGood   += pmRows[i].good;
-    totScrap  += pmRows[i].scrap;
-    totRepair += pmRows[i].repair;
-    totAwait  += pmRows[i].awaitConv;
+  for (var i = 0; i < palletOutput.length; i++) {
+    totGood   += palletOutput[i].good;
+    totScrap  += palletOutput[i].scrap;
+    totRepair += palletOutput[i].repair;
+    totAwait  += palletOutput[i].awaitConv;
   }
   var totAll = totGood + totScrap + totRepair + totAwait;
 
@@ -225,15 +288,15 @@ function buildYieldQCReport_() {
     if (olRows[d].pdResult) pdInspected++;
   }
 
-  // ── By Material — from PM output (one per pallet) ──
+  // ── By Material (from pallet output) ──
   var byMat = {};
-  for (var m = 0; m < pmRows.length; m++) {
-    var mat = pmRows[m].material || '(unknown)';
-    if (!byMat[mat]) byMat[mat] = { good: 0, scrap: 0, repair: 0, awaitConv: 0, pallets: 0, name: pmRows[m].materialName };
-    byMat[mat].good      += pmRows[m].good;
-    byMat[mat].scrap     += pmRows[m].scrap;
-    byMat[mat].repair    += pmRows[m].repair;
-    byMat[mat].awaitConv += pmRows[m].awaitConv;
+  for (var m = 0; m < palletOutput.length; m++) {
+    var mat = palletOutput[m].material || '(unknown)';
+    if (!byMat[mat]) byMat[mat] = { good: 0, scrap: 0, repair: 0, awaitConv: 0, pallets: 0, name: palletOutput[m].materialName };
+    byMat[mat].good      += palletOutput[m].good;
+    byMat[mat].scrap     += palletOutput[m].scrap;
+    byMat[mat].repair    += palletOutput[m].repair;
+    byMat[mat].awaitConv += palletOutput[m].awaitConv;
     byMat[mat].pallets++;
   }
   var matSummary = Object.keys(byMat).sort().map(function(k) {
@@ -248,7 +311,7 @@ function buildYieldQCReport_() {
     };
   });
 
-  // ── By Work Center — from OL throughput (per-op, multi-op expected) ──
+  // ── By Work Center — per-op throughput (unchanged intent) ──
   var byWc = {};
   for (var w = 0; w < olRows.length; w++) {
     var wc = olRows[w].workCenter || '(no WC)';
@@ -285,15 +348,18 @@ function buildYieldQCReport_() {
     }
   }
 
-  // ── Trend by Date — from PM output grouped by ProductionDate ──
+  // ── Trend by date (from pallet output, grouped by best available date) ──
   var byDate = {};
-  for (var t = 0; t < pmRows.length; t++) {
-    var dt = pmRows[t].prodDateStr || '(ไม่มีวันที่)';
+  var hasScannedDate = false, hasPlannedDate = false;
+  for (var t = 0; t < palletOutput.length; t++) {
+    var dt = palletOutput[t].dateStr || '(ไม่มีวันที่)';
+    if (palletOutput[t].dateSource === 'scanned') hasScannedDate = true;
+    if (palletOutput[t].dateSource === 'planned') hasPlannedDate = true;
     if (!byDate[dt]) byDate[dt] = { good: 0, scrap: 0, repair: 0, awaitConv: 0, pallets: 0 };
-    byDate[dt].good      += pmRows[t].good;
-    byDate[dt].scrap     += pmRows[t].scrap;
-    byDate[dt].repair    += pmRows[t].repair;
-    byDate[dt].awaitConv += pmRows[t].awaitConv;
+    byDate[dt].good      += palletOutput[t].good;
+    byDate[dt].scrap     += palletOutput[t].scrap;
+    byDate[dt].repair    += palletOutput[t].repair;
+    byDate[dt].awaitConv += palletOutput[t].awaitConv;
     byDate[dt].pallets++;
   }
   var dateTrend = Object.keys(byDate).sort().map(function(k) {
@@ -306,13 +372,16 @@ function buildYieldQCReport_() {
       fpyPct:   fmtPct_(pct_(e.good, total))
     };
   });
+  var dateLabel = hasScannedDate ? 'ScannedAt (วันที่สแกนจริง)' :
+                  (hasPlannedDate ? 'ProductionDate ตามแผน (planned)' : 'ไม่มีวันที่');
 
-  // ── Tripwire ──
-  var tripwire = computeTripwire_(pmRows, olRows);
+  // ── Tripwire (mirrored subset only) ──
+  var tripwire = computeTripwire_(palletOutput, pmByPallet);
 
   return {
     generatedAt: now,
     olRowCount:  olRows.length,
+    palletCount: palletOutput.length,
     pmRowCount:  pmRows.length,
     overall: {
       good: totGood, scrap: totScrap, repair: totRepair, awaitConv: totAwait, total: totAll,
@@ -331,6 +400,7 @@ function buildYieldQCReport_() {
     byWorkCenter: wcSummary,
     failPallets:  failPallets,
     dateTrend:    dateTrend,
+    dateLabel:    dateLabel,
     tripwire:     tripwire
   };
 }
@@ -376,11 +446,19 @@ function writeYieldQCReportSheet_(report) {
     r++;
   }
 
+  // Force plain number on qty columns to prevent percent rendering
   function dataRow(values, alt) {
     var rng = sh.getRange(r, 1, 1, C);
     rng.setValues([pad(values)])
-      .setBorder(true, true, true, true, true, true);
+      .setBorder(true, true, true, true, true, true)
+      .setNumberFormat('@');
     if (alt) rng.setBackground('#f2f2f2');
+    // Re-format numeric cells as plain number
+    for (var ci = 0; ci < values.length; ci++) {
+      if (typeof values[ci] === 'number') {
+        sh.getRange(r, ci + 1).setNumberFormat('#,##0');
+      }
+    }
     r++;
   }
 
@@ -390,54 +468,44 @@ function writeYieldQCReportSheet_(report) {
   // ── Title ──
   mergedText('Yield + QC Report   (สร้างเมื่อ ' + report.generatedAt + ')',
     { bg: '#1f3864', fc: '#ffffff', fs: 14, bold: true, h: 28 });
-  mergedText('PalletMaster pallets: ' + report.pmRowCount +
-    '   |   OperationLog rows: ' + report.olRowCount +
-    '   |   Output source: PalletMaster final buckets',
+  mergedText('Pallets (OL): ' + report.palletCount +
+    '   |   Op rows: ' + report.olRowCount +
+    '   |   Output: OL op สุดท้าย/พาเลท, Scrap สะสมทุก op',
     { fc: '#666666', italic: true });
 
-  // ── Tripwire (red row if mismatch) ──
+  // ── Tripwire ──
   if (tw.mismatch) {
-    mergedText('⚠️ OUTPUT MISMATCH — ตรวจ mirror/นับซ้ำ: PM Good=' + tw.pmGood +
+    mergedText('⚠️ MIRROR MISMATCH (mirrored subset): PM Good=' + tw.pmGood +
       ' vs OL last-op Good=' + tw.olLastOpGood + ' (diff=' + tw.diff + ')',
       { bg: '#c00000', fc: '#ffffff', fs: 11, bold: true, h: 24 });
   }
+  mergedText('PM mirror: ' + tw.mirroredCount + '/' + tw.totalPallets +
+    ' pallets (' + fmtPct_(tw.mirrorPct) + ')',
+    { fc: '#888888', italic: true });
   r++;
 
-  // ── Section 1: Summary (from PalletMaster output) ──
-  mergedText('สรุปภาพรวม — ยอดผลผลิต (จาก PalletMaster final, 1 แถว/พาเลท)',
+  // ── Section 1: Summary ──
+  mergedText('สรุปภาพรวม — ยอดผลผลิต (จาก OperationLog op สุดท้าย/พาเลท)',
     { bg: '#2e75b6', fc: '#ffffff', fs: 11, bold: true, h: 22 });
   r++;
 
   tableHeader(['Metric', 'Value', '', 'Metric', 'Value']);
-  dataRow([
-    'Yield%', fmtPct_(ov.yieldPct), '',
-    'QC Pass Rate', fmtPct_(ov.qcPassRate)
-  ]);
-  dataRow([
-    'FPY% (Good only)', fmtPct_(ov.fpyPct), '',
-    'QC Coverage', fmtPct_(ov.qcCoverage) + ' (' + ov.qcTotal + '/' + ov.palletTotal + ')'
-  ], true);
-  dataRow([
-    'Scrap%', fmtPct_(ov.scrapPct), '',
-    'PD Coverage', fmtPct_(ov.pdCoverage) + ' (' + ov.pdInspected + '/' + ov.pdTotal + ')'
-  ]);
-  dataRow([
-    'Repair%', fmtPct_(ov.repairPct), '',
-    'QC PASS', String(ov.qcPass)
-  ], true);
-  dataRow([
-    'AwaitConv%', fmtPct_(ov.awaitConvPct), '',
-    'QC FAIL', String(ov.qcFail)
-  ]);
+  dataRow(['Yield%', fmtPct_(ov.yieldPct), '', 'QC Pass Rate', fmtPct_(ov.qcPassRate)]);
+  dataRow(['FPY% (Good only)', fmtPct_(ov.fpyPct), '',
+    'QC Coverage', fmtPct_(ov.qcCoverage) + ' (' + ov.qcTotal + '/' + ov.palletTotal + ')'], true);
+  dataRow(['Scrap% (สะสมทุก op)', fmtPct_(ov.scrapPct), '',
+    'PD Coverage', fmtPct_(ov.pdCoverage) + ' (' + ov.pdInspected + '/' + ov.pdTotal + ')']);
+  dataRow(['Repair%', fmtPct_(ov.repairPct), '', 'QC PASS', String(ov.qcPass)], true);
+  dataRow(['AwaitConv%', fmtPct_(ov.awaitConvPct), '', 'QC FAIL', String(ov.qcFail)]);
 
   r++;
-  mergedText('Output qty: Good=' + ov.good + ' Scrap=' + ov.scrap +
+  mergedText('Output: Good=' + ov.good + ' Scrap(สะสม)=' + ov.scrap +
     ' Repair=' + ov.repair + ' AwaitConv=' + ov.awaitConv + ' Total=' + ov.total,
     { bg: '#fff2cc', bold: true });
   r++;
 
-  // ── Section 2: By Material (from PalletMaster output) ──
-  mergedText('แยกตาม Material — ยอดผลผลิต (PalletMaster)',
+  // ── Section 2: By Material ──
+  mergedText('แยกตาม Material — ยอดผลผลิต (OL op สุดท้าย)',
     { bg: '#548235', fc: '#ffffff', fs: 11, bold: true, h: 22 });
   r++;
   tableHeader(['Material', 'Name', 'Pallets', 'Total', 'Yield%', 'FPY%', 'Scrap%', 'Repair', 'AwaitConv']);
@@ -448,7 +516,7 @@ function writeYieldQCReportSheet_(report) {
   }
   r++;
 
-  // ── Section 3: By Work Center (from OperationLog throughput) ──
+  // ── Section 3: By Work Center (per-op throughput) ──
   mergedText('แยกตาม Work Center / Machine — ปริมาณราย operation (ไม่ใช่ยอดผลผลิต)',
     { bg: '#bf8f00', fc: '#ffffff', fs: 11, bold: true, h: 22 });
   r++;
@@ -474,32 +542,29 @@ function writeYieldQCReportSheet_(report) {
   }
   r++;
 
-  // ── Section 5: Date trend (from PalletMaster ProductionDate) ──
-  mergedText('Trend by ProductionDate — ยอดผลผลิต (PalletMaster)',
+  // ── Section 5: Date trend ──
+  mergedText('Trend by ' + report.dateLabel + ' — ยอดผลผลิต (OL op สุดท้าย)',
     { bg: '#7030a0', fc: '#ffffff', fs: 11, bold: true, h: 22 });
   r++;
   tableHeader(['Date', 'Pallets', 'Total', 'Good', 'Scrap', 'Repair', 'AwaitConv', 'Yield%', 'FPY%']);
   for (var di = 0; di < report.dateTrend.length; di++) {
-    var dt = report.dateTrend[di];
-    dataRow([dt.date, dt.pallets, dt.total, dt.good, dt.scrap, dt.repair,
-             dt.awaitConv, dt.yieldPct, dt.fpyPct], di % 2 === 1);
+    var dtv = report.dateTrend[di];
+    dataRow([dtv.date, dtv.pallets, dtv.total, dtv.good, dtv.scrap, dtv.repair,
+             dtv.awaitConv, dtv.yieldPct, dtv.fpyPct], di % 2 === 1);
   }
 
-  // ── Format ──
+  // ── Final format ──
   sh.setFrozenRows(1);
   sh.setColumnWidth(1, 200);
   sh.setColumnWidth(2, 180);
   for (var col = 3; col <= C; col++) sh.autoResizeColumn(col);
-
-  var last = sh.getLastRow();
-  if (last > 0) sh.getRange(1, 1, last, 2).setNumberFormat('@');
 
   sh.activate();
   return sh;
 }
 
 // ============================================================================
-// Plain-text summary (for dialog + Lark)
+// Plain-text summary
 // ============================================================================
 
 function buildYieldQCReportText_(report) {
@@ -509,10 +574,11 @@ function buildYieldQCReportText_(report) {
 
   lines.push('📊 Yield + QC Report (' + report.generatedAt + ')');
   if (tw.mismatch) {
-    lines.push('⚠️ OUTPUT MISMATCH: PM Good=' + tw.pmGood + ' vs OL last-op Good=' + tw.olLastOpGood);
+    lines.push('⚠️ MIRROR MISMATCH: PM Good=' + tw.pmGood + ' vs OL last-op Good=' + tw.olLastOpGood);
   }
+  lines.push('PM mirror: ' + tw.mirroredCount + '/' + tw.totalPallets + ' pallets');
   lines.push('');
-  lines.push('Output (PalletMaster final):');
+  lines.push('Output (OL last-op, Scrap summed):');
   lines.push('  Yield%: ' + fmtPct_(ov.yieldPct) + '  FPY%: ' + fmtPct_(ov.fpyPct));
   lines.push('  Scrap%: ' + fmtPct_(ov.scrapPct) + '  Repair%: ' + fmtPct_(ov.repairPct) +
              '  AwaitConv%: ' + fmtPct_(ov.awaitConvPct));
@@ -536,7 +602,7 @@ function buildYieldQCReportText_(report) {
 }
 
 // ============================================================================
-// Lark — DRY_RUN only (REPORT_LARK_QC flag)
+// Lark — DRY_RUN only
 // ============================================================================
 
 function sendYieldQCReportToLark_(report) {
@@ -568,12 +634,9 @@ function sendYieldQCReportToLark_(report) {
   }
 
   var resp = UrlFetchApp.fetch(webhookUrl, {
-    method:             'post',
-    contentType:        'application/json',
-    payload:            JSON.stringify(payload),
-    muteHttpExceptions: true
+    method: 'post', contentType: 'application/json',
+    payload: JSON.stringify(payload), muteHttpExceptions: true
   });
-
   var code = resp.getResponseCode();
   logEvent('LARK_QC', 'YieldQCReport', code, 0,
     'sent len=' + text.length + ' resp=' + resp.getContentText().slice(0, 200));
@@ -593,13 +656,13 @@ function yieldQcReportTodayDialog() {
   SpreadsheetApp.getUi().alert('Yield + QC Report', text + larkNote,
     SpreadsheetApp.getUi().ButtonSet.OK);
   logEvent('YIELD_QC_REPORT', YQR_SHEET, 'OK', 0,
-    'pallets=' + report.pmRowCount + ' ops=' + report.olRowCount);
+    'pallets=' + report.palletCount + ' ops=' + report.olRowCount);
 }
 
 function yieldQcReportDateDialog() {
   var ui   = SpreadsheetApp.getUi();
   var resp = ui.prompt('Yield + QC Report ตามวันที่',
-    'ใส่วันที่ (yyyy-MM-dd) — ดูเฉพาะพาเลทที่ ProductionDate ตรงกัน\n(เว้นว่าง = ทั้งหมด):',
+    'ใส่วันที่ (yyyy-MM-dd)\n(เว้นว่าง = ทั้งหมด):',
     ui.ButtonSet.OK_CANCEL);
   if (resp.getSelectedButton() !== ui.Button.OK) return;
 
@@ -610,20 +673,17 @@ function yieldQcReportDateDialog() {
   }
 
   var report = buildYieldQCReport_();
-  if (dateStr) {
-    report.generatedAt += '  [filtered: ' + dateStr + ']';
-  }
+  if (dateStr) report.generatedAt += '  [filtered: ' + dateStr + ']';
 
   writeYieldQCReportSheet_(report);
   var text = buildYieldQCReportText_(report);
-  SpreadsheetApp.getUi().alert('Yield + QC Report' + (dateStr ? ' — ' + dateStr : ''),
-    text, ui.ButtonSet.OK);
+  ui.alert('Yield + QC Report' + (dateStr ? ' — ' + dateStr : ''), text, ui.ButtonSet.OK);
   logEvent('YIELD_QC_REPORT', YQR_SHEET, 'OK', 0,
-    'date=' + (dateStr || 'ALL') + ' pallets=' + report.pmRowCount);
+    'date=' + (dateStr || 'ALL') + ' pallets=' + report.palletCount);
 }
 
 // ============================================================================
-// TEST — multi-op seeding + aggregation + tripwire
+// TEST — model ก multi-op
 // ============================================================================
 
 function TEST_yieldQcReport_() {
@@ -638,14 +698,11 @@ function TEST_yieldQcReport_() {
     Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
   }
 
-  // ── Seed test data ──
-  var TEST_PID   = 'PL-TEST-YQRMULTI-L01';
-  var TEST_MO    = '9999999999';
-  var TEST_MAT   = 'TESTMAT-YQR';
-  var PM_GOOD    = 400;
-  var PM_SCRAP   = 50;
+  var TEST_PID = 'PL-TEST-YQRMODEL-L01';
+  var TEST_MO  = '9999999998';
+  var TEST_MAT = 'TESTMAT-MODELK';
 
-  // Seed PalletMaster row (final output)
+  // ── Seed PalletMaster (mirrored final) ──
   var pmSh  = ss.getSheetByName(PM_SHEET);
   var pmHdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
   var pmIdx = {};
@@ -654,188 +711,150 @@ function TEST_yieldQcReport_() {
   pmRow[pmIdx['PalletID']]           = TEST_PID;
   pmRow[pmIdx['ManufacturingOrder']] = TEST_MO;
   pmRow[pmIdx['Material']]           = TEST_MAT;
-  pmRow[pmIdx['MaterialName']]       = 'Test Material';
-  pmRow[pmIdx['QtyPerPallet']]       = 450;
+  pmRow[pmIdx['MaterialName']]       = 'Test Model K';
+  pmRow[pmIdx['QtyPerPallet']]       = 10;
   pmRow[pmIdx['Unit']]               = 'PC';
   pmRow[pmIdx['ProductionDate']]     = new Date(2026, 5, 22);
+  pmRow[pmIdx['ScannedAt']]          = new Date(2026, 5, 22, 10, 30, 0);
   pmRow[pmIdx['ScanStatus']]         = 'QC_COMPLETE';
   pmRow[pmIdx['QCStatus']]           = 'INSPECTED';
   pmRow[pmIdx['QCResult']]           = 'PASS';
-  pmRow[pmIdx['GoodQty']]            = PM_GOOD;
-  pmRow[pmIdx['DefectQty']]          = PM_SCRAP;
+  pmRow[pmIdx['GoodQty']]            = 8;
+  pmRow[pmIdx['DefectQty']]          = 1;
   pmRow[pmIdx['RepairQty']]          = 0;
   pmRow[pmIdx['AwaitConvQty']]       = 0;
   pmSh.appendRow(pmRow);
 
-  // Seed TWO OperationLog rows (multi-op, both have GoodQty>0)
+  // ── Seed 3 OperationLog rows (model ก) ──
   var olSh  = ss.getSheetByName(OL_SHEET);
   var olHdr = olSh.getRange(1, 1, 1, olSh.getLastColumn()).getValues()[0];
   var olIdx = {};
   olHdr.forEach(function(h, i) { olIdx[String(h).trim()] = i; });
 
-  function seedOlRow(opNo, good, scrap) {
+  function seedOl(opNo, good, scrap, repair, awaitConv) {
     var row = new Array(olHdr.length).fill('');
-    row[olIdx['LogID']]               = TEST_PID + '-' + opNo + '-OP-' + Date.now();
-    row[olIdx['PalletID']]            = TEST_PID;
-    row[olIdx['ManufacturingOrder']]  = TEST_MO;
-    row[olIdx['OperationNo']]         = opNo;
-    row[olIdx['OperationText']]       = 'Test Op ' + opNo;
-    row[olIdx['GoodQty']]             = good;
-    row[olIdx['ScrapQty']]            = scrap;
-    row[olIdx['RepairQty']]           = 0;
-    row[olIdx['AwaitConvQty']]        = 0;
-    row[olIdx['Operator']]            = 'TEST_OP';
-    row[olIdx['Role']]                = 'OP';
-    row[olIdx['Result']]              = 'PASS';
-    row[olIdx['LoggedAt']]            = new Date();
-    row[olIdx['Source']]              = 'TEST';
+    row[olIdx['LogID']]              = TEST_PID + '-' + opNo + '-OP-' + Date.now();
+    row[olIdx['PalletID']]           = TEST_PID;
+    row[olIdx['ManufacturingOrder']] = TEST_MO;
+    row[olIdx['OperationNo']]        = opNo;
+    row[olIdx['OperationText']]      = 'Test Op ' + opNo;
+    row[olIdx['GoodQty']]            = good;
+    row[olIdx['ScrapQty']]           = scrap;
+    row[olIdx['RepairQty']]          = repair;
+    row[olIdx['AwaitConvQty']]       = awaitConv;
+    row[olIdx['Operator']]           = 'TEST_OP';
+    row[olIdx['Role']]               = 'OP';
+    row[olIdx['Result']]             = 'PASS';
+    row[olIdx['LoggedAt']]           = new Date();
+    row[olIdx['Source']]             = 'TEST';
     olSh.appendRow(row);
   }
-  seedOlRow('0010', 450, 0);
-  seedOlRow('0020', PM_GOOD, PM_SCRAP);
+  // op1: Good=10,Scrap=1 → total should be 11? No — QtyPerPallet=10, but for
+  // test flexibility we don't enforce sum=QtyPerPallet here.
+  seedOl('0010', 10, 1, 0, 0);
+  seedOl('0020', 9,  0, 1, 0);
+  seedOl('0030', 8,  1, 0, 0);
   SpreadsheetApp.flush();
 
-  // ── Run report (includes test pallet because PL-TEST is filtered!) ──
-  // buildPalletOutput_ and buildOpThroughput_ filter /^PL-TEST/i.
-  // For this test we temporarily patch the filter by reading directly.
-  // Instead, call the public builder and check the PRODUCTION data is clean
-  // (test data excluded), then do targeted checks on the raw builders.
-
   try {
-    var report = buildYieldQCReport_();
-    assert('buildYieldQCReport_ runs', true);
-
-    // (a) Overall output must NOT include PL-TEST data
-    // Check: report should not contain TESTMAT-YQR in byMaterial
-    var hasTESTMAT = report.byMaterial.some(function(m) { return m.material === TEST_MAT; });
-    assert('Overall excludes PL-TEST pallet material', !hasTESTMAT);
-
-    // (b) Verify tripwire on production data
-    assert('tripwire computed', report.tripwire !== undefined);
-    assert('tripwire.mismatch is boolean', typeof report.tripwire.mismatch === 'boolean');
-
-    // ── Now test with PL-TEST included by calling builders directly ──
-    // We need a version that includes test data. Read sheets manually.
-    var pmData = pmSh.getDataRange().getValues();
-    var olData = olSh.getDataRange().getValues();
-
-    // Find the test PM row
-    var testPmRow = null;
-    for (var pr = 1; pr < pmData.length; pr++) {
-      if (String(pmData[pr][pmIdx['PalletID']] || '').trim() === TEST_PID) {
-        testPmRow = pmData[pr];
-        break;
-      }
-    }
-    assert('Test PM row seeded', !!testPmRow);
-
-    // Count test OL rows
-    var testOlCount = 0;
-    for (var or2 = 1; or2 < olData.length; or2++) {
-      if (String(olData[or2][olIdx['PalletID']] || '').trim() === TEST_PID) testOlCount++;
-    }
-    assert('Test OL rows = 2 (multi-op)', testOlCount === 2, 'found=' + testOlCount);
-
-    // (a) If we sum OL GoodQty for test pallet we'd get 450+400=850,
-    //     but PM final says 400. Verify the PRINCIPLE: output uses PM only.
-    var olGoodSum = 0;
-    for (var or3 = 1; or3 < olData.length; or3++) {
-      if (String(olData[or3][olIdx['PalletID']] || '').trim() === TEST_PID) {
-        olGoodSum += Number(olData[or3][olIdx['GoodQty']]) || 0;
-      }
-    }
-    assert('OL GoodQty sum (850) != PM GoodQty (400) — proves multi-op double-count risk',
-      olGoodSum === 850 && PM_GOOD === 400,
-      'olSum=' + olGoodSum + ' pmGood=' + PM_GOOD);
-
-    // (c) Tripwire with consistent mirror: last-op good=400, PM good=400 → no fire
-    var consistentTw = computeTripwire_(
-      [{ good: PM_GOOD, scrap: PM_SCRAP, repair: 0, awaitConv: 0, palletId: TEST_PID }],
-      [{ palletId: TEST_PID, opNo: '0010', good: 450, scrap: 0 },
-       { palletId: TEST_PID, opNo: '0020', good: PM_GOOD, scrap: PM_SCRAP }]
-    );
-    assert('Tripwire consistent → no mismatch', !consistentTw.mismatch,
-      'pmGood=' + consistentTw.pmGood + ' olLastOp=' + consistentTw.olLastOpGood);
-
-    // (d) Tripwire with desync mirror: PM good=400, OL last-op good=999 → fires
-    var desyncTw = computeTripwire_(
-      [{ good: PM_GOOD, scrap: PM_SCRAP, repair: 0, awaitConv: 0, palletId: TEST_PID }],
-      [{ palletId: TEST_PID, opNo: '0010', good: 450, scrap: 0 },
-       { palletId: TEST_PID, opNo: '0020', good: 999, scrap: 0 }]
-    );
-    assert('Tripwire desynced → mismatch fires', desyncTw.mismatch,
-      'pmGood=' + desyncTw.pmGood + ' olLastOp=' + desyncTw.olLastOpGood);
-
-    // (b) By WC: verify distinct pallets count
-    // Use the consistent data to test
-    var testByWc = {};
+    // The public builder filters PL-TEST, so test the aggregation function directly
     var testOlRows = [
-      { palletId: TEST_PID, opNo: '0010', good: 450, scrap: 0, workCenter: 'WC-A' },
-      { palletId: TEST_PID, opNo: '0020', good: 400, scrap: 50, workCenter: 'WC-A' }
+      { palletId: TEST_PID, mo: TEST_MO, opNo: '0010', good: 10, scrap: 1, repair: 0, awaitConv: 0, workCenter: 'WC-X', pdResult: '' },
+      { palletId: TEST_PID, mo: TEST_MO, opNo: '0020', good: 9,  scrap: 0, repair: 1, awaitConv: 0, workCenter: 'WC-Y', pdResult: '' },
+      { palletId: TEST_PID, mo: TEST_MO, opNo: '0030', good: 8,  scrap: 1, repair: 0, awaitConv: 0, workCenter: 'WC-Y', pdResult: '' }
     ];
-    for (var tw2 = 0; tw2 < testOlRows.length; tw2++) {
-      var twc = testOlRows[tw2].workCenter;
+    var testPmByPallet = {};
+    testPmByPallet[TEST_PID] = {
+      palletId: TEST_PID, mo: TEST_MO, material: TEST_MAT, materialName: 'Test',
+      unit: 'PC', scannedDateStr: '2026-06-22', prodDateStr: '2026-06-22',
+      qcResult: 'PASS', qcResultNote: '', qcInspector: '',
+      pmGood: 8, pmScrap: 1, pmRepair: 0, pmAwaitConv: 0, hasPmMirror: true
+    };
+
+    var palletOut = buildPalletOutput_(testOlRows, testPmByPallet);
+    assert('buildPalletOutput_ returns 1 pallet', palletOut.length === 1, 'len=' + palletOut.length);
+
+    var po = palletOut[0];
+    // (a) Good = last op only (0030=8), Scrap = summed (1+0+1=2)
+    assert('Good = 8 (last op only)', po.good === 8, 'got=' + po.good);
+    assert('Scrap = 2 (summed all ops)', po.scrap === 2, 'got=' + po.scrap);
+    assert('Repair = 0 (last op)', po.repair === 0, 'got=' + po.repair);
+    assert('NOT Good=27 (sum of all ops)', po.good !== 27);
+
+    // (b) Pallet appears once
+    assert('1 pallet in output', palletOut.length === 1);
+
+    // (c) By WC: 3 op rows, distinct pallets = 1
+    var testByWc = {};
+    for (var tw = 0; tw < testOlRows.length; tw++) {
+      var twc = testOlRows[tw].workCenter;
       if (!testByWc[twc]) testByWc[twc] = { ops: 0, palletSet: {} };
       testByWc[twc].ops++;
-      testByWc[twc].palletSet[testOlRows[tw2].palletId] = true;
+      testByWc[twc].palletSet[testOlRows[tw].palletId] = true;
     }
-    var wcA = testByWc['WC-A'];
-    assert('By WC: 2 ops but 1 distinct pallet',
-      wcA.ops === 2 && Object.keys(wcA.palletSet).length === 1,
-      'ops=' + wcA.ops + ' pallets=' + Object.keys(wcA.palletSet).length);
+    var totalOps = 0;
+    var totalDistinct = {};
+    Object.keys(testByWc).forEach(function(k) {
+      totalOps += testByWc[k].ops;
+      Object.keys(testByWc[k].palletSet).forEach(function(pid) { totalDistinct[pid] = true; });
+    });
+    assert('By WC: 3 op rows total', totalOps === 3, 'got=' + totalOps);
+    assert('By WC: 1 distinct pallet', Object.keys(totalDistinct).length === 1);
 
-    // Write sheet
+    // (d) Tripwire: consistent mirror → no fire
+    var twOk = computeTripwire_(palletOut, testPmByPallet);
+    assert('Tripwire consistent → no mismatch', !twOk.mismatch,
+      'pmGood=' + twOk.pmGood + ' olGood=' + twOk.olLastOpGood);
+
+    // Tripwire: desync → fires
+    var desyncPm = {};
+    desyncPm[TEST_PID] = {
+      palletId: TEST_PID, pmGood: 999, pmScrap: 0, pmRepair: 0, pmAwaitConv: 0, hasPmMirror: true
+    };
+    var twBad = computeTripwire_(palletOut, desyncPm);
+    assert('Tripwire desynced → fires', twBad.mismatch,
+      'pmGood=' + twBad.pmGood + ' olGood=' + twBad.olLastOpGood);
+
+    // Run full report (production data, excludes PL-TEST)
+    var report = buildYieldQCReport_();
+    assert('buildYieldQCReport_ runs', true);
+    assert('Test material excluded', !report.byMaterial.some(function(m) { return m.material === TEST_MAT; }));
+
+    // (e) Write sheet + verify no percent in qty columns
     writeYieldQCReportSheet_(report);
-    var sh = ss.getSheetByName(YQR_SHEET);
-    assert('YieldQCReport sheet exists', !!sh);
-    assert('YieldQCReport sheet has rows', sh && sh.getLastRow() > 5,
-      'lastRow=' + (sh ? sh.getLastRow() : 0));
-
-    // Metrics types
-    var ov = report.overall;
-    assert('yieldPct is number or null',
-      typeof ov.yieldPct === 'number' || ov.yieldPct === null);
-    assert('fpyPct is number or null',
-      typeof ov.fpyPct === 'number' || ov.fpyPct === null);
+    var rsh = ss.getSheetByName(YQR_SHEET);
+    assert('Sheet exists', !!rsh);
+    assert('Sheet has rows', rsh.getLastRow() > 5);
 
     // Divide-by-zero
     assert('fmtPct_(null) = "-"', fmtPct_(null) === '-');
     assert('pct_(5,0) = null', pct_(5, 0) === null);
 
-    // WC resolver fallback
-    var wcTest = resolveWorkCenter_({ 'GoodQty': 0 }, [100], '', '');
-    assert('resolveWorkCenter_ no ActualMachine = no crash', typeof wcTest === 'string');
-
-    // Lark DRY_RUN
+    // Lark
     var lark = sendYieldQCReportToLark_(report);
     assert('Lark DRY_RUN: sent=false', lark.sent === false);
 
   } catch (e) {
-    assert('test execution', false, e.message + '\n' + e.stack);
+    assert('test execution', false, e.message + '\n' + (e.stack || ''));
   }
 
   // ── Cleanup ──
   try {
-    // Delete PL-TEST rows from PalletMaster
-    var pmAllData = pmSh.getDataRange().getValues();
-    for (var cr = pmAllData.length - 1; cr >= 1; cr--) {
-      if (/^PL-TEST/i.test(String(pmAllData[cr][pmIdx['PalletID']] || '').trim())) {
+    var pmAll = pmSh.getDataRange().getValues();
+    for (var cr = pmAll.length - 1; cr >= 1; cr--) {
+      if (/^PL-TEST/i.test(String(pmAll[cr][pmIdx['PalletID']] || '').trim()))
         pmSh.deleteRow(cr + 1);
-      }
     }
-    // Delete PL-TEST rows from OperationLog
-    var olAllData = olSh.getDataRange().getValues();
-    for (var cr2 = olAllData.length - 1; cr2 >= 1; cr2--) {
-      if (/^PL-TEST/i.test(String(olAllData[cr2][olIdx['PalletID']] || '').trim())) {
+    var olAll = olSh.getDataRange().getValues();
+    for (var cr2 = olAll.length - 1; cr2 >= 1; cr2--) {
+      if (/^PL-TEST/i.test(String(olAll[cr2][olIdx['PalletID']] || '').trim()))
         olSh.deleteRow(cr2 + 1);
-      }
     }
     Logger.log('Cleanup: PL-TEST rows deleted');
   } catch (cleanErr) {
     Logger.log('Cleanup error: ' + cleanErr.message);
   }
 
-  // ── Summary ──
   Logger.log('');
   Logger.log('========================================');
   Logger.log('TEST_yieldQcReport_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
