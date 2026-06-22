@@ -449,78 +449,12 @@
   <button class="btn btn-success" id="btn-confirm" onclick="submitConfirm()">✅ ยืนยันงาน</button>
 </div>
 
-<!-- ═══════════════════════ SECTION 3b: PD INSPECTION ══════════════════════ -->
-<div class="section hidden" id="pd-section">
-  <div class="section-title">🔶 PD สุ่มตรวจ (ไม่บังคับ) — ขั้นตอน <span id="pd-op-label"></span></div>
-  <p style="font-size:13px; color:#7f8c8d; margin-bottom:11px;">
-    PD สามารถสุ่มตรวจได้ — ไม่จำเป็นต้องตรวจทุกพาเลท
-  </p>
-
-  <div class="form-group">
-    <label>ผู้ตรวจสอบ PD *</label>
-    <input type="text" id="pd-inspector" placeholder="ชื่อผู้ตรวจสอบ PD" autocomplete="name">
-  </div>
-
-  <div style="display:flex; gap:10px; margin-bottom:11px;">
-    <button type="button" id="pd-btn-pass" class="btn" onclick="setPdResult('PASS')"
-            style="flex:1; min-height:58px; font-size:16px; background:#27ae60; color:#fff;">
-      ✅ PASS
-    </button>
-    <button type="button" id="pd-btn-fail" class="btn" onclick="setPdResult('FAIL')"
-            style="flex:1; min-height:58px; font-size:16px; background:#e74c3c; color:#fff;">
-      ❌ FAIL
-    </button>
-  </div>
-
-  <div class="form-group hidden" id="pd-note-group">
-    <label id="pd-note-label">หมายเหตุ</label>
-    <input type="text" id="pd-note" placeholder="ระบุสาเหตุ/หมายเหตุ">
-  </div>
-
-  <button class="btn btn-success hidden" id="pd-btn-submit" onclick="submitPdResult()">
-    💾 บันทึกผล PD
-  </button>
-  <button class="btn btn-outline" id="pd-btn-skip" onclick="skipPdInspection()" style="width:100%; margin-top:8px;">
-    ข้ามไป →
-  </button>
-</div>
-
 <!-- ═══════════════════════════ SECTION 4: RESULT ══════════════════════════ -->
 <div class="section hidden" id="result-section">
   <div id="result-icon" class="result-icon"></div>
   <div id="result-title" class="result-title"></div>
   <div id="result-detail" class="result-detail"></div>
   <div id="result-logid" class="result-logid"></div>
-</div>
-
-<!-- ═══════════════════════════ SECTION 5: QC ══════════════════════════════ -->
-<div class="section hidden" id="qc-section">
-  <div class="section-title">🔍 ตรวจสอบคุณภาพ (QC)</div>
-
-  <div class="form-group">
-    <label>ผู้ตรวจสอบ *</label>
-    <input type="text" id="qc-inspector" placeholder="ชื่อผู้ตรวจสอบ" autocomplete="name">
-  </div>
-
-  <div style="display:flex; gap:10px; margin-bottom:11px;">
-    <button type="button" id="qc-btn-pass" class="btn" onclick="setQcResult('PASS')"
-            style="flex:1; min-height:58px; font-size:16px; background:#27ae60; color:#fff;">
-      ✅ PASS
-    </button>
-    <button type="button" id="qc-btn-fail" class="btn" onclick="setQcResult('FAIL')"
-            style="flex:1; min-height:58px; font-size:16px; background:#e74c3c; color:#fff;">
-      ❌ FAIL
-    </button>
-  </div>
-
-  <div class="form-group hidden" id="qc-note-group">
-    <label id="qc-note-label">หมายเหตุ</label>
-    <input type="text" id="qc-note" placeholder="ระบุสาเหตุ/หมายเหตุ">
-  </div>
-
-  <button class="btn btn-success hidden" id="qc-btn-submit" onclick="submitQcResult()">
-    💾 บันทึกผล QC
-  </button>
 </div>
 
 <!-- ═══════════════════════ SECTION: TRANSFER 311 ══════════════════════════ -->
@@ -718,16 +652,10 @@
 var currentPallet        = null;
 var currentOperations    = [];   // routing ops for current pallet's MO: {opNo,opText,workCenter,isFinal}
 var currentOperationLogs = [];   // OperationLog rows for current pallet: {operationNo,status,pdResult,opBy,pdBy,pdNote,timestamp}
-var currentConfirmedOp   = null; // opNo just OP-confirmed, awaiting inline PD inspection
-var currentPdResult      = null; // 'PASS' | 'FAIL' picked in pd-section, before submit
-var currentQcResult      = null;
 var currentAllOpsConfirmed = false; // server flag from lookupPallet — every routing op has an OP confirm
-var currentQcDone        = false;   // server flag from lookupPallet — pallet.QCStatus === 'INSPECTED'
 var pendingOpNo          = '';   // set by submitConfirm() just before the RPC, read by onConfirmResult()
-var pendingOpLabel       = '';
 var html5QrCode          = null;  // Html5Qrcode instance — reused for every scanFile()
 var autoResetTimer       = null; // pending setTimeout id for auto-return-to-scan, or null
-var autoResetArmed       = false; // set just before a refreshPallet() that should auto-reset once it re-renders, if idle
 
 // ============================================================
 // Init
@@ -871,9 +799,7 @@ function doLookup(palletId) {
   hide('pallet-section');
   hide('timeline-section');
   hide('form-section');
-  hide('pd-section');
   hide('result-section');
-  hide('qc-section');
   hide('next-scan-section');
   hide('transfer-section');
   hide('transfer-result-section');
@@ -889,21 +815,10 @@ function doLookup(palletId) {
     .lookupPallet(palletId);
 }
 
-// Re-fetch the current pallet (after a PD save) and re-render without losing place.
-// preserveMsg=true keeps the PD PASS/FAIL banner just shown by onPdResult() on screen
-// instead of letting the generic status banner below overwrite it mid-flight.
-function refreshPallet() {
-  if (!currentPallet) return;
-  google.script.run
-    .withSuccessHandler(function (result) { applyLookupResult(result, { scroll: false, preserveMsg: true }); })
-    .withFailureHandler(function () { /* keep current view on transient network failure */ })
-    .lookupPallet(currentPallet.PalletID);
-}
-
-// Single render path used by both the initial scan lookup and post-PD refresh.
+// Single render path for scan lookup.
 function applyLookupResult(result, opts) {
   opts = opts || {};
-  if (!opts.preserveMsg) clearMsg();
+  clearMsg();
   if (!result.found) {
     showMsg('error', '❌ ' + (result.error || 'ไม่พบพาเลท'));
     return;
@@ -912,9 +827,7 @@ function applyLookupResult(result, opts) {
   currentPallet           = result.pallet;
   currentOperations       = result.operations    || [];
   currentOperationLogs    = result.operationLogs || [];
-  currentQcResult         = null;
   currentAllOpsConfirmed  = !!result.allOpsConfirmed;
-  currentQcDone           = !!result.qcDone;
 
   renderPalletCard(currentPallet);
   show('pallet-section');
@@ -931,28 +844,20 @@ function applyLookupResult(result, opts) {
   document.getElementById('f-unit-ref').textContent = currentPallet.Unit || 'PCS';
   recalcYield();
 
-  hide('pd-section');
   hide('result-section');
 
   updateFormVisibility(nextOpNo);
-  if (!opts.preserveMsg) showPalletStatus(currentPallet);
-  updateQcVisibility();
+  showPalletStatus(currentPallet);
 
   show('next-scan-section');
 
   if (opts.scroll) {
     document.getElementById('pallet-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-
-  if (autoResetArmed) {
-    autoResetArmed = false;
-    maybeAutoReset();
-  }
 }
 
 // ============================================================
-// Pallet status banner — informational only; form/QC visibility is owned
-// by updateFormVisibility() / updateQcVisibility() so they don't fight here.
+// Pallet status banner — informational only.
 // ============================================================
 function showPalletStatus(p) {
   var lines = [];
@@ -1048,17 +953,6 @@ function updateFormVisibility(nextOperationNo) {
   if (currentAllOpsConfirmed) { hide('form-section'); return; }
   if (!currentOperations.length) { show('form-section'); return; }
   if (nextOperationNo) { show('form-section'); } else { hide('form-section'); }
-}
-
-// QC inspects the whole pallet only once every operation has an OP confirm.
-// PD result is optional sampling and is NOT required to unlock QC.
-// currentAllOpsConfirmed / currentQcDone come from lookupPallet (server) —
-// using them here instead of re-deriving from currentOperations/
-// currentOperationLogs keeps this in lockstep with the backend's gate.
-function updateQcVisibility() {
-  if (!currentPallet) { hide('qc-section'); return; }
-  if (currentQcDone) { hide('qc-section'); return; }
-  if (currentAllOpsConfirmed) { showQcSectionIfNeeded(); } else { hide('qc-section'); }
 }
 
 // ============================================================
@@ -1198,8 +1092,7 @@ function submitConfirm() {
   var opText  = hasOp ? (selOp.options[selOp.selectedIndex].dataset.opText  || '') : '';
   var isFinal = hasOp && selOp.options[selOp.selectedIndex].dataset.isFinal === 'true';
 
-  pendingOpNo    = opNo;
-  pendingOpLabel = hasOp ? selOp.options[selOp.selectedIndex].textContent : opNo;
+  pendingOpNo = opNo;
 
   clearMsg();
   showMsg('info', '⏳ กำลังบันทึก…');
@@ -1229,19 +1122,17 @@ function onConfirmResult(result) {
 
   if (!result.success) {
     showMsg('error', '❌ ' + (result.message || 'เกิดข้อผิดพลาด'));
-    return; // form/pallet card stay visible so the operator can fix and retry
+    return;
   }
 
   hide('form-section');
 
   document.getElementById('result-icon').textContent   = '✅';
   document.getElementById('result-title').textContent  = 'บันทึกงานสำเร็จ';
-  document.getElementById('result-detail').textContent = result.message || '';
+  document.getElementById('result-detail').textContent = 'บันทึกครบแล้ว — รอหัวหน้างาน/QC ตรวจ';
   document.getElementById('result-logid').textContent  = result.logId ? 'LogID: ' + result.logId : '';
   show('result-section');
 
-  // Reflect this OP confirm locally (PD hasn't run yet) so the timeline,
-  // dropdown, and QC gate update immediately without needing a rescan.
   if (pendingOpNo) {
     currentOperationLogs = currentOperationLogs.filter(function (l) { return l.operationNo !== pendingOpNo; });
     currentOperationLogs.push({
@@ -1256,219 +1147,22 @@ function onConfirmResult(result) {
 
     var nextOp = renderTimeline(currentOperations, currentOperationLogs);
     populateOpsDropdown(currentOperations, currentOperationLogs, nextOp);
-
-    currentConfirmedOp = pendingOpNo;
-    document.getElementById('pd-op-label').textContent = pendingOpLabel;
-    resetPdSection();
-    show('pd-section');
-    document.getElementById('pd-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  } else {
-    document.getElementById('result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  // QC unlocks once every operation has an OP confirm — PD is not required.
-  // Sync the server-derived gate flag here too, since this came from
-  // confirmScan() rather than a fresh lookupPallet() call.
+  document.getElementById('result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
   currentAllOpsConfirmed = !!result.allOperationsDone;
   if (result.allOperationsDone) {
     if (currentPallet) currentPallet.ScanStatus = 'PD_COMPLETE';
-    showMsg('success', '✅ ครบทุกขั้นตอน — พร้อมให้ QC ตรวจ');
-    updateQcVisibility();
+    showMsg('success', '✅ ครบทุกขั้นตอน — รอหัวหน้างาน/QC ตรวจ');
   }
 
   show('next-scan-section');
-
-  // Only auto-resets when nothing needs the operator's attention right now
-  // (e.g. no routing/PD step) — never while the inline PD section is shown.
   maybeAutoReset();
 }
 
 // ============================================================
-// PD inspection (inline, right after OP confirms an operation)
-// ============================================================
-function resetPdSection() {
-  currentPdResult = null;
-  document.getElementById('pd-inspector').value = '';
-  document.getElementById('pd-note').value = '';
-  hide('pd-note-group');
-
-  var btnSubmit = document.getElementById('pd-btn-submit');
-  btnSubmit.classList.add('hidden');
-  btnSubmit.disabled    = false;
-  btnSubmit.textContent = '💾 บันทึกผล PD';
-
-  var btnPass = document.getElementById('pd-btn-pass');
-  var btnFail = document.getElementById('pd-btn-fail');
-  btnPass.disabled = false; btnPass.style.opacity = '1';
-  btnFail.disabled = false; btnFail.style.opacity = '1';
-}
-
-function setPdResult(result) {
-  currentPdResult = result;
-  document.getElementById('pd-btn-pass').style.opacity = result === 'PASS' ? '1' : '0.4';
-  document.getElementById('pd-btn-fail').style.opacity = result === 'FAIL' ? '1' : '0.4';
-
-  var noteLabel = document.getElementById('pd-note-label');
-  noteLabel.textContent = result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุเพิ่มเติม (ถ้ามี)';
-  show('pd-note-group');
-  document.getElementById('pd-btn-submit').classList.remove('hidden');
-}
-
-function submitPdResult() {
-  if (!currentPallet || !currentConfirmedOp) return;
-  if (!currentPdResult) { showMsg('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
-
-  var inspector = document.getElementById('pd-inspector').value.trim();
-  var note      = document.getElementById('pd-note').value.trim();
-
-  if (!inspector) { showMsg('error', 'กรุณากรอกชื่อผู้ตรวจสอบ PD'); return; }
-  if (currentPdResult === 'FAIL' && !note) { showMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน'); return; }
-
-  var btn = document.getElementById('pd-btn-submit');
-  btn.disabled    = true;
-  btn.textContent = '⏳ กำลังบันทึก...';
-
-  google.script.run
-    .withSuccessHandler(onPdResult)
-    .withFailureHandler(function (err) {
-      btn.disabled    = false;
-      btn.textContent = '💾 บันทึกผล PD';
-      showMsg('error', '❌ บันทึก PD ไม่สำเร็จ: ' + (err.message || String(err)));
-    })
-    .savePdInspection({
-      palletId:    currentPallet.PalletID,
-      operationNo: currentConfirmedOp,
-      result:      currentPdResult,
-      inspector:   inspector,
-      note:        note
-    });
-}
-
-function onPdResult(result) {
-  var btn = document.getElementById('pd-btn-submit');
-  if (!result.success) {
-    btn.disabled    = false;
-    btn.textContent = '💾 บันทึกผล PD';
-    showMsg('error', '❌ ' + (result.message || 'บันทึก PD ไม่สำเร็จ'));
-    return;
-  }
-
-  btn.textContent = '✅ บันทึกแล้ว';
-  document.getElementById('pd-btn-pass').disabled = true;
-  document.getElementById('pd-btn-fail').disabled = true;
-
-  if (result.result === 'PASS') {
-    showMsg('success', result.allOperationsDone
-      ? '🎉 ครบทุกขั้นตอน — รอ QC ตรวจสอบ'
-      : '✅ PD ผ่าน — พร้อมไปขั้นตอนถัดไป');
-  } else {
-    showMsg('error', '❌ PD ไม่ผ่าน — แก้ไขงานแล้วสแกนใหม่');
-  }
-
-  currentConfirmedOp = null;
-  hide('pd-section');
-  autoResetArmed = true;
-  refreshPallet();
-}
-
-// PD is optional random sampling — let the operator skip it and move on
-// without inspecting this operation. Doesn't touch the server; the
-// OperationLog row already exists from confirmScan() with PDResult blank.
-function skipPdInspection() {
-  currentConfirmedOp = null;
-  hide('pd-section');
-  updateQcVisibility();
-  maybeAutoReset();
-}
-
-// ============================================================
-// QC section
-// ============================================================
-function showQcSectionIfNeeded() {
-  if (!currentPallet || currentPallet.QCStatus === 'INSPECTED') { hide('qc-section'); return; }
-
-  currentQcResult = null;
-  document.getElementById('qc-inspector').value = document.getElementById('f-operator').value || '';
-  document.getElementById('qc-note').value = '';
-  hide('qc-note-group');
-
-  var btnSubmit = document.getElementById('qc-btn-submit');
-  btnSubmit.classList.add('hidden');
-  btnSubmit.disabled    = false;
-  btnSubmit.textContent = '💾 บันทึกผล QC';
-
-  var btnPass = document.getElementById('qc-btn-pass');
-  var btnFail = document.getElementById('qc-btn-fail');
-  btnPass.disabled = false; btnPass.style.opacity = '1';
-  btnFail.disabled = false; btnFail.style.opacity = '1';
-
-  show('qc-section');
-}
-
-function setQcResult(result) {
-  currentQcResult = result;
-  document.getElementById('qc-btn-pass').style.opacity = result === 'PASS' ? '1' : '0.4';
-  document.getElementById('qc-btn-fail').style.opacity = result === 'FAIL' ? '1' : '0.4';
-
-  var noteLabel = document.getElementById('qc-note-label');
-  noteLabel.textContent = result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุเพิ่มเติม (ถ้ามี)';
-  show('qc-note-group');
-  document.getElementById('qc-btn-submit').classList.remove('hidden');
-}
-
-function submitQcResult() {
-  if (!currentPallet) return;
-  if (!currentQcResult) { showMsg('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
-
-  var inspector = document.getElementById('qc-inspector').value.trim();
-  var note      = document.getElementById('qc-note').value.trim();
-
-  if (!inspector) { showMsg('error', 'กรุณากรอกชื่อผู้ตรวจสอบ'); return; }
-  if (currentQcResult === 'FAIL' && !note) { showMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน'); return; }
-
-  var btn = document.getElementById('qc-btn-submit');
-  btn.disabled    = true;
-  btn.textContent = '⏳ กำลังบันทึก...';
-
-  google.script.run
-    .withSuccessHandler(onQcResult)
-    .withFailureHandler(function (err) {
-      btn.disabled    = false;
-      btn.textContent = '💾 บันทึกผล QC';
-      showMsg('error', '❌ บันทึก QC ไม่สำเร็จ: ' + (err.message || String(err)));
-    })
-    .saveQcResult({
-      palletId:  currentPallet.PalletID,
-      result:    currentQcResult,
-      inspector: inspector,
-      note:      note
-    });
-}
-
-function onQcResult(result) {
-  var btn = document.getElementById('qc-btn-submit');
-  if (!result.success) {
-    btn.disabled    = false;
-    btn.textContent = '💾 บันทึกผล QC';
-    showMsg('error', '❌ ' + (result.message || 'บันทึก QC ไม่สำเร็จ'));
-    return;
-  }
-
-  showMsg('success', '✅ ' + (result.message || 'บันทึก QC สำเร็จ'));
-  btn.textContent = '✅ บันทึกแล้ว';
-  document.getElementById('qc-btn-pass').disabled = true;
-  document.getElementById('qc-btn-fail').disabled = true;
-  autoResetArmed = true;
-  refreshPallet(); // pulls fresh QCStatus/ScanStatus so the chip + banner show QC_COMPLETE and the form hides
-}
-
-// ============================================================
-// Auto-return to scan screen — fires once the screen has reached an idle
-// state with nothing left for the operator to act on (no pending OP form,
-// PD section, or QC section). Never fires while the optional inline PD
-// section is showing, so PD sampling right after an OP confirm is never
-// cut off. An explicit "สแกนพาเลทถัดไป" tap always works immediately
-// without waiting for the timer.
+// Auto-return to scan screen — fires once the OP form is no longer visible.
 // ============================================================
 function scheduleAutoReset(delayMs) {
   cancelAutoReset();
@@ -1486,9 +1180,7 @@ function cancelAutoReset() {
 function maybeAutoReset() {
   if (currentMode === 'qc') return;
   var formVisible = !document.getElementById('form-section').classList.contains('hidden');
-  var pdVisible   = !document.getElementById('pd-section').classList.contains('hidden');
-  var qcVisible   = !document.getElementById('qc-section').classList.contains('hidden');
-  if (!formVisible && !pdVisible && !qcVisible) {
+  if (!formVisible) {
     scheduleAutoReset(3000);
   }
 }
@@ -1501,9 +1193,7 @@ function resetScanner() {
   hide('pallet-section');
   hide('timeline-section');
   hide('form-section');
-  hide('pd-section');
   hide('result-section');
-  hide('qc-section');
   hide('next-scan-section');
   hide('transfer-section');
   hide('transfer-result-section');
@@ -1514,13 +1204,8 @@ function resetScanner() {
   currentPallet        = null;
   currentOperations    = [];
   currentOperationLogs = [];
-  currentConfirmedOp   = null;
-  currentPdResult      = null;
-  currentQcResult      = null;
   currentAllOpsConfirmed = false;
-  currentQcDone        = false;
   pendingOpNo          = '';
-  pendingOpLabel       = '';
   document.getElementById('manual-id').value     = '';
   document.getElementById('img-preview').src     = '';
   document.getElementById('qr-input-file').value = '';
@@ -1603,9 +1288,7 @@ function doTransferLookup(txnId) {
   hide('pallet-section');
   hide('timeline-section');
   hide('form-section');
-  hide('pd-section');
   hide('result-section');
-  hide('qc-section');
   hide('next-scan-section');
   hide('transfer-section');
   hide('transfer-result-section');
@@ -1765,7 +1448,7 @@ var countScanTotal    = 0;
 var countQrListenerAttached = false;
 var countRpcTimer     = null;
 
-// QC mode (qcm) — separate from inline #pd-section / #qc-section
+// QC mode (qcm) — standalone inspection mode for supervisor/QC
 var qcmPallet              = null;
 var qcmPalletId            = null;
 var qcmOps                 = [];
@@ -1810,9 +1493,7 @@ function switchMode(mode) {
     hide('pallet-section');
     hide('timeline-section');
     hide('form-section');
-    hide('pd-section');
     hide('result-section');
-    hide('qc-section');
     hide('next-scan-section');
     hide('transfer-section');
     hide('transfer-result-section');
@@ -1835,9 +1516,7 @@ function switchMode(mode) {
     hide('pallet-section');
     hide('timeline-section');
     hide('form-section');
-    hide('pd-section');
     hide('result-section');
-    hide('qc-section');
     hide('next-scan-section');
     hide('transfer-section');
     hide('transfer-result-section');
