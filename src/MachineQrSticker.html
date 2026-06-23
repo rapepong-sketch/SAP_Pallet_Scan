@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>QR เครื่องจักร – พร้อมพิมพ์</title>
+<style>
+  @page { size: A4; margin: 8mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Sarabun', 'Noto Sans Thai', Arial, sans-serif; }
+
+  .header {
+    text-align: center;
+    padding: 6px 0 8px;
+    font-size: 11pt;
+    color: #333;
+    border-bottom: 1px solid #ccc;
+    margin-bottom: 6px;
+  }
+  .header strong { font-size: 13pt; }
+  .header .sub { font-size: 9pt; color: #888; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0;
+  }
+
+  .cell {
+    border: 0.5px solid #ccc;
+    padding: 3px;
+    text-align: center;
+    height: 38mm;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    break-inside: avoid;
+  }
+  .cell img { width: 80px; height: 80px; }
+  .cell .mname {
+    font-size: 9pt;
+    line-height: 1.2;
+    margin-top: 2px;
+    max-height: 2.6em;
+    overflow: hidden;
+    word-break: break-word;
+  }
+  .cell .mcodes {
+    font-size: 7pt;
+    color: #555;
+    margin-top: 1px;
+    white-space: nowrap;
+  }
+
+  .btn-bar { text-align: center; padding: 10px 0; }
+  .btn-bar button {
+    font-size: 14pt; padding: 8px 32px; cursor: pointer;
+    border: none; border-radius: 6px;
+    background: #1a4e8a; color: #fff; font-family: inherit; font-weight: bold;
+  }
+  @media print { .btn-bar { display: none; } .header { border-bottom: none; } }
+</style>
+</head>
+<body>
+
+<div class="btn-bar">
+  <button onclick="window.print()">🖨️ พิมพ์</button>
+</div>
+
+<div class="header">
+  <strong>QR เครื่องจักร — PJ Chonburi</strong><br>
+  <span class="sub" id="header-sub"></span>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<script>
+var MACHINES = [];
+var FILTER_DEPT = '';
+var GENERATED_AT = '';
+
+function init(machines, dept, generatedAt) {
+  MACHINES = machines || [];
+  FILTER_DEPT = dept || '';
+  GENERATED_AT = generatedAt || '';
+
+  var sub = 'สร้างเมื่อ ' + GENERATED_AT + '  |  จำนวน ' + MACHINES.length + ' เครื่อง';
+  if (FILTER_DEPT) sub += '  |  แผนก: ' + FILTER_DEPT;
+  document.getElementById('header-sub').textContent = sub;
+
+  var grid = document.getElementById('grid');
+  grid.innerHTML = '';
+
+  for (var i = 0; i < MACHINES.length; i++) {
+    var m = MACHINES[i];
+    var qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=' + encodeURIComponent('M:' + m.code);
+
+    var cell = document.createElement('div');
+    cell.className = 'cell';
+    cell.innerHTML =
+      '<img src="' + qrUrl + '" alt="' + esc(m.code) + '">' +
+      '<div class="mname">' + esc(m.name) + '</div>' +
+      '<div class="mcodes">' + esc(m.code) + '  │  ' + esc(m.sapWC) + '</div>';
+    grid.appendChild(cell);
+  }
+}
+
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>

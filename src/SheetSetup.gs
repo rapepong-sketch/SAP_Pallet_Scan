@@ -25,7 +25,9 @@ function onOpen() {
     .addItem('📅 รายงานตามวันที่',                         'reportPickDateDialog')
     .addSeparator()
     .addItem('📊 รายงาน Yield/QC',                         'yieldQcReportTodayDialog')
-    .addItem('📅 รายงาน Yield/QC ตามวันที่',               'yieldQcReportDateDialog');
+    .addItem('📅 รายงาน Yield/QC ตามวันที่',               'yieldQcReportDateDialog')
+    .addSeparator()
+    .addItem('🏷️ พิมพ์ QR เครื่องจักร',                    'generateMachineQrStickers');
 
   // ── ⚙ ตั้งค่า / ซิงค์ ──────────────────────────────────────────────────
   const larkMenu = ui.createMenu('🔔 Lark Notify')

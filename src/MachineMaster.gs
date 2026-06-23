@@ -191,6 +191,95 @@ function lookupMachine_(code) {
 }
 
 // ============================================================================
+// QR Sticker — printable A4 sheets for all active machines
+// ============================================================================
+
+/**
+ * Return active machines for QR sticker generation.
+ * @param {string} dept — filter by Department; '' or 'ALL' = all departments
+ * @return {{machines: Array<{code,name,sapWC,dept}>, count: number, dept: string}}
+ */
+function getMachinesForSticker_(dept) {
+  dept = String(dept || '').trim().toUpperCase();
+  if (dept === 'ALL') dept = '';
+
+  var sh = getSpreadsheet_().getSheetByName(MCH_SHEET);
+  if (!sh || sh.getLastRow() < 2) return { machines: [], count: 0, dept: dept };
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var machines = [];
+  for (var r = 1; r < data.length; r++) {
+    var code = String(data[r][idx['MachineCode']] == null ? '' : data[r][idx['MachineCode']]).trim();
+    if (!code) continue;
+
+    var activeRaw = data[r][idx['Active']];
+    if (activeRaw === false || String(activeRaw || '').trim().toUpperCase() === 'FALSE') continue;
+
+    var rowDept = String(data[r][idx['Department']] == null ? '' : data[r][idx['Department']]).trim();
+    if (dept && rowDept.toUpperCase() !== dept) continue;
+
+    machines.push({
+      code:  code,
+      name:  String(data[r][idx['MachineName']] == null ? '' : data[r][idx['MachineName']]).trim(),
+      sapWC: _normSapWc_(data[r][idx['SAPWorkCenter']]),
+      dept:  rowDept
+    });
+  }
+
+  machines.sort(function(a, b) {
+    if (a.dept < b.dept) return -1;
+    if (a.dept > b.dept) return 1;
+    if (a.code < b.code) return -1;
+    if (a.code > b.code) return 1;
+    return 0;
+  });
+
+  return JSON.parse(JSON.stringify({ machines: machines, count: machines.length, dept: dept }));
+}
+
+/**
+ * Menu handler: prompt for dept, then open printable QR sticker dialog.
+ */
+function generateMachineQrStickers() {
+  var ui = SpreadsheetApp.getUi();
+  var resp = ui.prompt('🏷️ QR เครื่องจักร',
+    'พิมพ์ทั้งหมด = ALL (หรือเว้นว่าง)\nหรือใส่รหัสแผนก เช่น 1CC, 4PF:',
+    ui.ButtonSet.OK_CANCEL);
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+
+  var deptInput = resp.getResponseText().trim();
+  var result = getMachinesForSticker_(deptInput);
+
+  if (result.count === 0) {
+    ui.alert('ไม่พบเครื่องจักร' + (result.dept ? ' ในแผนก ' + result.dept : ''));
+    return;
+  }
+
+  var now = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm');
+
+  var tpl = HtmlService.createTemplateFromFile('MachineQrSticker');
+  var htmlOut = tpl.evaluate()
+    .setWidth(794)
+    .setHeight(1123)
+    .setTitle('QR เครื่องจักร – พร้อมพิมพ์');
+
+  var initScript = '<script>init(' +
+    JSON.stringify(result.machines) + ',' +
+    JSON.stringify(result.dept) + ',' +
+    JSON.stringify(now) + ');</script>';
+  htmlOut.append(initScript);
+
+  ui.showModelessDialog(htmlOut, 'QR เครื่องจักร – ' + result.count + ' เครื่อง');
+
+  logEvent('MACHINE_QR_STICKER', MCH_SHEET, 'OK', 0,
+    'count=' + result.count + ' dept=' + (result.dept || 'ALL'));
+}
+
+// ============================================================================
 // Server API for Scanner.html — google.script.run
 // ============================================================================
 
@@ -384,6 +473,66 @@ function TEST_machineMasterReader() {
   Logger.log('');
   Logger.log('========================================');
   Logger.log('TEST_machineMasterReader: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
+  Logger.log('========================================');
+  for (var si = 0; si < results.length; si++) {
+    Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
+      (results[si].detail ? ' (' + results[si].detail + ')' : ''));
+  }
+}
+
+// ============================================================================
+// TEST — Machine QR Sticker
+// ============================================================================
+
+function TEST_machineQrSticker_() {
+  var results = [];
+  var pass    = true;
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    if (!ok) pass = false;
+    Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
+  }
+
+  // (a) all active machines
+  var all = getMachinesForSticker_('');
+  assert('(a) returns array', Array.isArray(all.machines), 'type=' + typeof all.machines);
+  assert('(a) count matches length', all.count === all.machines.length,
+    'count=' + all.count + ' len=' + all.machines.length);
+  assert('(a) count > 0', all.count > 0, 'count=' + all.count);
+
+  if (all.machines.length > 0) {
+    var m0 = all.machines[0];
+    assert('(a) has code', typeof m0.code === 'string' && m0.code.length > 0, 'code=' + m0.code);
+    assert('(a) has name', typeof m0.name === 'string', 'name=' + m0.name);
+    assert('(a) has sapWC', typeof m0.sapWC === 'string', 'sapWC=' + m0.sapWC);
+    assert('(a) has dept', typeof m0.dept === 'string', 'dept=' + m0.dept);
+    assert('(a) code matches /^[A-Z]/', /^[A-Z]/.test(m0.code), 'code=' + m0.code);
+  }
+
+  var serialized = JSON.parse(JSON.stringify(all));
+  assert('(a) JSON serializable', serialized.count === all.count);
+
+  // (b) filter by dept '1CC'
+  var cc = getMachinesForSticker_('1CC');
+  assert('(b) 1CC returns array', Array.isArray(cc.machines));
+  assert('(b) 1CC count > 0', cc.count > 0, 'count=' + cc.count);
+  var allCc = cc.machines.every(function(m) { return m.dept === '1CC'; });
+  assert('(b) all dept=1CC', allCc, 'first dept=' + (cc.machines[0] ? cc.machines[0].dept : ''));
+
+  // (c) unknown dept → empty
+  var zz = getMachinesForSticker_('ZZZ');
+  assert('(c) ZZZ returns empty', zz.count === 0, 'count=' + zz.count);
+
+  // (d) QR URL for APS001
+  var expectedUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=M%3AAPS001';
+  var builtUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=' + encodeURIComponent('M:APS001');
+  assert('(d) QR URL correct', builtUrl === expectedUrl, 'got=' + builtUrl);
+
+  Logger.log('');
+  Logger.log('========================================');
+  Logger.log('TEST_machineQrSticker_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
   Logger.log('========================================');
   for (var si = 0; si < results.length; si++) {
     Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
