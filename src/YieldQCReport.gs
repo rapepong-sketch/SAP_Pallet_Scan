@@ -648,35 +648,83 @@ function buildYieldQCReportText_(report) {
 }
 
 // ============================================================================
-// Lark — DRY_RUN only
+// Lark — QC room webhook (LARK_WEBHOOK_URL_QC, NOT production webhook)
 // ============================================================================
 
+function buildYieldQcLarkCard_(report) {
+  var ov  = report.overall;
+  var tw  = report.tripwire;
+  var inv = report.invariantTripwire;
+  var lines = [];
+
+  lines.push('📊 สรุป Yield + QC ประจำวัน');
+  lines.push('📅 ' + report.generatedAt);
+  lines.push('────────────────');
+  lines.push('Yield: ' + fmtPct_(ov.yieldPct) + '  FPY: ' + fmtPct_(ov.fpyPct) + '  Scrap: ' + fmtPct_(ov.scrapPct));
+  lines.push('Good=' + ov.good + '  Scrap=' + ov.scrap + '  Total=' + ov.total);
+  lines.push('');
+  lines.push('QC Pass Rate: ' + fmtPct_(ov.qcPassRate) + ' (' + ov.qcPass + '/' + (ov.qcPass + ov.qcFail) + ')');
+  lines.push('QC Coverage: ' + fmtPct_(ov.qcCoverage) + ' (' + ov.qcTotal + '/' + ov.palletTotal + ')');
+  lines.push('PD Coverage: ' + fmtPct_(ov.pdCoverage) + ' (' + ov.pdInspected + '/' + ov.pdTotal + ')');
+
+  if (tw.mismatch) {
+    lines.push('');
+    lines.push('⚠️ MIRROR MISMATCH: PM Good=' + tw.pmGood + ' vs OL=' + tw.olLastOpGood);
+  }
+  if (inv.count > 0) {
+    lines.push('');
+    lines.push('⚠️ INVARIANT ≠ QtyPerPallet: ' + inv.count + ' พาเลท');
+    var showInv = Math.min(inv.violators.length, 5);
+    for (var vi = 0; vi < showInv; vi++) {
+      var v = inv.violators[vi];
+      lines.push('  ' + v.palletId + ': ' + v.total + '/' + v.expected);
+    }
+  }
+
+  if (report.failPallets.length > 0) {
+    lines.push('');
+    lines.push('❌ QC FAIL: ' + report.failPallets.length + ' พาเลท');
+    var showFail = Math.min(report.failPallets.length, 5);
+    for (var fi = 0; fi < showFail; fi++) {
+      var fp = report.failPallets[fi];
+      lines.push('  ' + fp.palletId + ' — ' + (fp.note || '-'));
+    }
+  } else {
+    lines.push('');
+    lines.push('✅ QC FAIL: 0');
+  }
+
+  lines.push('');
+  lines.push('— PJ Chonburi Pallet System');
+  return lines.join('\n');
+}
+
 function sendYieldQCReportToLark_(report) {
-  var text = buildYieldQCReportText_(report) + '\n— PJ Chonburi Pallet System';
-  var flag = PropertiesService.getScriptProperties()
-    .getProperty('REPORT_LARK_QC') || 'DRY_RUN';
+  var props      = PropertiesService.getScriptProperties();
+  var flag       = props.getProperty('REPORT_LARK_QC') || 'DRY_RUN';
+  var webhookUrl = (props.getProperty('LARK_WEBHOOK_URL_QC') || '').trim();
+  var secret     = (props.getProperty('LARK_QC_SECRET') || '').trim();
 
-  var webhookUrl = (PropertiesService.getScriptProperties()
-    .getProperty('LARK_WEBHOOK_URL_QC') || '').trim();
-  var secret = (PropertiesService.getScriptProperties()
-    .getProperty('LARK_QC_SECRET') || '').trim();
-
+  var text      = buildYieldQcLarkCard_(report);
   var timestamp = Math.floor(Date.now() / 1000);
-  var payload = { msg_type: 'text', content: { text: text } };
+  var payload   = { msg_type: 'text', content: { text: text } };
+  var signed    = false;
   if (secret) {
     payload.timestamp = String(timestamp);
     payload.sign      = larkSign_(timestamp, secret);
+    signed = true;
   }
 
   if (flag !== 'LIVE') {
     logEvent('LARK_QC[DRY_RUN]', 'YieldQCReport', 'SKIPPED', 0,
-      'flag=' + flag + ' payload=' + JSON.stringify(payload).slice(0, 400));
-    return { sent: false, flag: flag };
+      'flag=' + flag + ' signed=' + signed + ' payload=' + JSON.stringify(payload).slice(0, 400));
+    return { sent: false, flag: flag, signed: signed };
   }
 
   if (!webhookUrl) {
-    logEvent('LARK_QC', 'YieldQCReport', 'SKIP_NO_URL', 0, 'LARK_WEBHOOK_URL_QC not set');
-    return { sent: false, flag: flag };
+    logEvent('LARK_QC', 'YieldQCReport', 'ABORT_NO_URL', 0,
+      'LARK_WEBHOOK_URL_QC not set — no fallback to production webhook');
+    return { sent: false, flag: flag, error: 'NO_URL', signed: signed };
   }
 
   var resp = UrlFetchApp.fetch(webhookUrl, {
@@ -685,8 +733,8 @@ function sendYieldQCReportToLark_(report) {
   });
   var code = resp.getResponseCode();
   logEvent('LARK_QC', 'YieldQCReport', code, 0,
-    'sent len=' + text.length + ' resp=' + resp.getContentText().slice(0, 200));
-  return { sent: true, flag: flag };
+    'sent len=' + text.length + ' signed=' + signed + ' resp=' + resp.getContentText().slice(0, 200));
+  return { sent: true, flag: flag, httpCode: code, signed: signed };
 }
 
 // ============================================================================
@@ -698,7 +746,9 @@ function yieldQcReportTodayDialog() {
   writeYieldQCReportSheet_(report);
   var lark = sendYieldQCReportToLark_(report);
   var text = buildYieldQCReportText_(report);
-  var larkNote = lark.sent ? '' : '\n\n(Lark: DRY_RUN — ไม่ได้ส่ง)';
+  var larkNote = lark.sent ? '\n\n(Lark QC: ส่งแล้ว ✅)' :
+                 lark.error === 'NO_URL' ? '\n\n(Lark QC: ⚠️ LARK_WEBHOOK_URL_QC ยังไม่ตั้ง)' :
+                 '\n\n(Lark QC: DRY_RUN — ไม่ได้ส่ง)';
   SpreadsheetApp.getUi().alert('Yield + QC Report', text + larkNote,
     SpreadsheetApp.getUi().ButtonSet.OK);
   logEvent('YIELD_QC_REPORT', YQR_SHEET, 'OK', 0,
@@ -726,6 +776,73 @@ function yieldQcReportDateDialog() {
   ui.alert('Yield + QC Report' + (dateStr ? ' — ' + dateStr : ''), text, ui.ButtonSet.OK);
   logEvent('YIELD_QC_REPORT', YQR_SHEET, 'OK', 0,
     'date=' + (dateStr || 'ALL') + ' pallets=' + report.palletCount);
+}
+
+// ============================================================================
+// Gate toggle + daily 18:00 trigger — QC room
+// ============================================================================
+
+function toggleReportLarkQcDialog() {
+  var ui    = SpreadsheetApp.getUi();
+  var props = PropertiesService.getScriptProperties();
+  var flag  = props.getProperty('REPORT_LARK_QC') || 'DRY_RUN';
+
+  var resp = ui.alert('Lark QC Report — สถานะ: [' + flag + ']',
+    flag === 'LIVE'
+      ? 'ตอนนี้ LIVE อยู่ — จะเปลี่ยนเป็น DRY_RUN?'
+      : 'ตอนนี้ DRY_RUN — จะเปลี่ยนเป็น LIVE?\n⚠️ LIVE จะส่งข้อความจริงเข้าห้อง QC',
+    ui.ButtonSet.OK_CANCEL);
+  if (resp !== ui.Button.OK) return;
+
+  var newFlag = flag === 'LIVE' ? 'DRY_RUN' : 'LIVE';
+  props.setProperty('REPORT_LARK_QC', newFlag);
+  ui.alert('เปลี่ยนเป็น [' + newFlag + '] แล้ว');
+  logEvent('LARK_QC_FLAG', 'YieldQCReport', 'OK', 0, flag + ' → ' + newFlag);
+}
+
+function installYieldQcDailyTrigger() {
+  var ui = SpreadsheetApp.getUi();
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'yieldQcDailyTriggerHandler') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('yieldQcDailyTriggerHandler')
+    .timeBased()
+    .atHour(18)
+    .everyDays(1)
+    .inTimezone('Asia/Bangkok')
+    .create();
+  ui.alert('ตั้งส่ง Yield/QC อัตโนมัติ 18:00 ทุกวันแล้ว');
+  logEvent('LARK_QC_TRIGGER', 'YieldQCReport', 'OK', 0, 'installed 18:00');
+}
+
+function removeYieldQcDailyTrigger() {
+  var ui = SpreadsheetApp.getUi();
+  var removed = 0;
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'yieldQcDailyTriggerHandler') {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed++;
+    }
+  }
+  ui.alert(removed ? 'ลบ trigger Yield/QC แล้ว (' + removed + ')' : 'ไม่พบ trigger');
+  logEvent('LARK_QC_TRIGGER', 'YieldQCReport', 'OK', 0, 'removed ' + removed);
+}
+
+function yieldQcDailyTriggerHandler() {
+  var today = Utilities.formatDate(new Date(), TZ_, 'yyyy-MM-dd');
+  try {
+    var report = buildYieldQCReport_();
+    writeYieldQCReportSheet_(report);
+    var lark = sendYieldQCReportToLark_(report);
+    logEvent('YIELD_QC_AUTO', YQR_SHEET, 'OK', 0,
+      today + ' pallets=' + report.palletCount + ' lark.sent=' + lark.sent);
+  } catch (e) {
+    logEvent('YIELD_QC_AUTO', YQR_SHEET, 'ERROR', 0, today + ' ' + String(e));
+  }
 }
 
 // ============================================================================
@@ -902,9 +1019,40 @@ function TEST_yieldQcReport_() {
     assert('fmtPct_(null) = "-"', fmtPct_(null) === '-');
     assert('pct_(5,0) = null', pct_(5, 0) === null);
 
-    // Lark
-    var lark = sendYieldQCReportToLark_(report);
-    assert('Lark DRY_RUN: sent=false', lark.sent === false);
+    // (h)(i)(j) Lark send tests — save/restore ScriptProperties
+    var larkProps   = PropertiesService.getScriptProperties();
+    var savedFlag   = larkProps.getProperty('REPORT_LARK_QC');
+    var savedUrl    = larkProps.getProperty('LARK_WEBHOOK_URL_QC');
+    var savedSecret = larkProps.getProperty('LARK_QC_SECRET');
+    try {
+      // (h) LARK_WEBHOOK_URL_QC unset + LIVE → abort, NO fallback
+      larkProps.setProperty('REPORT_LARK_QC', 'LIVE');
+      larkProps.deleteProperty('LARK_WEBHOOK_URL_QC');
+      var larkH = sendYieldQCReportToLark_(report);
+      assert('Lark (h) NO_URL: sent=false', larkH.sent === false, 'sent=' + larkH.sent);
+      assert('Lark (h) NO_URL: error=NO_URL', larkH.error === 'NO_URL', 'error=' + (larkH.error || 'none'));
+
+      // (i) DRY_RUN → sent=false, payload logged
+      larkProps.setProperty('REPORT_LARK_QC', 'DRY_RUN');
+      var larkI = sendYieldQCReportToLark_(report);
+      assert('Lark (i) DRY_RUN: sent=false', larkI.sent === false, 'flag=' + larkI.flag);
+
+      // (j) Signer: secret present → signed, absent → unsigned (no POST under DRY_RUN)
+      larkProps.setProperty('LARK_QC_SECRET', 'test-secret-j');
+      var larkJ1 = sendYieldQCReportToLark_(report);
+      assert('Lark (j) secret present → signed=true', larkJ1.signed === true);
+
+      larkProps.deleteProperty('LARK_QC_SECRET');
+      var larkJ2 = sendYieldQCReportToLark_(report);
+      assert('Lark (j) secret absent → signed=false', larkJ2.signed === false);
+    } finally {
+      if (savedFlag != null) larkProps.setProperty('REPORT_LARK_QC', savedFlag);
+      else larkProps.deleteProperty('REPORT_LARK_QC');
+      if (savedUrl != null) larkProps.setProperty('LARK_WEBHOOK_URL_QC', savedUrl);
+      else larkProps.deleteProperty('LARK_WEBHOOK_URL_QC');
+      if (savedSecret != null) larkProps.setProperty('LARK_QC_SECRET', savedSecret);
+      else larkProps.deleteProperty('LARK_QC_SECRET');
+    }
 
   } catch (e) {
     assert('test execution', false, e.message + '\n' + (e.stack || ''));

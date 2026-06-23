@@ -33,7 +33,11 @@ function onOpen() {
     .addItem('⚙️ ตั้งค่า Lark Webhook',        'setLarkWebhookDialog')
     .addSeparator()
     .addItem('⏰ เปิดส่งอัตโนมัติ 18:00',      'installLarkDailyTrigger')
-    .addItem('⏹️ ปิดส่งอัตโนมัติ',             'removeLarkDailyTrigger');
+    .addItem('⏹️ ปิดส่งอัตโนมัติ',             'removeLarkDailyTrigger')
+    .addSeparator()
+    .addItem('📊 Lark QC: สลับ DRY_RUN↔LIVE',  'toggleReportLarkQcDialog')
+    .addItem('⏰ เปิดส่ง Yield/QC 18:00',       'installYieldQcDailyTrigger')
+    .addItem('⏹️ ปิดส่ง Yield/QC อัตโนมัติ',    'removeYieldQcDailyTrigger');
 
   const flagMenu = ui.createMenu('⚙️ Pallet SAP Toggle')
     .addItem('🔴 ปิด SAP write (ทดสอบ)',      'flagDisableSapWrite')
