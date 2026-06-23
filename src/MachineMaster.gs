@@ -393,7 +393,7 @@ function diagVerifyActualMachineColumn() {
  * Step 0+1+2: probe schema, backup, fix leaked APS codes in PDResult.
  * Run from Apps Script Editor.
  */
-function fixActualMachineLeak_() {
+function fixActualMachineLeak() {
   Logger.log('');
   Logger.log('══════════════════════════════════════════');
   Logger.log(' BUGFIX: ActualMachine → PDResult leak repair');
@@ -1038,7 +1038,7 @@ function TEST_machineResolveM3() {
 // TEST — ActualMachine integrity (post-bugfix)
 // ============================================================================
 
-function TEST_actualMachineIntegrity_() {
+function TEST_actualMachineIntegrity() {
   var results = [];
   var pass    = true;
   var ss      = getSpreadsheet_();
@@ -1127,6 +1127,50 @@ function TEST_actualMachineIntegrity_() {
   Logger.log('');
   Logger.log('========================================');
   Logger.log('TEST_actualMachineIntegrity_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
+  Logger.log('========================================');
+  for (var si = 0; si < results.length; si++) {
+    Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
+      (results[si].detail ? ' (' + results[si].detail + ')' : ''));
+  }
+}
+
+// ============================================================================
+// TEST — Lark machine coverage line
+// ============================================================================
+
+function TEST_larkMachineCoverage_() {
+  var results = [];
+  var pass    = true;
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    if (!ok) pass = false;
+    Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
+  }
+
+  // (a) Real report has machineCoverage with at least 1 actual (APS003 row)
+  var report = buildYieldQCReport_();
+  assert('(a) report has machineCoverage', report.machineCoverage !== undefined);
+  var mc = report.machineCoverage;
+  assert('(a) actual >= 1', mc.actual >= 1, 'actual=' + mc.actual);
+  assert('(a) total > 0', mc.total > 0, 'total=' + mc.total);
+
+  // (b) Lark card contains เครื่องจริง when actual > 0
+  var card = buildYieldQcLarkCard_(report);
+  assert('(b) Lark card contains เครื่องจริง', card.indexOf('เครื่องจริง') !== -1);
+  Logger.log('  (b) coverage line: ' +
+    card.split('\n').filter(function(l) { return l.indexOf('เครื่องจริง') !== -1; }).join(''));
+
+  // (c) Fake report with 0 actual → line absent
+  var fakeReport = JSON.parse(JSON.stringify(report));
+  fakeReport.machineCoverage = { actual: 0, total: 100 };
+  var fakeCard = buildYieldQcLarkCard_(fakeReport);
+  assert('(c) no เครื่องจริง when actual=0', fakeCard.indexOf('เครื่องจริง') === -1);
+
+  Logger.log('');
+  Logger.log('========================================');
+  Logger.log('TEST_larkMachineCoverage_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
   Logger.log('========================================');
   for (var si = 0; si < results.length; si++) {
     Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
