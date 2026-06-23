@@ -12,6 +12,125 @@ var MCH_SHEET = 'MachineMaster';
 var _machineMasterCache_ = null;
 
 // ============================================================================
+// SAPWorkCenter normalizer — Sheets coerces 'NNNN-NN' to Date on import
+// ============================================================================
+
+function _normSapWc_(val) {
+  if (val instanceof Date) {
+    var y = val.getFullYear();
+    var m = val.getMonth() + 1;
+    return String(y).padStart(4, '0') + '-' + String(m).padStart(2, '0');
+  }
+  if (typeof val === 'number') {
+    return String(val);
+  }
+  return String(val == null ? '' : val).trim();
+}
+
+// ============================================================================
+// Sheet format fix — convert SAPWorkCenter column from Date back to text
+// ============================================================================
+
+/**
+ * One-time idempotent fix: set SAPWorkCenter column to plain-text format '@',
+ * rewrite Date/number values as their display-value strings.
+ * Creates a timestamped backup before any change. Run from Editor.
+ */
+function fixMachineMasterSapWcFormat_() {
+  var sh = getSpreadsheet_().getSheetByName(MCH_SHEET);
+  if (!sh || sh.getLastRow() < 2) {
+    Logger.log('MachineMaster sheet not found or empty');
+    return { status: 'SKIP', detail: 'no data' };
+  }
+
+  var lastRow = sh.getLastRow();
+  var lastCol = sh.getLastColumn();
+  var hdr = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var idx = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var wcCol = idx['SAPWorkCenter'];
+  if (wcCol === undefined) {
+    Logger.log('SAPWorkCenter column not found');
+    return { status: 'ERROR', detail: 'SAPWorkCenter column missing' };
+  }
+
+  // ── Backup ──
+  var ss = getSpreadsheet_();
+  var stamp = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyyMMdd_HHmmss');
+  var backupName = 'MachineMaster_bak_' + stamp;
+  sh.copyTo(ss).setName(backupName);
+  Logger.log('Backup: ' + backupName);
+
+  // ── Probe: log raw vs display BEFORE format change ──
+  var dataRange = sh.getRange(2, wcCol + 1, lastRow - 1, 1);
+  var rawVals  = dataRange.getValues();
+  var dispVals = dataRange.getDisplayValues();
+
+  Logger.log('');
+  Logger.log('PROBE — SAPWorkCenter (first 10 rows):');
+  var probeCount = Math.min(10, rawVals.length);
+  var dateCount = 0;
+  for (var p = 0; p < probeCount; p++) {
+    var raw  = rawVals[p][0];
+    var disp = dispVals[p][0];
+    var isDate = raw instanceof Date;
+    if (isDate) dateCount++;
+    Logger.log('  row ' + (p + 2) +
+      ': raw=' + JSON.stringify(String(raw)) +
+      ' typeof=' + typeof raw +
+      ' isDate=' + isDate +
+      ' display="' + disp + '"' +
+      ' norm="' + _normSapWc_(raw) + '"');
+  }
+  Logger.log('Date cells in probe: ' + dateCount + '/' + probeCount);
+
+  // ── Set number format to plain text ──
+  dataRange.setNumberFormat('@');
+
+  // ── Rewrite cells: use display value for Date/number, else keep string ──
+  var newVals = [];
+  var fixCount = 0;
+  for (var i = 0; i < rawVals.length; i++) {
+    var raw  = rawVals[i][0];
+    var disp = String(dispVals[i][0] || '').trim();
+
+    if (raw instanceof Date || typeof raw === 'number') {
+      var resolved = /^\d{4}-\d{2}/.test(disp) ? disp : _normSapWc_(raw);
+      newVals.push([resolved]);
+      fixCount++;
+    } else {
+      newVals.push([String(raw == null ? '' : raw).trim()]);
+    }
+  }
+  dataRange.setValues(newVals);
+  SpreadsheetApp.flush();
+
+  // ── Postcondition: every cell is now typeof string ──
+  var verifyVals = dataRange.getValues();
+  var failRows = [];
+  for (var v = 0; v < verifyVals.length; v++) {
+    if (typeof verifyVals[v][0] !== 'string') {
+      failRows.push(v + 2);
+    }
+  }
+
+  var result = {
+    status:    failRows.length === 0 ? 'OK' : 'PARTIAL',
+    backup:    backupName,
+    fixed:     fixCount,
+    total:     rawVals.length,
+    allString: failRows.length === 0,
+    failRows:  failRows
+  };
+  Logger.log('');
+  Logger.log('Result: ' + JSON.stringify(result));
+  logEvent('MCH_WC_FORMAT_FIX', MCH_SHEET, result.status, 0,
+    'fixed=' + fixCount + '/' + rawVals.length + ' backup=' + backupName);
+  return result;
+}
+
+// ============================================================================
 // Read API
 // ============================================================================
 
@@ -20,6 +139,7 @@ var _machineMasterCache_ = null;
  * preserved as 'APS001' etc.) → { name, sapWorkCenter, department, active }.
  * Skips rows where Active is false/'FALSE'. Built via header-name map.
  * Cached for the execution scope.
+ * SAPWorkCenter is normalized via _normSapWc_ to guarantee a string.
  * @return {Object.<string, {name:string, sapWorkCenter:string, department:string, active:boolean}>}
  */
 function getMachineMaster_() {
@@ -38,7 +158,7 @@ function getMachineMaster_() {
 
   var map = {};
   for (var r = 1; r < data.length; r++) {
-    var code = String(data[r][idx['MachineCode']] || '').trim();
+    var code = String(data[r][idx['MachineCode']] == null ? '' : data[r][idx['MachineCode']]).trim();
     if (!code) continue;
 
     var activeRaw = data[r][idx['Active']];
@@ -46,9 +166,9 @@ function getMachineMaster_() {
         String(activeRaw || '').trim().toUpperCase() === 'FALSE') continue;
 
     map[code.toUpperCase()] = {
-      name:          String(data[r][idx['MachineName']]  || '').trim(),
-      sapWorkCenter: String(data[r][idx['SAPWorkCenter']] || '').trim(),
-      department:    String(data[r][idx['Department']]    || '').trim(),
+      name:          String(data[r][idx['MachineName']] == null ? '' : data[r][idx['MachineName']]).trim(),
+      sapWorkCenter: _normSapWc_(data[r][idx['SAPWorkCenter']]),
+      department:    String(data[r][idx['Department']] == null ? '' : data[r][idx['Department']]).trim(),
       active:        true
     };
   }
@@ -77,6 +197,7 @@ function lookupMachine_(code) {
 /**
  * D6: Cross-check SAP WorkCenters from routing (ProductionOrders.OperationsJSON)
  * against MachineMaster.SAPWorkCenter. Reports match rate + unmatched WCs.
+ * Confirms comparison is string-vs-string (no Date).
  * Run from Apps Script Editor → select diagMachineWcCrossCheck_ → Run.
  * READ-ONLY — no writes, no SAP calls.
  */
@@ -86,6 +207,7 @@ function diagMachineWcCrossCheck_() {
   Logger.log(' D6: WorkCenter ↔ MachineMaster cross-check');
   Logger.log('══════════════════════════════════════════');
 
+  // ── Routing WCs from ProductionOrders.OperationsJSON ──
   var routeWcSet = {};
   var poSh = getSpreadsheet_().getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
   if (poSh && poSh.getLastRow() >= 2) {
@@ -115,15 +237,28 @@ function diagMachineWcCrossCheck_() {
     Logger.log('  ' + wc + ' (' + routeWcSet[wc] + ' occurrences)');
   });
 
+  // ── MachineMaster SAPWorkCenter set ──
   _machineMasterCache_ = null;
   var machMap  = getMachineMaster_();
   var mchWcSet = {};
-  Object.keys(machMap).forEach(function(code) {
+  var mchEntries = Object.keys(machMap);
+  Logger.log('');
+  Logger.log('MachineMaster: ' + mchEntries.length + ' active machines');
+
+  mchEntries.forEach(function(code) {
     var swc = machMap[code].sapWorkCenter;
-    if (swc) mchWcSet[swc] = true;
+    Logger.log('  ' + code + ' → sapWC="' + swc + '" typeof=' + typeof swc);
+    if (swc) {
+      var parts = swc.split(';');
+      parts.forEach(function(p) {
+        var trimmed = p.trim();
+        if (trimmed) mchWcSet[trimmed] = true;
+      });
+    }
   });
   Logger.log('Distinct SAPWorkCenters in MachineMaster: ' + Object.keys(mchWcSet).length);
 
+  // ── Cross-check ──
   var matched   = [];
   var unmatched = [];
   allWcList.forEach(function(wc) {
@@ -137,10 +272,12 @@ function diagMachineWcCrossCheck_() {
   Logger.log('');
   Logger.log('Match rate: ' + matched.length + '/' + allWcList.length + ' (' + pct + '%)');
   Logger.log('Matched:   ' + (matched.length   ? matched.join(', ')   : '(none)'));
-  Logger.log('Unmatched: ' + (unmatched.length ? unmatched.join(', ') : '(none)'));
+  Logger.log('Unmatched (up to 10): ' +
+    (unmatched.length ? unmatched.slice(0, 10).join(', ') +
+      (unmatched.length > 10 ? ' (+' + (unmatched.length - 10) + ' more)' : '')
+    : '(none)'));
   Logger.log('');
-  Logger.log('Implication: unmatched WCs currently fall back to planned-WC text.');
-  Logger.log('M3 can map matched WCs to Thai machine names via MachineMaster.');
+  Logger.log('All comparisons are string-vs-string: typeof routing WC = string, typeof mchWc = string');
   Logger.log('══════════════════════════════════════════');
 }
 
@@ -149,13 +286,14 @@ function diagMachineWcCrossCheck_() {
 // ============================================================================
 
 /**
- * TEST_machineMasterReader_: run from Apps Script Editor.
- * (a) map size = unique non-FALSE rows in MachineMaster
- * (b) lookupMachine_('APS001') returns entry with name + sapWorkCenter
- * (c) lookupMachine_('  aps001 ') normalizes and matches (b)
- * (d) unknown code → null
+ * TEST_machineMasterReader: run from Apps Script Editor.
+ * (a)  map size = unique non-FALSE rows in MachineMaster
+ * (b)  lookupMachine_('APS001') returns entry with name + sapWorkCenter
+ * (b2) sapWorkCenter is typeof string matching /^\d{4}-\d{2}/ (catches Date bug)
+ * (c)  lookupMachine_('  aps001 ') normalizes and matches (b)
+ * (d)  unknown code → null
  */
-function TEST_machineMasterReader_() {
+function TEST_machineMasterReader() {
   var results = [];
   var pass    = true;
 
@@ -181,7 +319,7 @@ function TEST_machineMasterReader_() {
 
   var uniqueCodes = {};
   for (var r = 1; r < data.length; r++) {
-    var code = String(data[r][idx['MachineCode']] || '').trim();
+    var code = String(data[r][idx['MachineCode']] == null ? '' : data[r][idx['MachineCode']]).trim();
     if (!code) continue;
     var activeRaw = data[r][idx['Active']];
     var isInactive = activeRaw === false ||
@@ -203,6 +341,14 @@ function TEST_machineMasterReader_() {
     assert('(b) APS001 has name', aps.name.length > 0, 'name=' + aps.name);
     assert('(b) APS001 has sapWorkCenter', aps.sapWorkCenter.length > 0,
       'wc=' + aps.sapWorkCenter);
+
+    // (b2) sapWorkCenter must be a string matching NNNN-NN pattern (Date bug catch)
+    assert('(b2) sapWorkCenter typeof=string',
+      typeof aps.sapWorkCenter === 'string',
+      'typeof=' + typeof aps.sapWorkCenter + ' val=' + aps.sapWorkCenter);
+    assert('(b2) sapWorkCenter matches /^\\d{4}-\\d{2}/',
+      /^\d{4}-\d{2}(;\d{4}-\d{2})*$/.test(aps.sapWorkCenter),
+      'val="' + aps.sapWorkCenter + '"');
   }
 
   // (c) normalized '  aps001 ' matches (b)
@@ -219,7 +365,7 @@ function TEST_machineMasterReader_() {
 
   Logger.log('');
   Logger.log('========================================');
-  Logger.log('TEST_machineMasterReader_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
+  Logger.log('TEST_machineMasterReader: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
   Logger.log('========================================');
   for (var si = 0; si < results.length; si++) {
     Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
