@@ -182,6 +182,60 @@ function getPmPreviewSummary_() {
 }
 
 // ============================================================================
+// PO selector — list available POs for a material
+// ============================================================================
+
+/**
+ * Return released POs for a material with remaining qty > 0.
+ * Called by AdminPrint.html PO selector dropdown after material selection.
+ * @param {string} material
+ * @return {{orders: Array<{mo,material,plannedQty,remainingQty,productionDate,batch}>, message: string}}
+ */
+function getProductionOrdersForMaterial(material) {
+  material = String(material || '').trim();
+  if (!material) return { orders: [], message: 'ไม่ระบุรหัสสินค้า' };
+
+  clearAllocCache_();
+  var poList    = getReleasedPoDataForPreview_();
+  var pmSummary = getPmPreviewSummary_();
+
+  var candidates = poList.filter(function(po) { return po.Material === material; });
+  var result = [];
+
+  candidates.forEach(function(po) {
+    var moKey = po.ManufacturingOrder;
+    var pm    = pmSummary[moKey] || { confirmedPalletQty: 0, nonConfirmedPalletQty: 0 };
+    var effectiveConfirmed = Math.max(po.MfgOrderConfirmedYieldQty, pm.confirmedPalletQty);
+    var alreadyPrinted     = pm.nonConfirmedPalletQty;
+    var remainingQty       = Math.max(0, po.TotalQuantity - effectiveConfirmed - alreadyPrinted);
+    if (remainingQty <= 0) return;
+
+    var dateStr = '';
+    if (po.MfgOrderPlannedStartDate instanceof Date) {
+      dateStr = po.MfgOrderPlannedStartDate.toISOString();
+    } else if (po.MfgOrderPlannedStartDate) {
+      dateStr = String(po.MfgOrderPlannedStartDate);
+    }
+
+    result.push({
+      mo:             moKey,
+      material:       material,
+      plannedQty:     po.TotalQuantity,
+      remainingQty:   remainingQty,
+      productionDate: dateStr,
+      batch:          ''
+    });
+  });
+
+  if (result.length > 20) result = result.slice(0, 20);
+
+  return JSON.parse(JSON.stringify({
+    orders:  result,
+    message: result.length === 0 ? 'ไม่พบ Production Order ที่ REL สำหรับรหัสนี้' : ''
+  }));
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
 
@@ -230,7 +284,11 @@ function previewPalletAllocation(requests) {
     }
 
     const moq        = mmData.moq;
-    const candidates = poList.filter(po => po.Material === mat);
+    const selectedMO = String(req.selectedMO || '').trim();
+    var candidates   = poList.filter(po => po.Material === mat);
+    if (selectedMO && selectedMO !== 'AUTO') {
+      candidates = candidates.filter(po => po.ManufacturingOrder === selectedMO);
+    }
 
     let remaining    = requestedQty;
     let allocatedQty = 0;
@@ -553,4 +611,91 @@ function testPreviewAllocation() {
   });
 
   Logger.log(JSON.stringify(result, null, 2));
+}
+
+// ============================================================================
+// TEST — PO selector
+// ============================================================================
+
+function TEST_poSelector_() {
+  var results = [];
+  var pass    = true;
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    if (!ok) pass = false;
+    Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
+  }
+
+  // (a) getProductionOrdersForMaterial with a known material
+  var matMap = getMaterialMap();
+  var testMat = Object.keys(matMap)[0] || '';
+  Logger.log('Test material: ' + testMat);
+
+  var res = getProductionOrdersForMaterial(testMat);
+  assert('(a) returns object', res && typeof res === 'object');
+  assert('(a) orders is array', Array.isArray(res.orders), 'type=' + typeof res.orders);
+
+  if (res.orders.length > 0) {
+    var first = res.orders[0];
+    assert('(a) has mo', typeof first.mo === 'string' && first.mo.length > 0, 'mo=' + first.mo);
+    assert('(a) has plannedQty', typeof first.plannedQty === 'number', 'qty=' + first.plannedQty);
+    assert('(a) has remainingQty', typeof first.remainingQty === 'number', 'rem=' + first.remainingQty);
+    assert('(a) productionDate is string', typeof first.productionDate === 'string',
+      'type=' + typeof first.productionDate);
+
+    var serialized = JSON.parse(JSON.stringify(res));
+    assert('(a) JSON serializable', serialized.orders.length === res.orders.length);
+  } else {
+    Logger.log('  (a) no POs for ' + testMat + ' — skipping field checks');
+  }
+
+  // (b) AUTO selection → FIFO (no MO filter)
+  if (res.orders.length > 0) {
+    var previewAuto = previewPalletAllocation([{
+      material: testMat, requestedQty: 1, selectedMO: 'AUTO'
+    }]);
+    assert('(b) AUTO preview runs', previewAuto && previewAuto.length > 0);
+    if (previewAuto[0].orders && previewAuto[0].orders.length > 0) {
+      assert('(b) AUTO picks FIFO first MO', previewAuto[0].orders[0].manufacturingOrder === res.orders[0].mo,
+        'got=' + previewAuto[0].orders[0].manufacturingOrder + ' expected=' + res.orders[0].mo);
+    }
+  }
+
+  // (c) specific MO → only that MO appears
+  if (res.orders.length >= 2) {
+    var secondMo = res.orders[1].mo;
+    var previewMo = previewPalletAllocation([{
+      material: testMat, requestedQty: 1, selectedMO: secondMo
+    }]);
+    assert('(c) specific MO preview runs', previewMo && previewMo.length > 0);
+    if (previewMo[0].orders) {
+      var allMatch = previewMo[0].orders.every(function(o) { return o.manufacturingOrder === secondMo; });
+      assert('(c) only selected MO in result', allMatch,
+        'MOs=' + previewMo[0].orders.map(function(o) { return o.manufacturingOrder; }).join(','));
+    }
+  } else {
+    Logger.log('  (c) only 1 PO available — cannot test specific MO filter');
+  }
+
+  // (d) invalid MO → zero allocation
+  var previewBad = previewPalletAllocation([{
+    material: testMat, requestedQty: 100, selectedMO: '0000000000'
+  }]);
+  assert('(d) invalid MO → 0 orders', previewBad && previewBad.length > 0 &&
+    previewBad[0].orders.length === 0,
+    'orders=' + (previewBad[0] ? previewBad[0].orders.length : 'N/A'));
+  assert('(d) shortfall = requested', previewBad && previewBad[0] &&
+    previewBad[0].shortfall === 100,
+    'shortfall=' + (previewBad[0] ? previewBad[0].shortfall : 'N/A'));
+
+  Logger.log('');
+  Logger.log('========================================');
+  Logger.log('TEST_poSelector_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
+  Logger.log('========================================');
+  for (var si = 0; si < results.length; si++) {
+    Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
+      (results[si].detail ? ' (' + results[si].detail + ')' : ''));
+  }
 }

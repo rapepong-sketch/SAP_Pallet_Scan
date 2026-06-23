@@ -337,7 +337,13 @@ function addRow() {
     }
   });
 
-  // Event: material change -> show MOQ
+  // PO selector container
+  var poDiv = document.createElement('div');
+  poDiv.className = 'po-selector';
+  poDiv.style.cssText = 'display:none;margin-top:6px;font-size:.85em;border:1px solid #dee2e6;border-radius:5px;padding:8px 10px;max-height:160px;overflow-y:auto;background:#fafbfc';
+  cellMat.appendChild(poDiv);
+
+  // Event: material change -> show MOQ + fetch POs
   selMat.addEventListener('change', function() {
     var code = selMat.value;
     if (code && moqCache[code]) {
@@ -346,6 +352,15 @@ function addRow() {
     } else {
       moqDiv.textContent = '';
     }
+    poDiv.style.display = 'none';
+    poDiv.innerHTML = '';
+    if (!code) return;
+    poDiv.innerHTML = '<span style="color:#888">⏳ โหลด PO...</span>';
+    poDiv.style.display = 'block';
+    google.script.run
+      .withSuccessHandler(function(res) { renderPoSelector(poDiv, res); })
+      .withFailureHandler(function() { poDiv.innerHTML = '<span style="color:#dc3545">โหลด PO ล้มเหลว</span>'; })
+      .getProductionOrdersForMaterial(code);
   });
 
   document.getElementById('inputBody').appendChild(row);
@@ -354,6 +369,46 @@ function addRow() {
 function removeRow(btn) {
   var body = document.getElementById('inputBody');
   if (body.children.length > 1) btn.closest('.inp-row').remove();
+}
+
+// ========== PO selector rendering ==========
+
+function renderPoSelector(container, res) {
+  container.innerHTML = '';
+  var uid = 'po_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+
+  // Auto FIFO option (always present)
+  var autoLabel = document.createElement('label');
+  autoLabel.style.cssText = 'display:block;padding:3px 0;cursor:pointer';
+  var autoRadio = document.createElement('input');
+  autoRadio.type = 'radio'; autoRadio.name = uid; autoRadio.value = 'AUTO'; autoRadio.checked = true;
+  autoRadio.className = 'po-radio';
+  autoLabel.appendChild(autoRadio);
+  autoLabel.appendChild(document.createTextNode(' Auto FIFO — ระบบเลือกอัตโนมัติ'));
+  container.appendChild(autoLabel);
+
+  if (!res.orders || res.orders.length === 0) {
+    var noMsg = document.createElement('div');
+    noMsg.style.cssText = 'color:#856404;padding:4px 0;font-size:.85em';
+    noMsg.textContent = res.message || 'ไม่พบ Production Order ที่ REL';
+    container.appendChild(noMsg);
+    container.style.display = 'block';
+    return;
+  }
+
+  res.orders.forEach(function(po) {
+    var lbl = document.createElement('label');
+    lbl.style.cssText = 'display:block;padding:3px 0;cursor:pointer';
+    var rd = document.createElement('input');
+    rd.type = 'radio'; rd.name = uid; rd.value = po.mo;
+    rd.className = 'po-radio';
+    lbl.appendChild(rd);
+    lbl.appendChild(document.createTextNode(
+      ' ' + po.mo + '  │  ' + fmt(po.remainingQty) + ' pcs เหลือ  │  ' + fmtDate(po.productionDate)
+    ));
+    container.appendChild(lbl);
+  });
+  container.style.display = 'block';
 }
 
 // ========== Collect rows ==========
@@ -378,7 +433,12 @@ function collectRows() {
       hasErr = true;
       return;
     }
-    reqs.push({ material: mat, requestedQty: qty });
+
+    var selectedMO = 'AUTO';
+    var poRadio = row.querySelector('.po-radio:checked');
+    if (poRadio) selectedMO = poRadio.value;
+
+    reqs.push({ material: mat, requestedQty: qty, selectedMO: selectedMO });
   });
   if (hasErr) return null;
   if (!reqs.length) { showSt('กรุณากรอกข้อมูลอย่างน้อย 1 รายการ', 'err'); return null; }
