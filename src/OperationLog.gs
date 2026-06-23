@@ -152,6 +152,18 @@ function logOperation(entry) {
   }
 
   const sh = ensureOperationLogSheet_();
+
+  // Write-time guard: verify OL_HEADERS matches the live sheet header.
+  // If they differ, appendRow would put data in wrong columns (data corruption).
+  var liveHdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+    .map(function(h) { return String(h).trim(); });
+  if (liveHdr.length !== OL_HEADERS.length ||
+      !liveHdr.every(function(h, i) { return h === OL_HEADERS[i]; })) {
+    var detail = 'OL_HEADERS=[' + OL_HEADERS.join(',') + '] sheet=[' + liveHdr.join(',') + ']';
+    logEvent('OL_SCHEMA_DESYNC', OL_SHEET, 'ERROR', 0, detail);
+    throw new Error('OperationLog schema desync — OL_HEADERS does not match sheet header. ' + detail);
+  }
+
   sh.appendRow(row);
   return logId;
 }

@@ -283,7 +283,7 @@ function generateMachineQrStickers() {
 // Diagnostic: verify ActualMachine not leaking into PDResult
 // ============================================================================
 
-function diagVerifyActualMachineColumn_() {
+function diagVerifyActualMachineColumn() {
   Logger.log('');
   Logger.log('══════════════════════════════════════════');
   Logger.log(' DIAG: Verify ActualMachine column integrity');
@@ -382,6 +382,119 @@ function diagVerifyActualMachineColumn_() {
   } else {
     Logger.log('❌ VERDICT: BUG — ' + apsInPD + ' rows have APS codes leaked into PDResult');
   }
+  Logger.log('══════════════════════════════════════════');
+}
+
+// ============================================================================
+// BUGFIX: repair rows where APS code leaked from ActualMachine into PDResult
+// ============================================================================
+
+/**
+ * Step 0+1+2: probe schema, backup, fix leaked APS codes in PDResult.
+ * Run from Apps Script Editor.
+ */
+function fixActualMachineLeak_() {
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' BUGFIX: ActualMachine → PDResult leak repair');
+  Logger.log('══════════════════════════════════════════');
+
+  var ss = getSpreadsheet_();
+  var sh = ss.getSheetByName(OL_SHEET);
+  if (!sh || sh.getLastRow() < 2) { Logger.log('OperationLog empty'); return; }
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  // ── Step 0a: header dump ──
+  Logger.log('');
+  Logger.log('STEP 0a — Sheet header (' + hdr.length + ' cols):');
+  for (var c = 0; c < hdr.length; c++) {
+    Logger.log('  [' + c + '] ' + String(hdr[c]).trim());
+  }
+
+  Logger.log('');
+  Logger.log('STEP 0b — OL_HEADERS constant (' + OL_HEADERS.length + ' cols):');
+  for (var c2 = 0; c2 < OL_HEADERS.length; c2++) {
+    Logger.log('  [' + c2 + '] ' + OL_HEADERS[c2]);
+  }
+
+  // ── Step 0c: assert identical ──
+  var sheetHdr = hdr.map(function(h) { return String(h).trim(); });
+  var match = sheetHdr.length === OL_HEADERS.length &&
+    sheetHdr.every(function(h, i) { return h === OL_HEADERS[i]; });
+  Logger.log('');
+  Logger.log('STEP 0c — OL_HEADERS === sheet header: ' + match);
+  if (!match) {
+    Logger.log('  ⚠️ MISMATCH — sheet=[' + sheetHdr.join(',') + ']');
+    Logger.log('  ⚠️ MISMATCH — code =[' + OL_HEADERS.join(',') + ']');
+  }
+
+  // ── Step 0d: PL-1000036325-L01 raw dump ──
+  Logger.log('');
+  Logger.log('STEP 0d — PL-1000036325-L01 raw dump:');
+  for (var r0 = 1; r0 < data.length; r0++) {
+    if (String(data[r0][idx['PalletID']] || '').trim() !== 'PL-1000036325-L01') continue;
+    for (var ci = 0; ci < hdr.length; ci++) {
+      var val = data[r0][ci];
+      Logger.log('  [' + ci + '] ' + String(hdr[ci]).trim() + ' = ' +
+        JSON.stringify(val == null ? '' : String(val)) + '  typeof=' + typeof val);
+    }
+    break;
+  }
+
+  // ── Step 1: backup ──
+  var stamp = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyyMMdd_HHmmss');
+  var backupName = 'OperationLog_bak_' + stamp;
+  sh.copyTo(ss).setName(backupName);
+  Logger.log('');
+  Logger.log('STEP 1 — Backup: ' + backupName);
+
+  // ── Step 2: fix leaked rows ──
+  Logger.log('');
+  Logger.log('STEP 2 — Fix leaked APS codes in PDResult:');
+  var pdCol = idx['PDResult'];
+  var amCol = idx['ActualMachine'];
+  if (pdCol === undefined || amCol === undefined) {
+    Logger.log('  ABORT: PDResult or ActualMachine column missing');
+    return;
+  }
+
+  var fixCount = 0;
+  for (var r = 1; r < data.length; r++) {
+    var pdVal = String(data[r][pdCol] == null ? '' : data[r][pdCol]).trim();
+    if (!/^APS\d+$/i.test(pdVal)) continue;
+
+    var amVal = String(data[r][amCol] == null ? '' : data[r][amCol]).trim();
+    var pid   = String(data[r][idx['PalletID']] || '').trim();
+    var rowNum = r + 1;
+
+    if (!amVal) {
+      sh.getRange(rowNum, amCol + 1).setValue(pdVal);
+    }
+    sh.getRange(rowNum, pdCol + 1).setValue('');
+    fixCount++;
+    Logger.log('  FIXED row ' + rowNum + ' ' + pid +
+      ': PDResult=' + pdVal + ' → ActualMachine=' + (amVal || pdVal) + ", PDResult=''");
+  }
+
+  Logger.log('');
+  Logger.log('Total fixed: ' + fixCount);
+  logEvent('BUGFIX_AM_LEAK', OL_SHEET, 'OK', 0,
+    'fixed=' + fixCount + ' backup=' + backupName);
+
+  // ── Postcondition: verify no APS in PDResult ──
+  SpreadsheetApp.flush();
+  var verify = sh.getDataRange().getValues();
+  var remaining = 0;
+  for (var v = 1; v < verify.length; v++) {
+    var vpd = String(verify[v][pdCol] == null ? '' : verify[v][pdCol]).trim();
+    if (/^APS\d+$/i.test(vpd)) remaining++;
+  }
+  Logger.log('Postcondition: APS codes remaining in PDResult = ' + remaining);
+  Logger.log(remaining === 0 ? '✅ All clear' : '❌ Still has leaks');
   Logger.log('══════════════════════════════════════════');
 }
 
@@ -914,6 +1027,106 @@ function TEST_machineResolveM3() {
   Logger.log('');
   Logger.log('========================================');
   Logger.log('TEST_machineResolveM3_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
+  Logger.log('========================================');
+  for (var si = 0; si < results.length; si++) {
+    Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
+      (results[si].detail ? ' (' + results[si].detail + ')' : ''));
+  }
+}
+
+// ============================================================================
+// TEST — ActualMachine integrity (post-bugfix)
+// ============================================================================
+
+function TEST_actualMachineIntegrity_() {
+  var results = [];
+  var pass    = true;
+  var ss      = getSpreadsheet_();
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    if (!ok) pass = false;
+    Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
+  }
+
+  var olSh  = ss.getSheetByName(OL_SHEET);
+  var olHdr = olSh.getRange(1, 1, 1, olSh.getLastColumn()).getValues()[0];
+  var olIdx = {};
+  olHdr.forEach(function(h, i) { olIdx[String(h).trim()] = i; });
+
+  // (a) Write with actualMachine='APS099' → lands in correct column
+  var logIdA = logOperation({
+    palletId: 'PL-TEST-AM-A', mo: '9999999996', operationNo: '0010',
+    operationText: 'AM test', goodQty: 10, scrapQty: 0,
+    repairQty: 0, awaitConvQty: 0, operator: 'TEST',
+    role: 'OP', result: 'PASS', source: 'TEST',
+    actualMachine: 'APS099'
+  });
+  SpreadsheetApp.flush();
+
+  var dataA = olSh.getDataRange().getValues();
+  var idxA = {};
+  dataA[0].forEach(function(h, i) { idxA[String(h).trim()] = i; });
+  var rowA = null;
+  for (var ra = 1; ra < dataA.length; ra++) {
+    if (String(dataA[ra][idxA['LogID']] || '').trim() === logIdA) { rowA = dataA[ra]; break; }
+  }
+  assert('(a) test row found', rowA !== null);
+  if (rowA) {
+    var amA = String(rowA[idxA['ActualMachine']] || '').trim();
+    var pdA = String(rowA[idxA['PDResult']] || '').trim();
+    assert('(a) ActualMachine=APS099', amA === 'APS099', 'got=' + amA);
+    assert('(a) PDResult is empty (not APS099)', pdA === '', 'got=' + pdA);
+  }
+
+  // (b) Write without actualMachine → both empty
+  var logIdB = logOperation({
+    palletId: 'PL-TEST-AM-B', mo: '9999999996', operationNo: '0020',
+    operationText: 'AM none', goodQty: 10, scrapQty: 0,
+    repairQty: 0, awaitConvQty: 0, operator: 'TEST',
+    role: 'OP', result: 'PASS', source: 'TEST'
+  });
+  SpreadsheetApp.flush();
+
+  var dataB = olSh.getDataRange().getValues();
+  var rowB = null;
+  for (var rb = 1; rb < dataB.length; rb++) {
+    if (String(dataB[rb][idxA['LogID']] || '').trim() === logIdB) { rowB = dataB[rb]; break; }
+  }
+  assert('(b) no-machine row found', rowB !== null);
+  if (rowB) {
+    var amB = String(rowB[idxA['ActualMachine']] || '').trim();
+    var pdB = String(rowB[idxA['PDResult']] || '').trim();
+    assert('(b) ActualMachine empty', amB === '', 'got=' + amB);
+    assert('(b) PDResult empty', pdB === '', 'got=' + pdB);
+  }
+
+  // (c) Full scan: zero APS codes in PDResult
+  var pdCol = idxA['PDResult'];
+  var apsLeakCount = 0;
+  for (var rc = 1; rc < dataB.length; rc++) {
+    var pdV = String(dataB[rc][pdCol] == null ? '' : dataB[rc][pdCol]).trim();
+    if (/^APS\d+$/i.test(pdV)) apsLeakCount++;
+  }
+  assert('(c) zero APS codes in PDResult', apsLeakCount === 0, 'leaks=' + apsLeakCount);
+
+  // ── Cleanup ──
+  try {
+    var cleanData = olSh.getDataRange().getValues();
+    for (var cr = cleanData.length - 1; cr >= 1; cr--) {
+      if (/^PL-TEST-AM/i.test(String(cleanData[cr][idxA['PalletID']] || '').trim())) {
+        olSh.deleteRow(cr + 1);
+      }
+    }
+    Logger.log('Cleanup: PL-TEST-AM rows deleted');
+  } catch (cleanErr) {
+    Logger.log('Cleanup error: ' + cleanErr.message);
+  }
+
+  Logger.log('');
+  Logger.log('========================================');
+  Logger.log('TEST_actualMachineIntegrity_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
   Logger.log('========================================');
   for (var si = 0; si < results.length; si++) {
     Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
