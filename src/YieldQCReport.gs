@@ -148,6 +148,7 @@ function readPmRows_() {
       pmScrap:      idx['DefectQty']    !== undefined ? (Number(data[r][idx['DefectQty']])    || 0) : 0,
       pmRepair:     idx['RepairQty']    !== undefined ? (Number(data[r][idx['RepairQty']])    || 0) : 0,
       pmAwaitConv:  idx['AwaitConvQty'] !== undefined ? (Number(data[r][idx['AwaitConvQty']]) || 0) : 0,
+      qtyPerPallet: Number(data[r][idx['QtyPerPallet']]) || 0,
       hasPmMirror:  (idx['GoodQty'] !== undefined &&
                      (Number(data[r][idx['GoodQty']]) || 0) +
                      (Number(data[r][idx['DefectQty']]) || 0) +
@@ -242,6 +243,26 @@ function computeTripwire_(palletOutput, pmByPallet) {
     totalPallets:   totalPallets,
     mirrorPct:      pct_(mirroredCount, totalPallets)
   };
+}
+
+// ============================================================================
+// Per-pallet invariant tripwire (#2)
+//   Good(lastOp) + Σscrap + Repair(lastOp) + AwaitConv(lastOp) === QtyPerPallet
+// ============================================================================
+
+function computeInvariantTripwire_(palletOutput, pmByPallet) {
+  var violators = [];
+  for (var i = 0; i < palletOutput.length; i++) {
+    var po = palletOutput[i];
+    var pm = pmByPallet[po.palletId];
+    var expected = pm ? pm.qtyPerPallet : 0;
+    if (!expected || expected <= 0) continue;
+    var total = po.good + po.scrap + po.repair + po.awaitConv;
+    if (total !== expected) {
+      violators.push({ palletId: po.palletId, total: total, expected: expected });
+    }
+  }
+  return { violators: violators, count: violators.length };
 }
 
 // ============================================================================
@@ -377,6 +398,7 @@ function buildYieldQCReport_() {
 
   // ── Tripwire (mirrored subset only) ──
   var tripwire = computeTripwire_(palletOutput, pmByPallet);
+  var invariantTripwire = computeInvariantTripwire_(palletOutput, pmByPallet);
 
   return {
     generatedAt: now,
@@ -401,7 +423,8 @@ function buildYieldQCReport_() {
     failPallets:  failPallets,
     dateTrend:    dateTrend,
     dateLabel:    dateLabel,
-    tripwire:     tripwire
+    tripwire:     tripwire,
+    invariantTripwire: invariantTripwire
   };
 }
 
@@ -482,6 +505,20 @@ function writeYieldQCReportSheet_(report) {
   mergedText('PM mirror: ' + tw.mirroredCount + '/' + tw.totalPallets +
     ' pallets (' + fmtPct_(tw.mirrorPct) + ')',
     { fc: '#888888', italic: true });
+
+  // ── Per-pallet invariant tripwire ──
+  var inv = report.invariantTripwire;
+  if (inv.count > 0) {
+    mergedText('⚠️ INVARIANT พาเลทที่ยอดรวม ≠ QtyPerPallet: ' + inv.count +
+      ' (ตรวจการกรอกหน้างาน)',
+      { bg: '#ff9900', fc: '#000000', fs: 11, bold: true, h: 24 });
+    var showCount = Math.min(inv.violators.length, 5);
+    for (var vi = 0; vi < showCount; vi++) {
+      var v = inv.violators[vi];
+      mergedText('  ' + v.palletId + ': Total=' + v.total + ' vs QtyPerPallet=' + v.expected,
+        { fc: '#cc6600', italic: true });
+    }
+  }
   r++;
 
   // ── Section 1: Summary ──
@@ -577,6 +614,15 @@ function buildYieldQCReportText_(report) {
     lines.push('⚠️ MIRROR MISMATCH: PM Good=' + tw.pmGood + ' vs OL last-op Good=' + tw.olLastOpGood);
   }
   lines.push('PM mirror: ' + tw.mirroredCount + '/' + tw.totalPallets + ' pallets');
+  var inv = report.invariantTripwire;
+  if (inv.count > 0) {
+    lines.push('⚠️ INVARIANT พาเลทที่ยอดรวม ≠ QtyPerPallet: ' + inv.count + ' (ตรวจการกรอกหน้างาน)');
+    var showCount = Math.min(inv.violators.length, 5);
+    for (var vi = 0; vi < showCount; vi++) {
+      var v = inv.violators[vi];
+      lines.push('  ' + v.palletId + ': Total=' + v.total + ' vs QtyPerPallet=' + v.expected);
+    }
+  }
   lines.push('');
   lines.push('Output (OL last-op, Scrap summed):');
   lines.push('  Yield%: ' + fmtPct_(ov.yieldPct) + '  FPY%: ' + fmtPct_(ov.fpyPct));
@@ -768,7 +814,7 @@ function TEST_yieldQcReport_() {
       palletId: TEST_PID, mo: TEST_MO, material: TEST_MAT, materialName: 'Test',
       unit: 'PC', scannedDateStr: '2026-06-22', prodDateStr: '2026-06-22',
       qcResult: 'PASS', qcResultNote: '', qcInspector: '',
-      pmGood: 8, pmScrap: 1, pmRepair: 0, pmAwaitConv: 0, hasPmMirror: true
+      pmGood: 8, pmScrap: 1, pmRepair: 0, pmAwaitConv: 0, qtyPerPallet: 10, hasPmMirror: true
     };
 
     var palletOut = buildPalletOutput_(testOlRows, testPmByPallet);
@@ -814,6 +860,32 @@ function TEST_yieldQcReport_() {
     var twBad = computeTripwire_(palletOut, desyncPm);
     assert('Tripwire desynced → fires', twBad.mismatch,
       'pmGood=' + twBad.pmGood + ' olGood=' + twBad.olLastOpGood);
+
+    // (f) Per-pallet invariant: consistent pallet → Total=10=Qty, no violation
+    var invOk = computeInvariantTripwire_(palletOut, testPmByPallet);
+    assert('Invariant: consistent pallet (Total=10=Qty) → 0 violators', invOk.count === 0,
+      'count=' + invOk.count);
+
+    // (g) Per-pallet invariant: violating pallet (Good deliberately too high → Total≠Qty)
+    var TEST_PID2 = 'PL-TEST-YQRMODEL-L02';
+    var violatingOl = [
+      { palletId: TEST_PID2, mo: TEST_MO, opNo: '0010', good: 10, scrap: 1, repair: 0, awaitConv: 0, workCenter: 'WC-X', pdResult: '' },
+      { palletId: TEST_PID2, mo: TEST_MO, opNo: '0020', good: 11, scrap: 0, repair: 0, awaitConv: 0, workCenter: 'WC-Y', pdResult: '' }
+    ];
+    var violatingPm = {};
+    violatingPm[TEST_PID2] = {
+      palletId: TEST_PID2, mo: TEST_MO, material: TEST_MAT, materialName: 'Test',
+      unit: 'PC', qtyPerPallet: 10, hasPmMirror: true,
+      pmGood: 0, pmScrap: 0, pmRepair: 0, pmAwaitConv: 0
+    };
+    var violatingOut = buildPalletOutput_(violatingOl, violatingPm);
+    var invBad = computeInvariantTripwire_(violatingOut, violatingPm);
+    assert('Invariant: violating pallet → fires', invBad.count === 1, 'count=' + invBad.count);
+    assert('Invariant: violating pallet listed', invBad.violators.length > 0 &&
+      invBad.violators[0].palletId === TEST_PID2,
+      invBad.violators.length > 0
+        ? 'pid=' + invBad.violators[0].palletId + ' total=' + invBad.violators[0].total + ' vs expected=' + invBad.violators[0].expected
+        : 'no violators');
 
     // Run full report (production data, excludes PL-TEST)
     var report = buildYieldQCReport_();
