@@ -28,13 +28,37 @@ var TZ_ = 'Asia/Bangkok';
 // ============================================================================
 
 var _wcCache_ = {};
+var _mmCache_ = null;
+var _mmByWC_  = null;
 
+function _initMmCaches_() {
+  if (_mmCache_) return;
+  _mmCache_ = getMachineMaster_();
+  _mmByWC_  = {};
+  Object.keys(_mmCache_).forEach(function(code) {
+    var wc = _mmCache_[code].sapWorkCenter;
+    if (wc && !_mmByWC_[wc]) _mmByWC_[wc] = { code: code, name: _mmCache_[code].name };
+  });
+}
+
+/**
+ * Resolve work center for an OL row. Returns an object with source tag.
+ * @return {{machineCode:string, machineName:string, sapWC:string, source:string}}
+ */
 function resolveWorkCenter_(olIdx, olRow, mo, opNo) {
+  _initMmCaches_();
+  var aps = '';
   if (olIdx['ActualMachine'] !== undefined) {
-    var actual = String(olRow[olIdx['ActualMachine']] || '').trim();
-    if (actual) return actual;
+    aps = String(olRow[olIdx['ActualMachine']] || '').trim();
   }
-  if (!mo || !opNo) return '';
+  if (aps) {
+    var apsUpper = aps.toUpperCase();
+    if (_mmCache_[apsUpper]) {
+      return { machineCode: apsUpper, machineName: _mmCache_[apsUpper].name,
+               sapWC: _mmCache_[apsUpper].sapWorkCenter, source: 'ACTUAL' };
+    }
+  }
+  if (!mo || !opNo) return { machineCode: '', machineName: '', sapWC: '', source: 'RAW' };
   if (!_wcCache_[mo]) {
     var ops = getOperationsForOrder(mo);
     var map = {};
@@ -43,7 +67,12 @@ function resolveWorkCenter_(olIdx, olRow, mo, opNo) {
     }
     _wcCache_[mo] = map;
   }
-  return _wcCache_[mo][opNo] || '';
+  var wc = _wcCache_[mo][opNo] || '';
+  if (wc && _mmByWC_[wc]) {
+    return { machineCode: _mmByWC_[wc].code, machineName: _mmByWC_[wc].name,
+             sapWC: wc, source: 'PLANNED' };
+  }
+  return { machineCode: '', machineName: '', sapWC: wc, source: 'RAW' };
 }
 
 // ============================================================================
@@ -80,18 +109,22 @@ function readOlRows_() {
 
     var mo   = String(data[r][idx['ManufacturingOrder']] || '').trim();
     var opNo = _normOpNo_(data[r][idx['OperationNo']]);
-    var wc   = resolveWorkCenter_(idx, data[r], mo, opNo);
+    var wcInfo = resolveWorkCenter_(idx, data[r], mo, opNo);
 
     rows.push({
-      palletId:   pid,
-      mo:         mo,
-      opNo:       opNo,
-      good:       Number(data[r][idx['GoodQty']])      || 0,
-      scrap:      Number(data[r][idx['ScrapQty']])      || 0,
-      repair:     Number(data[r][idx['RepairQty']])     || 0,
-      awaitConv:  Number(data[r][idx['AwaitConvQty']])  || 0,
-      pdResult:   String(data[r][idx['PDResult']]       || '').trim(),
-      workCenter: wc
+      palletId:    pid,
+      mo:          mo,
+      opNo:        opNo,
+      good:        Number(data[r][idx['GoodQty']])      || 0,
+      scrap:       Number(data[r][idx['ScrapQty']])      || 0,
+      repair:      Number(data[r][idx['RepairQty']])     || 0,
+      awaitConv:   Number(data[r][idx['AwaitConvQty']])  || 0,
+      pdResult:    String(data[r][idx['PDResult']]       || '').trim(),
+      workCenter:  wcInfo.sapWC || wcInfo.machineCode || '',
+      machineCode: wcInfo.machineCode,
+      machineName: wcInfo.machineName,
+      sapWC:       wcInfo.sapWC,
+      wcSource:    wcInfo.source
     });
   }
   return rows;
@@ -271,6 +304,8 @@ function computeInvariantTripwire_(palletOutput, pmByPallet) {
 
 function buildYieldQCReport_() {
   _wcCache_ = {};
+  _mmCache_ = null;
+  _mmByWC_  = null;
 
   var olRows = readOlRows_();
   var pmRows = readPmRows_();
@@ -332,24 +367,40 @@ function buildYieldQCReport_() {
     };
   });
 
-  // ── By Work Center — per-op throughput (unchanged intent) ──
+  // ── By Work Center / Machine — per-op throughput ──
   var byWc = {};
+  var actualOps = 0;
   for (var w = 0; w < olRows.length; w++) {
-    var wc = olRows[w].workCenter || '(no WC)';
-    if (!byWc[wc]) byWc[wc] = { good: 0, scrap: 0, repair: 0, awaitConv: 0, ops: 0, palletSet: {} };
-    byWc[wc].good      += olRows[w].good;
-    byWc[wc].scrap     += olRows[w].scrap;
-    byWc[wc].repair    += olRows[w].repair;
-    byWc[wc].awaitConv += olRows[w].awaitConv;
-    byWc[wc].ops++;
-    byWc[wc].palletSet[olRows[w].palletId] = true;
+    var row = olRows[w];
+    var src = row.wcSource || 'RAW';
+    if (src === 'ACTUAL') actualOps++;
+    var groupKey = src === 'ACTUAL' ? ('APS:' + row.machineCode) : ('WC:' + (row.sapWC || '(no WC)'));
+    if (!byWc[groupKey]) byWc[groupKey] = {
+      machineName: row.machineName || '', machineCode: row.machineCode || '',
+      sapWC: row.sapWC || '', source: src,
+      good: 0, scrap: 0, repair: 0, awaitConv: 0, ops: 0, palletSet: {}
+    };
+    byWc[groupKey].good      += row.good;
+    byWc[groupKey].scrap     += row.scrap;
+    byWc[groupKey].repair    += row.repair;
+    byWc[groupKey].awaitConv += row.awaitConv;
+    byWc[groupKey].ops++;
+    byWc[groupKey].palletSet[row.palletId] = true;
   }
-  var wcSummary = Object.keys(byWc).sort().map(function(k) {
+  var srcOrder = { ACTUAL: 0, PLANNED: 1, RAW: 2 };
+  var wcSummary = Object.keys(byWc).sort(function(a, b) {
+    var sa = srcOrder[byWc[a].source] || 2, sb = srcOrder[byWc[b].source] || 2;
+    if (sa !== sb) return sa - sb;
+    return a < b ? -1 : (a > b ? 1 : 0);
+  }).map(function(k) {
     var e = byWc[k];
     var total = e.good + e.scrap + e.repair + e.awaitConv;
+    var srcLabel = e.source === 'ACTUAL' ? '✅ จริง' :
+                   e.source === 'PLANNED' ? '📋 ตามแผน' : '—';
     return {
-      workCenter: k, ops: e.ops, pallets: Object.keys(e.palletSet).length,
-      total: total,
+      machineName: e.machineName, machineCode: e.machineCode,
+      sapWC: e.sapWC, source: e.source, srcLabel: srcLabel,
+      ops: e.ops, pallets: Object.keys(e.palletSet).length, total: total,
       good: e.good, scrap: e.scrap, repair: e.repair, awaitConv: e.awaitConv,
       yieldPct: fmtPct_(pct_(e.good + e.repair + e.awaitConv, total)),
       fpyPct:   fmtPct_(pct_(e.good, total)),
@@ -423,6 +474,7 @@ function buildYieldQCReport_() {
     failPallets:  failPallets,
     dateTrend:    dateTrend,
     dateLabel:    dateLabel,
+    machineCoverage: { actual: actualOps, total: olRows.length },
     tripwire:     tripwire,
     invariantTripwire: invariantTripwire
   };
@@ -439,7 +491,7 @@ function writeYieldQCReportSheet_(report) {
   sh.clear();
   sh.setHiddenGridlines(true);
 
-  var C = 9;
+  var C = 14;
   var r = 1;
 
   function pad(arr) {
@@ -553,15 +605,30 @@ function writeYieldQCReportSheet_(report) {
   }
   r++;
 
-  // ── Section 3: By Work Center (per-op throughput) ──
-  mergedText('แยกตาม Work Center / Machine — ปริมาณราย operation (ไม่ใช่ยอดผลผลิต)',
+  // ── Section 3: By Work Center / Machine (per-op throughput) ──
+  var mc = report.machineCoverage;
+  var mcLabel = mc.actual > 0
+    ? '  |  เครื่องจริง: ' + mc.actual + '/' + mc.total + ' ops (' + fmtPct_(pct_(mc.actual, mc.total)) + ')'
+    : '';
+  mergedText('แยกตาม Work Center / Machine — ปริมาณราย operation (ไม่ใช่ยอดผลผลิต)' + mcLabel,
     { bg: '#bf8f00', fc: '#ffffff', fs: 11, bold: true, h: 22 });
   r++;
-  tableHeader(['Work Center', 'Ops', 'Pallets', 'Total', 'Yield%', 'FPY%', 'Scrap%', 'Repair', 'AwaitConv']);
+  tableHeader(['เครื่อง (ชื่อไทย)', 'รหัส APS', 'SAP WC', 'ที่มา', 'Ops', 'Pallets',
+               'Total', 'Good', 'Scrap', 'Repair', 'AwaitConv', 'Yield%', 'FPY%', 'Scrap%']);
   for (var wi = 0; wi < report.byWorkCenter.length; wi++) {
     var bw = report.byWorkCenter[wi];
-    dataRow([bw.workCenter, bw.ops, bw.pallets, bw.total, bw.yieldPct, bw.fpyPct,
-             bw.scrapPct, bw.repair, bw.awaitConv], wi % 2 === 1);
+    var rowBg = bw.source === 'ACTUAL' ? '#e8f5e9' : (wi % 2 === 1 ? '#f2f2f2' : null);
+    var rng2 = sh.getRange(r, 1, 1, C);
+    rng2.setValues([pad([bw.machineName || '', bw.machineCode || '', bw.sapWC || '', bw.srcLabel,
+             bw.ops, bw.pallets, bw.total, bw.good, bw.scrap, bw.repair, bw.awaitConv,
+             bw.yieldPct, bw.fpyPct, bw.scrapPct])])
+      .setBorder(true, true, true, true, true, true)
+      .setNumberFormat('@');
+    if (rowBg) rng2.setBackground(rowBg);
+    for (var ci2 = 4; ci2 <= 10; ci2++) {
+      sh.getRange(r, ci2 + 1).setNumberFormat('#,##0');
+    }
+    r++;
   }
   r++;
 
@@ -666,6 +733,10 @@ function buildYieldQcLarkCard_(report) {
   lines.push('QC Pass Rate: ' + fmtPct_(ov.qcPassRate) + ' (' + ov.qcPass + '/' + (ov.qcPass + ov.qcFail) + ')');
   lines.push('QC Coverage: ' + fmtPct_(ov.qcCoverage) + ' (' + ov.qcTotal + '/' + ov.palletTotal + ')');
   lines.push('PD Coverage: ' + fmtPct_(ov.pdCoverage) + ' (' + ov.pdInspected + '/' + ov.pdTotal + ')');
+  var mc = report.machineCoverage;
+  if (mc && mc.actual > 0) {
+    lines.push('เครื่องจริง: ' + mc.actual + '/' + mc.total + ' ops (' + fmtPct_(pct_(mc.actual, mc.total)) + ')');
+  }
 
   if (tw.mismatch) {
     lines.push('');

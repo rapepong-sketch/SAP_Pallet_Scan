@@ -671,3 +671,146 @@ function TEST_machineCaptureM2() {
       (results[si].detail ? ' (' + results[si].detail + ')' : ''));
   }
 }
+
+// ============================================================================
+// TEST — Machine Capture M3 (resolver ACTUAL/PLANNED/RAW)
+// ============================================================================
+
+function TEST_machineResolveM3_() {
+  var results = [];
+  var pass    = true;
+  var ss      = getSpreadsheet_();
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    if (!ok) pass = false;
+    Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
+  }
+
+  // Reset caches
+  _wcCache_ = {};
+  _mmCache_ = null;
+  _mmByWC_  = null;
+
+  // Seed 3 PL-TEST-M3 rows in OperationLog
+  var olSh  = ss.getSheetByName(OL_SHEET);
+  var olHdr = olSh.getRange(1, 1, 1, olSh.getLastColumn()).getValues()[0];
+  var olIdx = {};
+  olHdr.forEach(function(h, i) { olIdx[String(h).trim()] = i; });
+
+  function seedOl(pid, mo, opNo, aps) {
+    var row = new Array(olHdr.length).fill('');
+    row[olIdx['LogID']]              = pid + '-' + opNo + '-OP-' + Date.now();
+    row[olIdx['PalletID']]           = pid;
+    row[olIdx['ManufacturingOrder']] = mo;
+    row[olIdx['OperationNo']]        = opNo;
+    row[olIdx['OperationText']]      = 'M3 Test';
+    row[olIdx['GoodQty']]            = 10;
+    row[olIdx['ScrapQty']]           = 0;
+    row[olIdx['RepairQty']]          = 0;
+    row[olIdx['AwaitConvQty']]       = 0;
+    row[olIdx['Operator']]           = 'TEST';
+    row[olIdx['Role']]               = 'OP';
+    row[olIdx['Result']]             = 'PASS';
+    row[olIdx['LoggedAt']]           = new Date();
+    row[olIdx['Source']]             = 'TEST';
+    if (olIdx['ActualMachine'] !== undefined) row[olIdx['ActualMachine']] = aps || '';
+    olSh.appendRow(row);
+  }
+
+  seedOl('PL-TEST-M3-ACTUAL',  '9999999990', '0010', 'APS001');
+  seedOl('PL-TEST-M3-PLANNED', '1000036346', '0010', '');
+  seedOl('PL-TEST-M3-RAW',     '9999999990', '0099', '');
+  SpreadsheetApp.flush();
+
+  try {
+    // Re-read to resolve
+    _wcCache_ = {};
+    _mmCache_ = null;
+    _mmByWC_  = null;
+
+    var data = olSh.getDataRange().getValues();
+    var hdr2 = data[0];
+    var idx2 = {};
+    hdr2.forEach(function(h, i) { idx2[String(h).trim()] = i; });
+
+    function findRow(pid) {
+      for (var r = 1; r < data.length; r++) {
+        if (String(data[r][idx2['PalletID']] || '').trim() === pid) return data[r];
+      }
+      return null;
+    }
+
+    // (a) ACTUAL: APS001 → source=ACTUAL, name from MachineMaster, sapWC='0101-01'
+    var rowA = findRow('PL-TEST-M3-ACTUAL');
+    assert('(a) ACTUAL row found', rowA !== null);
+    if (rowA) {
+      var resA = resolveWorkCenter_(idx2, rowA, '9999999990', '0010');
+      assert('(a) source=ACTUAL', resA.source === 'ACTUAL', 'source=' + resA.source);
+      assert('(a) machineCode=APS001', resA.machineCode === 'APS001', 'code=' + resA.machineCode);
+      assert('(a) machineName non-empty', resA.machineName.length > 0, 'name=' + resA.machineName);
+      assert('(a) sapWC=0101-01', resA.sapWC === '0101-01', 'sapWC=' + resA.sapWC);
+    }
+
+    // (b) PLANNED: mo=1000036346 opNo=0010 → planned WC from routing → PLANNED or RAW
+    var rowB = findRow('PL-TEST-M3-PLANNED');
+    assert('(b) PLANNED row found', rowB !== null);
+    if (rowB) {
+      var resB = resolveWorkCenter_(idx2, rowB, '1000036346', '0010');
+      assert('(b) source != ACTUAL', resB.source !== 'ACTUAL', 'source=' + resB.source);
+      assert('(b) sapWC non-empty', resB.sapWC.length > 0, 'sapWC=' + resB.sapWC);
+      Logger.log('  (b) detail: source=' + resB.source + ' machineName=' + resB.machineName +
+        ' sapWC=' + resB.sapWC);
+    }
+
+    // (c) RAW: unknown MO+opNo, no ActualMachine → source=RAW
+    var rowC = findRow('PL-TEST-M3-RAW');
+    assert('(c) RAW row found', rowC !== null);
+    if (rowC) {
+      var resC = resolveWorkCenter_(idx2, rowC, '9999999990', '0099');
+      assert('(c) source=RAW', resC.source === 'RAW', 'source=' + resC.source);
+      assert('(c) machineName empty', resC.machineName === '', 'name=' + resC.machineName);
+    }
+
+    // Run full report and check the By WC section
+    var report = buildYieldQCReport_();
+    assert('full report runs', !!report);
+    assert('byWorkCenter has entries', report.byWorkCenter.length > 0,
+      'len=' + report.byWorkCenter.length);
+
+    var hasActual = report.byWorkCenter.some(function(bw) { return bw.source === 'ACTUAL'; });
+    if (hasActual) {
+      var actualRow = report.byWorkCenter.find(function(bw) { return bw.source === 'ACTUAL'; });
+      assert('ACTUAL row has machineName', actualRow.machineName.length > 0);
+      assert('ACTUAL row Yield% not NaN', actualRow.yieldPct !== 'NaN%',
+        'yieldPct=' + actualRow.yieldPct);
+    }
+    assert('machineCoverage present', report.machineCoverage !== undefined);
+
+  } catch (e) {
+    assert('test execution', false, e.message + '\n' + (e.stack || ''));
+  }
+
+  // ── Cleanup: delete PL-TEST-M3 rows ──
+  try {
+    var olAll = olSh.getDataRange().getValues();
+    for (var cr = olAll.length - 1; cr >= 1; cr--) {
+      if (/^PL-TEST-M3/i.test(String(olAll[cr][idx2['PalletID']] || '').trim())) {
+        olSh.deleteRow(cr + 1);
+      }
+    }
+    Logger.log('Cleanup: PL-TEST-M3 rows deleted');
+  } catch (cleanErr) {
+    Logger.log('Cleanup error: ' + cleanErr.message);
+  }
+
+  Logger.log('');
+  Logger.log('========================================');
+  Logger.log('TEST_machineResolveM3_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
+  Logger.log('========================================');
+  for (var si = 0; si < results.length; si++) {
+    Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
+      (results[si].detail ? ' (' + results[si].detail + ')' : ''));
+  }
+}
