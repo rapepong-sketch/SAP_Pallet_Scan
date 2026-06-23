@@ -91,12 +91,17 @@ function onOpen() {
     .addSeparator()
     .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets');
 
+  // ── ⚙ ระบบ ──────────────────────────────────────────────────────────────
+  const sysMenu = ui.createMenu('⚙ ระบบ')
+    .addItem('📊 System Status',                   'showSystemStatusDialog');
+
   // ── Top-level menu ──────────────────────────────────────────────────────
   ui.createMenu('🏭 Pallet Tracker')
     .addSubMenu(dailyMenu)
     .addSubMenu(settingsMenu)
     .addSubMenu(diagMenu)
     .addSubMenu(adminMenu)
+    .addSubMenu(sysMenu)
     .addToUi();
 }
 
