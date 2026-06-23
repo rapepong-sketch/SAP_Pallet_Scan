@@ -1077,7 +1077,7 @@ function testBackfillOne() {
  * Run from Editor. NO writes. Logs FETCH_URL before every UrlFetchApp call.
  * See docs/diagnostics/CONFIRM_DRIFT_DIAG.md for analysis framework.
  */
-function diagConfirmDrift_() {
+function diagConfirmDrift() {
   Logger.log('');
   Logger.log('══════════════════════════════════════════');
   Logger.log(' Confirm Drift — Read-Only Diagnostic');

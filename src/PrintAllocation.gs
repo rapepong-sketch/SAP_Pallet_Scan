@@ -617,7 +617,7 @@ function testPreviewAllocation() {
 // TEST — PO selector
 // ============================================================================
 
-function TEST_poSelector_() {
+function TEST_poSelector() {
   var results = [];
   var pass    = true;
 
