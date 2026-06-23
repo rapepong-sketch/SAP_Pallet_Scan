@@ -1067,3 +1067,239 @@ function testBackfillOne() {
     }
   }
 }
+
+// ============================================================================
+// Diagnostic — Confirm Drift (read-only)
+// ============================================================================
+
+/**
+ * Read-only diagnostic: profile PalletMaster confirmation data and probe SAP.
+ * Run from Editor. NO writes. Logs FETCH_URL before every UrlFetchApp call.
+ * See docs/diagnostics/CONFIRM_DRIFT_DIAG.md for analysis framework.
+ */
+function diagConfirmDrift_() {
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' Confirm Drift — Read-Only Diagnostic');
+  Logger.log('══════════════════════════════════════════');
+
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) { Logger.log('PalletMaster empty'); return; }
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  // ── A1: Status profile ──
+  Logger.log('');
+  Logger.log('── A1: PalletMaster profile ──');
+  Logger.log('Total rows: ' + (data.length - 1));
+
+  var byStatus = {};
+  for (var r = 1; r < data.length; r++) {
+    var ss = String(data[r][idx['ScanStatus']] || '').trim() || '(empty)';
+    byStatus[ss] = (byStatus[ss] || 0) + 1;
+  }
+  Logger.log('By ScanStatus:');
+  Object.keys(byStatus).sort().forEach(function(s) {
+    Logger.log('  ' + s + ': ' + byStatus[s]);
+  });
+
+  // ── A2: Confirmation fields on CONFIRMED rows ──
+  Logger.log('');
+  Logger.log('── A2: CONFIRMED rows — confirmation fields ──');
+
+  var confirmFields = ['GRMaterialDocument', 'GRMaterialDocumentYear',
+    'ConfirmationGroup', 'ConfirmationCount', 'ConfirmedAt', 'ConfirmedBy'];
+  var present = {};
+  confirmFields.forEach(function(f) {
+    present[f] = idx[f] !== undefined ? 'col ' + idx[f] : 'MISSING';
+  });
+  Logger.log('Column presence:');
+  confirmFields.forEach(function(f) { Logger.log('  ' + f + ': ' + present[f]); });
+
+  var withDoc = 0, withGroup = 0, withNeither = 0;
+  var samples = [];
+  for (var r2 = 1; r2 < data.length; r2++) {
+    if (String(data[r2][idx['ScanStatus']] || '').trim() !== 'CONFIRMED') continue;
+    var pid   = String(data[r2][idx['PalletID']] || '').trim();
+    var mo    = String(data[r2][idx['ManufacturingOrder']] || '').trim();
+    var mat   = String(data[r2][idx['Material']] || '').trim();
+    var grDoc = idx['GRMaterialDocument'] !== undefined
+      ? String(data[r2][idx['GRMaterialDocument']] == null ? '' : data[r2][idx['GRMaterialDocument']]).trim() : '';
+    var grYear = idx['GRMaterialDocumentYear'] !== undefined
+      ? String(data[r2][idx['GRMaterialDocumentYear']] == null ? '' : data[r2][idx['GRMaterialDocumentYear']]).trim() : '';
+    var cGroup = idx['ConfirmationGroup'] !== undefined
+      ? String(data[r2][idx['ConfirmationGroup']] == null ? '' : data[r2][idx['ConfirmationGroup']]).trim() : '';
+    var cCount = idx['ConfirmationCount'] !== undefined
+      ? String(data[r2][idx['ConfirmationCount']] == null ? '' : data[r2][idx['ConfirmationCount']]).trim() : '';
+    var cAt    = idx['ConfirmedAt'] !== undefined ? data[r2][idx['ConfirmedAt']] : '';
+    var cBy    = idx['ConfirmedBy'] !== undefined
+      ? String(data[r2][idx['ConfirmedBy']] == null ? '' : data[r2][idx['ConfirmedBy']]).trim() : '';
+
+    if (grDoc) withDoc++;
+    if (cGroup) withGroup++;
+    if (!grDoc && !cGroup) withNeither++;
+
+    if (samples.length < 3) {
+      samples.push({ pid: pid, mo: mo, mat: mat, grDoc: grDoc, grYear: grYear,
+        cGroup: cGroup, cCount: cCount, cAt: cAt, cBy: cBy });
+    }
+  }
+
+  var confirmed = (byStatus['CONFIRMED'] || 0);
+  Logger.log('');
+  Logger.log('CONFIRMED rows: ' + confirmed);
+  Logger.log('  with GRMaterialDocument: ' + withDoc);
+  Logger.log('  with ConfirmationGroup:  ' + withGroup);
+  Logger.log('  with NEITHER (unverifiable): ' + withNeither);
+
+  Logger.log('');
+  Logger.log('Sample CONFIRMED rows (up to 3):');
+  samples.forEach(function(s, i) {
+    Logger.log('  [' + (i + 1) + '] ' + s.pid + ' MO=' + s.mo + ' Mat=' + s.mat);
+    Logger.log('      GRDoc=' + (s.grDoc || '(empty)') + ' Year=' + (s.grYear || '(empty)'));
+    Logger.log('      ConfGrp=' + (s.cGroup || '(empty)') + ' Count=' + (s.cCount || '(empty)'));
+    Logger.log('      ConfirmedAt=' + s.cAt + ' By=' + (s.cBy || '(empty)'));
+  });
+
+  // ── B3: SAP verification for samples with GRMaterialDocument ──
+  Logger.log('');
+  Logger.log('── B3: SAP Material Document verification ──');
+
+  var creds = getSapCredentials_();
+  var authHeader = 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass);
+
+  samples.forEach(function(s, i) {
+    if (!s.grDoc || !s.grYear) {
+      Logger.log('  [' + (i + 1) + '] ' + s.pid + ': SKIP — no GRMaterialDocument');
+      return;
+    }
+    var path = CFG.SERVICES.MATERIAL_DOCUMENT + 'A_MaterialDocumentHeader';
+    var params = {
+      '$filter': "MaterialDocument eq '" + s.grDoc + "' and MaterialDocumentYear eq '" + s.grYear + "'",
+      '$select': 'MaterialDocument,MaterialDocumentYear,PostingDate,DocumentDate,ReferenceDocument',
+      '$format': 'json'
+    };
+    var url = buildSapUrl_(path, params);
+    Logger.log('  FETCH_URL: ' + url);
+    try {
+      var resp = UrlFetchApp.fetch(url, {
+        method: 'get', headers: { 'Authorization': authHeader, 'Accept': 'application/json' },
+        muteHttpExceptions: true
+      });
+      var code = resp.getResponseCode();
+      var body = resp.getContentText();
+      Logger.log('  [' + (i + 1) + '] ' + s.pid + ': HTTP ' + code);
+      if (code >= 200 && code < 300) {
+        var parsed = JSON.parse(body);
+        var results = (parsed.d && parsed.d.results) || [];
+        Logger.log('    found=' + results.length);
+        if (results.length > 0) {
+          var doc = results[0];
+          Logger.log('    PostingDate=' + (doc.PostingDate || '') +
+            ' ReferenceDocument=' + (doc.ReferenceDocument || ''));
+        }
+      } else {
+        Logger.log('    body=' + body.slice(0, 300));
+      }
+    } catch (e) {
+      Logger.log('  [' + (i + 1) + '] ERROR: ' + e.message);
+    }
+  });
+
+  // ── B4: Reverse lookup for samples WITHOUT GRMaterialDocument ──
+  Logger.log('');
+  Logger.log('── B4: Reverse lookup by MO (ConfirmationGroup) ──');
+
+  var mosSeen = {};
+  samples.forEach(function(s, i) {
+    if (s.grDoc) {
+      Logger.log('  [' + (i + 1) + '] ' + s.pid + ': SKIP — has GRDoc');
+      return;
+    }
+    if (!s.mo || mosSeen[s.mo]) return;
+    mosSeen[s.mo] = true;
+
+    var paddedMo = s.mo.padStart(12, '0');
+    var path = CFG.SERVICES.PROD_ORDER_CONF + 'ProdnOrdConf2';
+    var params = {
+      '$filter': "OrderID eq '" + paddedMo + "'",
+      '$select': 'ConfirmationGroup,ConfirmationCount,OrderID,OrderOperation,' +
+        'ConfirmationYieldQuantity,ConfirmationScrapQuantity',
+      '$format': 'json', '$top': '10'
+    };
+    var url = buildSapUrl_(path, params);
+    Logger.log('  FETCH_URL: ' + url);
+    try {
+      var resp = UrlFetchApp.fetch(url, {
+        method: 'get', headers: { 'Authorization': authHeader, 'Accept': 'application/json' },
+        muteHttpExceptions: true
+      });
+      var code = resp.getResponseCode();
+      Logger.log('  MO=' + s.mo + ': HTTP ' + code);
+      if (code >= 200 && code < 300) {
+        var parsed = JSON.parse(resp.getContentText());
+        var results = (parsed.d && parsed.d.results) || [];
+        Logger.log('    confirmations found: ' + results.length);
+        results.forEach(function(c, ci) {
+          Logger.log('    [' + ci + '] Group=' + c.ConfirmationGroup +
+            ' Count=' + c.ConfirmationCount +
+            ' Op=' + c.OrderOperation +
+            ' Yield=' + c.ConfirmationYieldQuantity +
+            ' Scrap=' + c.ConfirmationScrapQuantity);
+        });
+      }
+    } catch (e) {
+      Logger.log('  MO=' + s.mo + ' ERROR: ' + e.message);
+    }
+  });
+
+  // ── B5: Metadata probe (GR join fields) ──
+  Logger.log('');
+  Logger.log('── B5: MaterialDocument item filter probe ──');
+  var itemPath = CFG.SERVICES.MATERIAL_DOCUMENT + 'A_MaterialDocumentItem';
+  var itemParams = {
+    '$filter': "GoodsMovementType eq '101'",
+    '$select': 'MaterialDocument,MaterialDocumentYear,ManufacturingOrder,GoodsMovementType,Material,Plant,Batch,QuantityInEntryUnit',
+    '$top': '3', '$format': 'json'
+  };
+  var itemUrl = buildSapUrl_(itemPath, itemParams);
+  Logger.log('  FETCH_URL: ' + itemUrl);
+  try {
+    var itemResp = UrlFetchApp.fetch(itemUrl, {
+      method: 'get', headers: { 'Authorization': authHeader, 'Accept': 'application/json' },
+      muteHttpExceptions: true
+    });
+    Logger.log('  HTTP ' + itemResp.getResponseCode());
+    if (itemResp.getResponseCode() >= 200 && itemResp.getResponseCode() < 300) {
+      var itemParsed = JSON.parse(itemResp.getContentText());
+      var items = (itemParsed.d && itemParsed.d.results) || [];
+      Logger.log('  sample GR items: ' + items.length);
+      items.forEach(function(it, ii) {
+        Logger.log('    [' + ii + '] MatDoc=' + it.MaterialDocument +
+          ' MO=' + it.ManufacturingOrder +
+          ' Mat=' + it.Material +
+          ' Qty=' + it.QuantityInEntryUnit);
+      });
+    } else {
+      Logger.log('  body=' + itemResp.getContentText().slice(0, 300));
+    }
+  } catch (e) {
+    Logger.log('  ERROR: ' + e.message);
+  }
+
+  // ── C6: Gap analysis summary ──
+  Logger.log('');
+  Logger.log('── C6: Gap analysis ──');
+  Logger.log('CONFIRMED pallets:         ' + confirmed);
+  Logger.log('  verifiable (GRDoc):      ' + withDoc);
+  Logger.log('  recoverable (ConfGrp):   ' + (withGroup - withDoc));
+  Logger.log('  unverifiable (neither):  ' + withNeither);
+  Logger.log('');
+  Logger.log('Join key: GRMaterialDocument (direct, exact) is primary.');
+  Logger.log('Recovery: ConfirmationGroup → readMaterialDocument_ (backfill).');
+  Logger.log('Fallback: MO → ProdnOrdConf2 (ambiguous for multi-pallet MOs).');
+  Logger.log('══════════════════════════════════════════');
+}
