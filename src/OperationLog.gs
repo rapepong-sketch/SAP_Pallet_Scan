@@ -18,8 +18,8 @@ const OL_HEADERS = [
   'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
   'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty',
   'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
-  'ActualMachine',
-  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
+  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp',
+  'ActualMachine'
 ];
 
 // ============================================================================
@@ -306,8 +306,8 @@ var OL_TARGET_ORDER_ = [
   'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
   'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty',
   'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
-  'ActualMachine',
-  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
+  'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp',
+  'ActualMachine'
 ];
 
 /**
