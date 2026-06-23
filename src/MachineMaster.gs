@@ -395,7 +395,7 @@ function TEST_machineMasterReader() {
 // TEST — Machine Capture M2 (schema + logOperation + lookupMachineForScan)
 // ============================================================================
 
-function TEST_machineCaptureM2_() {
+function TEST_machineCaptureM2() {
   var results = [];
   var pass    = true;
   var ss      = getSpreadsheet_();
@@ -407,22 +407,27 @@ function TEST_machineCaptureM2_() {
     Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
   }
 
-  // (a) Schema: OperationLog has ActualMachine at idx14; other names unmoved
+  // (a) Schema: OL_HEADERS constant must match actual sheet header row
   var olSh  = ss.getSheetByName(OL_SHEET);
-  var olHdr = olSh.getRange(1, 1, 1, olSh.getLastColumn()).getValues()[0];
+  var olHdr = olSh.getRange(1, 1, 1, olSh.getLastColumn()).getValues()[0]
+    .map(function(h) { return String(h).trim(); });
   var olIdx = {};
-  olHdr.forEach(function(h, i) { olIdx[String(h).trim()] = i; });
+  olHdr.forEach(function(h, i) { olIdx[h] = i; });
 
-  assert('(a) ActualMachine exists', olIdx['ActualMachine'] !== undefined,
+  assert('(a) ActualMachine exists in sheet', olIdx['ActualMachine'] !== undefined,
     'idx=' + olIdx['ActualMachine']);
-  assert('(a) ActualMachine at idx14', olIdx['ActualMachine'] === 14,
-    'idx=' + olIdx['ActualMachine']);
-  assert('(a) GoodQty still idx5', olIdx['GoodQty'] === 5,
-    'idx=' + olIdx['GoodQty']);
-  assert('(a) Source still idx13', olIdx['Source'] === 13,
-    'idx=' + olIdx['Source']);
-  assert('(a) PDResult after ActualMachine', olIdx['PDResult'] === 15,
-    'idx=' + olIdx['PDResult']);
+  assert('(a) sheet has ' + OL_HEADERS.length + ' columns',
+    olHdr.length === OL_HEADERS.length,
+    'sheet=' + olHdr.length + ' OL_HEADERS=' + OL_HEADERS.length);
+
+  var headerMatch = olHdr.length === OL_HEADERS.length &&
+    olHdr.every(function(h, i) { return h === OL_HEADERS[i]; });
+  assert('(a) OL_HEADERS order === sheet header order', headerMatch,
+    headerMatch ? 'identical' :
+    'OL_HEADERS=[' + OL_HEADERS.join(',') + '] sheet=[' + olHdr.join(',') + ']');
+
+  var allPresent = OL_HEADERS.every(function(h) { return olIdx[h] !== undefined; });
+  assert('(a) every OL_HEADERS column present in sheet', allPresent);
 
   var TEST_PID = 'PL-TEST-M2-MACH-L01';
 
