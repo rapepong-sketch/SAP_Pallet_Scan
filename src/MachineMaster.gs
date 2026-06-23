@@ -280,6 +280,112 @@ function generateMachineQrStickers() {
 }
 
 // ============================================================================
+// Diagnostic: verify ActualMachine not leaking into PDResult
+// ============================================================================
+
+function diagVerifyActualMachineColumn_() {
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' DIAG: Verify ActualMachine column integrity');
+  Logger.log('══════════════════════════════════════════');
+
+  var ss = getSpreadsheet_();
+  var sh = ss.getSheetByName(OL_SHEET);
+  if (!sh || sh.getLastRow() < 2) {
+    Logger.log('OperationLog empty');
+    return;
+  }
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  // ── Header dump ──
+  Logger.log('');
+  Logger.log('Header (' + hdr.length + ' cols):');
+  for (var c = 0; c < hdr.length; c++) {
+    Logger.log('  [' + c + '] ' + String(hdr[c]).trim());
+  }
+
+  // ── Specific row: PL-1000036325-L01 ──
+  Logger.log('');
+  Logger.log('── PL-1000036325-L01 field dump ──');
+  var targetPid = 'PL-1000036325-L01';
+  var targetFound = false;
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][idx['PalletID']] || '').trim() !== targetPid) continue;
+    targetFound = true;
+    var fields = ['PalletID', 'ManufacturingOrder', 'OperationNo',
+      'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty',
+      'Operator', 'Role', 'Result', 'Source',
+      'ActualMachine', 'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'];
+    fields.forEach(function(f) {
+      var val = idx[f] !== undefined ? data[r][idx[f]] : '(COLUMN MISSING)';
+      Logger.log('  ' + f + ' (col ' + idx[f] + '): ' +
+        JSON.stringify(val) + '  typeof=' + typeof val);
+    });
+    break;
+  }
+  if (!targetFound) Logger.log('  ROW NOT FOUND: ' + targetPid);
+
+  // ── Full scan: APS leak check ──
+  Logger.log('');
+  Logger.log('── Full scan: APS leak check ──');
+  var apsInPD = 0;
+  var apsInAM = 0;
+  var pdAnomalies = [];
+  var apsInPDRows = [];
+
+  for (var r2 = 1; r2 < data.length; r2++) {
+    var pid = String(data[r2][idx['PalletID']] || '').trim();
+
+    var pdVal = idx['PDResult'] !== undefined
+      ? String(data[r2][idx['PDResult']] == null ? '' : data[r2][idx['PDResult']]).trim() : '';
+    var amVal = idx['ActualMachine'] !== undefined
+      ? String(data[r2][idx['ActualMachine']] == null ? '' : data[r2][idx['ActualMachine']]).trim() : '';
+
+    if (/^APS\d+$/i.test(pdVal)) {
+      apsInPD++;
+      if (apsInPDRows.length < 10) apsInPDRows.push({ row: r2 + 1, pid: pid, pdVal: pdVal });
+    }
+    if (/^APS\d+$/i.test(amVal)) apsInAM++;
+    if (pdVal && pdVal !== 'PASS' && pdVal !== 'FAIL') {
+      if (pdAnomalies.length < 10)
+        pdAnomalies.push({ row: r2 + 1, pid: pid, pdVal: pdVal });
+    }
+  }
+
+  Logger.log('Total data rows: ' + (data.length - 1));
+  Logger.log('PDResult matches /^APS\\d+$/ (BUG — leaked machine code): ' + apsInPD);
+  Logger.log('ActualMachine matches /^APS\\d+$/ (correct): ' + apsInAM);
+  Logger.log('PDResult anomalies (non-empty, not PASS/FAIL): ' + pdAnomalies.length);
+
+  if (apsInPDRows.length > 0) {
+    Logger.log('');
+    Logger.log('⚠️ APS codes in PDResult (first 10):');
+    apsInPDRows.forEach(function(e) {
+      Logger.log('  row ' + e.row + ' ' + e.pid + ' PDResult=' + e.pdVal);
+    });
+  }
+  if (pdAnomalies.length > 0) {
+    Logger.log('');
+    Logger.log('PDResult anomalies (first 10):');
+    pdAnomalies.forEach(function(e) {
+      Logger.log('  row ' + e.row + ' ' + e.pid + ' PDResult="' + e.pdVal + '"');
+    });
+  }
+
+  Logger.log('');
+  if (apsInPD === 0) {
+    Logger.log('✅ VERDICT: ActualMachine column OK — zero APS codes in PDResult');
+  } else {
+    Logger.log('❌ VERDICT: BUG — ' + apsInPD + ' rows have APS codes leaked into PDResult');
+  }
+  Logger.log('══════════════════════════════════════════');
+}
+
+// ============================================================================
 // Server API for Scanner.html — google.script.run
 // ============================================================================
 
@@ -676,7 +782,7 @@ function TEST_machineCaptureM2() {
 // TEST — Machine Capture M3 (resolver ACTUAL/PLANNED/RAW)
 // ============================================================================
 
-function TEST_machineResolveM3_() {
+function TEST_machineResolveM3() {
   var results = [];
   var pass    = true;
   var ss      = getSpreadsheet_();
