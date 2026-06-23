@@ -191,6 +191,24 @@ function lookupMachine_(code) {
 }
 
 // ============================================================================
+// Server API for Scanner.html — google.script.run
+// ============================================================================
+
+/**
+ * Validate a machine code for the scanner UI. Called via google.script.run.
+ * Returns a plain JSON object (no Date/Object — safe for JSON.parse(JSON.stringify())).
+ * @param {string} code — e.g. 'APS005'
+ * @return {{ok:boolean, code:string, name:string, sapWorkCenter:string}}
+ */
+function lookupMachineForScan(code) {
+  code = String(code || '').trim().toUpperCase();
+  if (!code) return { ok: false, code: '', name: '', sapWorkCenter: '' };
+  var entry = lookupMachine_(code);
+  if (!entry) return { ok: false, code: code, name: '', sapWorkCenter: '' };
+  return { ok: true, code: code, name: entry.name, sapWorkCenter: entry.sapWorkCenter };
+}
+
+// ============================================================================
 // Diagnostic — D6 WC ↔ MachineMaster cross-check (read-only)
 // ============================================================================
 
@@ -201,7 +219,7 @@ function lookupMachine_(code) {
  * Run from Apps Script Editor → select diagMachineWcCrossCheck_ → Run.
  * READ-ONLY — no writes, no SAP calls.
  */
-function diagMachineWcCrossCheck_() {
+function diagMachineWcCrossCheck() {
   Logger.log('');
   Logger.log('══════════════════════════════════════════');
   Logger.log(' D6: WorkCenter ↔ MachineMaster cross-check');
@@ -366,6 +384,133 @@ function TEST_machineMasterReader() {
   Logger.log('');
   Logger.log('========================================');
   Logger.log('TEST_machineMasterReader: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
+  Logger.log('========================================');
+  for (var si = 0; si < results.length; si++) {
+    Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
+      (results[si].detail ? ' (' + results[si].detail + ')' : ''));
+  }
+}
+
+// ============================================================================
+// TEST — Machine Capture M2 (schema + logOperation + lookupMachineForScan)
+// ============================================================================
+
+function TEST_machineCaptureM2_() {
+  var results = [];
+  var pass    = true;
+  var ss      = getSpreadsheet_();
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    if (!ok) pass = false;
+    Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
+  }
+
+  // (a) Schema: OperationLog has ActualMachine at idx14; other names unmoved
+  var olSh  = ss.getSheetByName(OL_SHEET);
+  var olHdr = olSh.getRange(1, 1, 1, olSh.getLastColumn()).getValues()[0];
+  var olIdx = {};
+  olHdr.forEach(function(h, i) { olIdx[String(h).trim()] = i; });
+
+  assert('(a) ActualMachine exists', olIdx['ActualMachine'] !== undefined,
+    'idx=' + olIdx['ActualMachine']);
+  assert('(a) ActualMachine at idx14', olIdx['ActualMachine'] === 14,
+    'idx=' + olIdx['ActualMachine']);
+  assert('(a) GoodQty still idx5', olIdx['GoodQty'] === 5,
+    'idx=' + olIdx['GoodQty']);
+  assert('(a) Source still idx13', olIdx['Source'] === 13,
+    'idx=' + olIdx['Source']);
+  assert('(a) PDResult after ActualMachine', olIdx['PDResult'] === 15,
+    'idx=' + olIdx['PDResult']);
+
+  var TEST_PID = 'PL-TEST-M2-MACH-L01';
+
+  // (b) logOperation with actualMachine='APS005' → stores 'APS005'
+  var logIdB = logOperation({
+    palletId: TEST_PID, mo: '9999999997', operationNo: '0010',
+    operationText: 'M2 Test', goodQty: 10, scrapQty: 0,
+    repairQty: 0, awaitConvQty: 0, operator: 'TEST',
+    role: 'OP', result: 'PASS', source: 'TEST',
+    actualMachine: 'APS005'
+  });
+  SpreadsheetApp.flush();
+
+  var olData = olSh.getDataRange().getValues();
+  var olHdrLive = olData[0];
+  var olIdxLive = {};
+  olHdrLive.forEach(function(h, i) { olIdxLive[String(h).trim()] = i; });
+
+  var foundRow = null;
+  for (var r = 1; r < olData.length; r++) {
+    if (String(olData[r][olIdxLive['LogID']] || '').trim() === logIdB) {
+      foundRow = olData[r];
+      break;
+    }
+  }
+  assert('(b) test row found', foundRow !== null, 'logId=' + logIdB);
+  if (foundRow) {
+    var machVal = foundRow[olIdxLive['ActualMachine']];
+    assert('(b) ActualMachine=APS005', String(machVal).trim() === 'APS005',
+      'got=' + String(machVal) + ' typeof=' + typeof machVal);
+  }
+
+  // (c) logOperation WITHOUT actualMachine → stores '' (no crash)
+  var logIdC = logOperation({
+    palletId: TEST_PID, mo: '9999999997', operationNo: '0020',
+    operationText: 'M2 No Machine', goodQty: 10, scrapQty: 0,
+    repairQty: 0, awaitConvQty: 0, operator: 'TEST',
+    role: 'OP', result: 'PASS', source: 'TEST'
+  });
+  SpreadsheetApp.flush();
+
+  olData = olSh.getDataRange().getValues();
+  var foundRowC = null;
+  for (var r2 = 1; r2 < olData.length; r2++) {
+    if (String(olData[r2][olIdxLive['LogID']] || '').trim() === logIdC) {
+      foundRowC = olData[r2];
+      break;
+    }
+  }
+  assert('(c) no-machine row found', foundRowC !== null);
+  if (foundRowC) {
+    var machValC = foundRowC[olIdxLive['ActualMachine']];
+    assert('(c) ActualMachine is empty string', String(machValC).trim() === '',
+      'got="' + String(machValC) + '"');
+  }
+
+  // (d) lookupMachineForScan
+  _machineMasterCache_ = null;
+  var lkOk  = lookupMachineForScan('aps001');
+  assert('(d) lookupMachineForScan aps001 ok', lkOk.ok === true, JSON.stringify(lkOk));
+  assert('(d) name non-empty', lkOk.name && lkOk.name.length > 0, 'name=' + lkOk.name);
+  assert('(d) sapWorkCenter string', typeof lkOk.sapWorkCenter === 'string',
+    'typeof=' + typeof lkOk.sapWorkCenter + ' val=' + lkOk.sapWorkCenter);
+
+  var lkBad = lookupMachineForScan('ZZZ');
+  assert('(d) lookupMachineForScan ZZZ → ok:false', lkBad.ok === false);
+
+  // (e) returns are plain JSON (no Date/Object[])
+  var serialized = JSON.parse(JSON.stringify(lkOk));
+  assert('(e) lkOk survives JSON round-trip', serialized.ok === true &&
+    serialized.code === lkOk.code && serialized.name === lkOk.name);
+
+  // ── Cleanup: delete PL-TEST-M2 rows ──
+  try {
+    olData = olSh.getDataRange().getValues();
+    for (var cr = olData.length - 1; cr >= 1; cr--) {
+      if (/^PL-TEST-M2/i.test(String(olData[cr][olIdxLive['PalletID']] || '').trim())) {
+        olSh.deleteRow(cr + 1);
+      }
+    }
+    Logger.log('Cleanup: PL-TEST-M2 rows deleted');
+  } catch (cleanErr) {
+    Logger.log('Cleanup error: ' + cleanErr.message);
+  }
+
+  Logger.log('');
+  Logger.log('========================================');
+  Logger.log('TEST_machineCaptureM2_: ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
   Logger.log('========================================');
   for (var si = 0; si < results.length; si++) {
     Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +

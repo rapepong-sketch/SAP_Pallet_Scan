@@ -18,6 +18,7 @@ const OL_HEADERS = [
   'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
   'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty',
   'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
+  'ActualMachine',
   'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
 ];
 
@@ -70,7 +71,7 @@ function ensureOperationLogSheet_() {
  * on every future write. Safe/idempotent to call repeatedly.
  */
 function _forceTextColumns_(sh, headerRow) {
-  const textCols = ['PalletID', 'ManufacturingOrder', 'OperationNo'];
+  const textCols = ['PalletID', 'ManufacturingOrder', 'OperationNo', 'ActualMachine'];
   const numRows  = Math.max(sh.getMaxRows() - 1, 1);
   textCols.forEach(function (name) {
     const col = headerRow.indexOf(name);
@@ -113,6 +114,7 @@ function _normOpNo_(v) {
  *   role:          string   — 'OP' | 'PD' | 'QC'
  *   result:        string   — 'PASS' | 'FAIL'
  *   source:        string   — 'MOBILE' | 'MANUAL' | 'SYSTEM'
+ *   actualMachine: string   — MachineMaster code e.g. 'APS005' (optional)
  * }
  * @return {string} LogID
  */
@@ -135,6 +137,7 @@ function logOperation(entry) {
     Result:        String(entry.result    || '').trim(),
     LoggedAt:      now,
     Source:        String(entry.source    || 'SYSTEM').trim(),
+    ActualMachine: String(entry.actualMachine || '').trim(),
     PDResult:      '',
     PDInspector:   '',
     PDNote:        '',
@@ -303,6 +306,7 @@ var OL_TARGET_ORDER_ = [
   'LogID', 'PalletID', 'ManufacturingOrder', 'OperationNo', 'OperationText',
   'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty',
   'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
+  'ActualMachine',
   'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp'
 ];
 
@@ -329,7 +333,7 @@ function reorderOperationLogBuckets() {
   var oldHeaders = sh.getRange(1, 1, 1, lastCol).getValues()[0]
     .map(function (h) { return String(h).trim(); });
 
-  if (oldHeaders.length !== 18) {
+  if (oldHeaders.length !== OL_TARGET_ORDER_.length) {
     return _olReorderResult_('PRECONDITION_FAILED', {
       detail: 'Expected 18 headers, found ' + oldHeaders.length,
       currentHeaders: oldHeaders
@@ -411,7 +415,7 @@ function reorderOperationLogBuckets() {
   var verifiedHeaders = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
     .map(function (h) { return String(h).trim(); });
 
-  var headerOk = verifiedHeaders.length === 18 &&
+  var headerOk = verifiedHeaders.length === OL_TARGET_ORDER_.length &&
     verifiedHeaders.every(function (h, i) { return h === OL_TARGET_ORDER_[i]; });
 
   if (!headerOk) {

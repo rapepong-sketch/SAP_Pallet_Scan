@@ -222,8 +222,9 @@ function confirmScan(params) {
     const qtyScrap    = Number(params.qtyScrap)      || 0;
     const qtyRepair   = Number(params.qtyRepair)     || 0;
     const qtyAwaitConv = Number(params.qtyAwaitConv) || 0;
-    const operator    = String(params.operator  || '').trim();
-    const role        = String(params.role      || '').trim();
+    const operator       = String(params.operator       || '').trim();
+    const role           = String(params.role           || '').trim();
+    const actualMachine  = String(params.actualMachine  || '').trim();
 
     if (!palletId) return { success: false, sapSent: false, message: 'ไม่มี PalletID', logId: null };
     if (!operator) return { success: false, sapSent: false, message: 'กรุณาระบุชื่อผู้ปฏิบัติงาน', logId: null };
@@ -299,7 +300,8 @@ function confirmScan(params) {
       operator:      operator,
       role:          role,
       result:        'PASS',
-      source:        'MOBILE'
+      source:        'MOBILE',
+      actualMachine: actualMachine
     });
 
     // 2. Determine if this is the final operation via routing

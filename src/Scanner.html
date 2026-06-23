@@ -293,7 +293,10 @@
 <!-- ════════════════════════════════ HEADER ════════════════════════════════ -->
 <div class="app-header">
   <div class="app-title">🏭 PJ Chonburi</div>
-  <div id="sap-badge" class="badge badge-loading">⏳ โหลด...</div>
+  <div style="display:flex; align-items:center; gap:8px;">
+    <div id="machine-badge" class="badge badge-loading" style="cursor:pointer; font-size:11px;" onclick="clearCurrentMachine()">🛠️ ยังไม่เลือกเครื่อง</div>
+    <div id="sap-badge" class="badge badge-loading">⏳ โหลด...</div>
+  </div>
 </div>
 
 <!-- ════════════════════════════ MODE TOGGLE ════════════════════════════════ -->
@@ -674,6 +677,7 @@ var autoResetTimer       = null; // pending setTimeout id for auto-return-to-sca
 var _savingConfirm       = false;
 var _savingPd            = {};
 var _savingQc            = false;
+var currentMachine       = null;  // sticky: {code,name} set by M: scan, persists across pallets
 
 // ============================================================
 // Init
@@ -774,9 +778,16 @@ function onScanSuccess(decoded) {
     }
   }
 
+  // Machine QR: M:{MachineCode} — set sticky machine, don't navigate
+  if (decoded.indexOf('M:') === 0) {
+    var machCode = decoded.substring(2).trim();
+    if (machCode) { validateAndSetMachine(machCode); }
+    return;
+  }
+
   var palletId = parseQrPayload(decoded);
   if (!palletId) {
-    showMsg('error', 'QR code ไม่ถูกต้อง — ต้องขึ้นต้นด้วย PALLET|... หรือ T:...\nReceived: ' + decoded.substring(0, 60));
+    showMsg('error', 'QR code ไม่ถูกต้อง — ต้องขึ้นต้นด้วย PALLET|... , T:... หรือ M:...\nReceived: ' + decoded.substring(0, 60));
     return;
   }
   document.getElementById('manual-id').value = palletId;
@@ -1147,16 +1158,17 @@ function submitConfirm() {
       showMsg('error', '❌ บันทึกไม่สำเร็จ: ' + (err.message || String(err)));
     })
     .confirmScan({
-      palletId:     currentPallet.PalletID,
-      opNo:         opNo,
-      opText:       opText,
-      isFinal:      isFinal,
-      qtyGood:      goodQty,
-      qtyScrap:     defectQty,
-      qtyRepair:    repairQty,
-      qtyAwaitConv: awaitConvQty,
-      operator:     operator,
-      role:         role
+      palletId:       currentPallet.PalletID,
+      opNo:           opNo,
+      opText:         opText,
+      isFinal:        isFinal,
+      qtyGood:        goodQty,
+      qtyScrap:       defectQty,
+      qtyRepair:      repairQty,
+      qtyAwaitConv:   awaitConvQty,
+      operator:       operator,
+      role:           role,
+      actualMachine:  currentMachine ? currentMachine.code : ''
     });
 }
 
@@ -1274,6 +1286,50 @@ function resetScanner() {
 
 function resetAll() {
   resetScanner();
+}
+
+// ============================================================
+// Machine badge — sticky across pallet scans (M: QR prefix)
+// ============================================================
+function validateAndSetMachine(code) {
+  showMsg('info', '⏳ กำลังตรวจสอบเครื่อง ' + esc(code) + '...');
+  google.script.run
+    .withSuccessHandler(function (result) {
+      clearMsg();
+      if (!result.ok) {
+        showMsg('error', '❌ ไม่พบเครื่อง: ' + esc(code) + ' — ตรวจสอบรหัสเครื่องอีกครั้ง');
+        return;
+      }
+      setCurrentMachine(result.code, result.name);
+      showMsg('success', '✅ เลือกเครื่อง: ' + esc(result.name) + ' (' + esc(result.code) + ')');
+    })
+    .withFailureHandler(function (err) {
+      clearMsg();
+      showMsg('error', '❌ ตรวจสอบเครื่องไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .lookupMachineForScan(code);
+}
+
+function setCurrentMachine(code, name) {
+  currentMachine = { code: code, name: name };
+  renderMachineBadge();
+}
+
+function clearCurrentMachine() {
+  currentMachine = null;
+  renderMachineBadge();
+  showMsg('info', '🛠️ ล้างเครื่องแล้ว — สแกน M:รหัสเครื่อง เพื่อเลือกใหม่');
+}
+
+function renderMachineBadge() {
+  var el = document.getElementById('machine-badge');
+  if (currentMachine) {
+    el.className = 'badge badge-on';
+    el.innerHTML = '🛠️ ' + esc(currentMachine.name) + ' <span style="opacity:.7;font-size:10px">[เปลี่ยน]</span>';
+  } else {
+    el.className = 'badge badge-loading';
+    el.textContent = '🛠️ ยังไม่เลือกเครื่อง';
+  }
 }
 
 // ============================================================
