@@ -94,7 +94,9 @@ function onOpen() {
     .addItem('🔄 Migrate: FinalOp Leading Zeros',       'migrateFinalOpLeadingZeros')
     .addItem('🔒 Migrate: Add QCInspector column',      'runQCInspectorMigration')
     .addSeparator()
-    .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets');
+    .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets')
+    .addSeparator()
+    .addItem('🔁 [Admin] Replay DeadLetter (by DLID)',  'replayDeadLetterDialog');
 
   // ── ⚙ ระบบ ──────────────────────────────────────────────────────────────
   const sysMenu = ui.createMenu('⚙ ระบบ')
