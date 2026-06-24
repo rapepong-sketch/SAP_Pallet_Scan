@@ -1105,13 +1105,14 @@ function _fmtDateStr_(d) {
 
 /**
  * Render a readable Thai error page when OperationLog schema desync is
- * detected at web-app startup. Instructs operator to notify admin and
- * shows expected vs actual header order for diagnosis.
+ * detected at web-app startup. Shows expected vs actual column order.
  *
  * @param {{ ok:boolean, expected:string[], actual:string[], reason:string }} chk
+ * @param {{ audience?: 'operator'|'admin' }} [opts] — default 'operator'
  * @return {string} full HTML
  */
-function renderSchemaErrorPage_(chk) {
+function renderSchemaErrorPage_(chk, opts) {
+  var audience = (opts && opts.audience) || 'operator';
   var esc = function(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   };
@@ -1125,6 +1126,18 @@ function renderSchemaErrorPage_(chk) {
       '</tr>';
   }).join('\n');
 
+  var heading, intro, noteBox;
+  if (audience === 'admin') {
+    heading = 'ระบบหยุดชั่วคราว — OperationLog Schema Desync';
+    intro = 'ไม่สามารถเปิดหน้า Confirm ได้ เนื่องจากโครงสร้างคอลัมน์ของ OperationLog ไม่ตรงกับที่ระบบคาดหวัง';
+    noteBox = '<div class="note">กรุณาแก้ไขโดยเรียกใช้ฟังก์ชัน <strong>reorderOperationLogBuckets</strong> ' +
+      'ผ่านเมนู Apps Script Editor แล้ว Redeploy Web App ใหม่</div>';
+  } else {
+    heading = 'ระบบสแกนหยุดชั่วคราว';
+    intro = 'ไม่สามารถเปิดหน้าสแกนได้ เนื่องจากโครงสร้างคอลัมน์ของ OperationLog ไม่ตรงกับที่ระบบคาดหวัง';
+    noteBox = '<div class="note">กรุณาแจ้งผู้ดูแลระบบ (Admin) เพื่อตรวจสอบและแก้ไข</div>';
+  }
+
   return '<!DOCTYPE html><html lang="th"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<title>ระบบหยุดชั่วคราว</title>' +
@@ -1134,10 +1147,10 @@ function renderSchemaErrorPage_(chk) {
     '.note{background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:12px 16px;margin:16px 0;font-size:0.95em}' +
     '.fix{background:#e8f5e9;border:1px solid #4caf50;border-radius:6px;padding:12px 16px;margin:16px 0;font-size:0.9em;color:#2e7d32}</style>' +
     '</head><body>' +
-    '<h1>ระบบสแกนหยุดชั่วคราว</h1>' +
-    '<p>ไม่สามารถเปิดหน้าสแกนได้ เนื่องจากโครงสร้างคอลัมน์ของ OperationLog ไม่ตรงกับที่ระบบคาดหวัง</p>' +
-    '<div class="note">กรุณาแจ้งผู้ดูแลระบบ (Admin) เพื่อตรวจสอบและแก้ไข</div>' +
-    '<h2>รายละเอียดสำหรับผู้ดูแล</h2>' +
+    '<h1>' + esc(heading) + '</h1>' +
+    '<p>' + esc(intro) + '</p>' +
+    noteBox +
+    '<h2>รายละเอียด</h2>' +
     '<p>สาเหตุ: <code>' + esc(chk.reason) + '</code></p>' +
     '<table><thead><tr>' +
     '<th style="padding:4px 8px;border:1px solid #ddd;background:#f8f9fa">#</th>' +
