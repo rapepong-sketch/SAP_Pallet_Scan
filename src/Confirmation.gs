@@ -129,7 +129,8 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
     ConfirmationUnit:          pallet.Unit || 'PC',
     Plant:                     CFG.PLANT,
     IsFinalConfirmation:       true,
-    FinalConfirmationType:     'X'
+    FinalConfirmationType:     'X',
+    ConfirmationText:          String(palletId).slice(0, 40)
   };
 }
 
@@ -317,6 +318,64 @@ function readMaterialDocument_(confirmationGroup, confirmationCount, session) {
 }
 
 /**
+ * SAP readback: check whether a confirmation with this PalletID token already exists.
+ * READ-ONLY, best-effort — never throws. Returns {found:false, error} on any failure
+ * so callers can fall through to normal POST behaviour.
+ *
+ * @param {string} paddedMO — 12-digit zero-padded ManufacturingOrder
+ * @param {string} palletId — PalletID stamped into ConfirmationText
+ * @return {{found:boolean, confirmationGroup?:string, confirmationCount?:string, raw?:string, error?:string}}
+ */
+function sapReadbackConfirmation_(paddedMO, palletId) {
+  try {
+    var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.PROD_ORDER_CONF;
+    var url = buildSapUrl_(serviceRoot + 'ProdnOrdConf2', {
+      '$filter': "OrderID eq '" + paddedMO + "' and ConfirmationText eq '" + String(palletId) + "'",
+      '$select': 'ConfirmationGroup,ConfirmationCount,OrderOperation,ConfirmationText',
+      '$top': '1',
+      '$format': 'json'
+    });
+
+    logEvent('CONFIRM', 'READBACK_URL', url);
+    var creds = getSapCredentials_();
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: {
+        'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+        'Accept': 'application/json'
+      },
+      muteHttpExceptions: true
+    });
+
+    var code = resp.getResponseCode();
+    var body = resp.getContentText();
+
+    if (code < 200 || code >= 300) {
+      logEvent('CONFIRM', 'READBACK_HTTP_ERR', code + ' ' + body.slice(0, 300));
+      return { found: false, error: 'HTTP ' + code };
+    }
+
+    var parsed = JSON.parse(body);
+    var results = (parsed.d && parsed.d.results) || [];
+
+    if (results.length === 0) {
+      return { found: false };
+    }
+
+    var hit = results[0];
+    return {
+      found: true,
+      confirmationGroup: hit.ConfirmationGroup || '',
+      confirmationCount: hit.ConfirmationCount || '',
+      raw: body.slice(0, 500)
+    };
+  } catch (e) {
+    logEvent('CONFIRM', 'READBACK_EXCEPTION', e.message);
+    return { found: false, error: e.message };
+  }
+}
+
+/**
  * Orchestrator: build → POST → readback → writeback for a single pallet.
  * Idempotency guard: skips if ScanStatus is already CONFIRMED or ConfirmationGroup
  * is non-empty. Writes confirmation results + material document back to PalletMaster.
@@ -343,6 +402,28 @@ function confirmPallet(palletId) {
     if (pallet.ScanStatus === 'CONFIRMED' || cgVal !== '') {
       logEvent('CONFIRM', 'SKIP', palletId + ' already confirmed');
       return { alreadyConfirmed: true };
+    }
+
+    // ---- SAP readback guard (best-effort, timeout-after-success recovery) ----
+    var mo = pallet.ManufacturingOrder;
+    var paddedMO = String(mo).trim().padStart(12, '0');
+    var rb = sapReadbackConfirmation_(paddedMO, palletId);
+    if (rb.found) {
+      updatePalletScanFields_(palletId, {
+        ConfirmationGroup: rb.confirmationGroup,
+        ConfirmationCount: rb.confirmationCount,
+        ScanStatus:        'CONFIRMED',
+        ConfirmedAt:       new Date(),
+        ConfirmedBy:       'HEAL'
+      });
+      try { backfillMaterialDocument(palletId); } catch (bfErr) {
+        logEvent('CONFIRM', 'HEAL_BACKFILL_ERR', palletId + ' ' + bfErr.message);
+      }
+      logEvent('CONFIRM', 'HEAL_SKIP', palletId + ' found in SAP via readback');
+      return { alreadyConfirmed: true, healed: true };
+    }
+    if (rb.error) {
+      logEvent('CONFIRM', 'READBACK_DEGRADED', palletId + ' ' + rb.error);
     }
 
     // ---- Build + POST ----
@@ -664,6 +745,30 @@ function confirmPalletOverride(palletId, reason, qtyConfirmed) {
     return { success: true, message: 'พาเลทนี้ confirm แล้ว (skip)' };
   }
 
+  // ---- 4b. SAP readback guard (best-effort, timeout-after-success recovery) ----
+  var ovrMo = pallet.ManufacturingOrder;
+  if (ovrMo) {
+    var ovrPaddedMO = String(ovrMo).trim().padStart(12, '0');
+    var ovrRb = sapReadbackConfirmation_(ovrPaddedMO, palletId);
+    if (ovrRb.found) {
+      updatePalletScanFields_(palletId, {
+        ConfirmationGroup: ovrRb.confirmationGroup,
+        ConfirmationCount: ovrRb.confirmationCount,
+        ScanStatus:        'CONFIRMED',
+        ConfirmedAt:       new Date(),
+        ConfirmedBy:       'HEAL'
+      });
+      try { backfillMaterialDocument(palletId); } catch (bfErr) {
+        logEvent('OVERRIDE_CONFIRM', 'HEAL_BACKFILL_ERR', palletId + ' ' + bfErr.message);
+      }
+      logEvent('OVERRIDE_CONFIRM', 'HEAL_SKIP', palletId + ' found in SAP via readback');
+      return { success: true, message: 'พาเลทนี้ confirm แล้วใน SAP (healed)' };
+    }
+    if (ovrRb.error) {
+      logEvent('OVERRIDE_CONFIRM', 'READBACK_DEGRADED', palletId + ' ' + ovrRb.error);
+    }
+  }
+
   // ---- 5. QC ALLOW-LIST ----
   if (pallet.QCStatus !== 'INSPECTED' || pallet.QCResult !== 'PASS') {
     if (pallet.QCResult === 'FAIL') {
@@ -732,7 +837,8 @@ function confirmPalletOverride(palletId, reason, qtyConfirmed) {
       ConfirmationUnit:          pallet.Unit || 'PC',
       Plant:                     CFG.PLANT,
       IsFinalConfirmation:       true,
-      FinalConfirmationType:     'X'
+      FinalConfirmationType:     'X',
+      ConfirmationText:          String(palletId).slice(0, 40)
     };
 
     var result = postConfirmation_(payload);
@@ -1302,4 +1408,146 @@ function diagConfirmDrift() {
   Logger.log('Recovery: ConfirmationGroup → readMaterialDocument_ (backfill).');
   Logger.log('Fallback: MO → ProdnOrdConf2 (ambiguous for multi-pallet MOs).');
   Logger.log('══════════════════════════════════════════');
+}
+
+// ============================================================================
+// Phase 5 — TEST: confirmation readback guard
+// ============================================================================
+
+/**
+ * Self-cleaning test for the confirmation SAP readback guard (Phase 5 item 2b).
+ * Seeds a fake pallet, verifies payload stamping + readback behaviour, cleans up.
+ * Calls SAP GET (read-only) — never POSTs.
+ */
+function TEST_confirmReadbackGuard() {
+  var fn = 'TEST_confirmReadbackGuard';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+  }
+
+  // ---- Pick a real confirmed MO for SAP readback probes ----
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var data = sh.getDataRange().getValues();
+  var idx = {};
+  data[0].forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var realMO = '', realPaddedMO = '', realPalletId = '';
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][idx['ScanStatus']] || '').trim() !== 'CONFIRMED') continue;
+    var pid = String(data[r][idx['PalletID']] || '').trim();
+    if (/^PL-TEST-/i.test(pid)) continue;
+    realMO = String(data[r][idx['ManufacturingOrder']] || '').trim();
+    if (!realMO) continue;
+    realPaddedMO = realMO.padStart(12, '0');
+    realPalletId = pid;
+    break;
+  }
+
+  if (!realMO) {
+    Logger.log('⚠️ No real CONFIRMED MO found — SAP readback probes will be skipped');
+  }
+
+  // ---- Seed a test pallet for payload stamp verification ----
+  var TEST_PID = 'PL-TEST-RB-GUARD-L01';
+  var donorMo = '';
+  for (var d2 = 1; d2 < data.length; d2++) {
+    var mo2 = String(data[d2][idx['ManufacturingOrder']] || '').trim();
+    if (mo2 && getFinalOperationCached_(mo2)) { donorMo = mo2; break; }
+  }
+
+  if (!donorMo) {
+    Logger.log('⚠️ No donor MO with FinalOperation — payload stamp tests skipped');
+    assert('(1a) payload stamp — normal builder', false, 'no donor MO');
+  } else {
+    var seedRow = data[0].map(function(h) { return ''; });
+    seedRow[idx['PalletID']] = TEST_PID;
+    seedRow[idx['ManufacturingOrder']] = donorMo;
+    seedRow[idx['Material']] = 'TEST-RB-MAT';
+    seedRow[idx['QtyPerPallet']] = 100;
+    seedRow[idx['Unit']] = 'PC';
+    seedRow[idx['ScanStatus']] = 'QC_COMPLETE';
+    if (idx['Plant'] !== undefined) seedRow[idx['Plant']] = CFG.PLANT;
+    sh.getRange(sh.getLastRow() + 1, 1, 1, data[0].length).setValues([seedRow]);
+    SpreadsheetApp.flush();
+    Logger.log('Seeded ' + TEST_PID + ' with MO=' + donorMo);
+
+    try {
+      // ---- (1a) Normal builder stamps ConfirmationText ----
+      var p1 = buildConfirmationPayload_(TEST_PID);
+      assert('(1a) payload stamp — normal builder',
+        p1 && !p1.error && p1.ConfirmationText === TEST_PID,
+        'ConfirmationText=' + (p1 ? p1.ConfirmationText : '(error)'));
+
+      assert('(1a) ConfirmationText is string',
+        typeof (p1 || {}).ConfirmationText === 'string',
+        'typeof=' + typeof (p1 || {}).ConfirmationText);
+
+      assert('(1a) ConfirmationText ≤ 40',
+        ((p1 || {}).ConfirmationText || '').length <= 40,
+        'len=' + ((p1 || {}).ConfirmationText || '').length);
+
+    } finally {
+      var freshData = sh.getDataRange().getValues();
+      for (var del = freshData.length - 1; del >= 1; del--) {
+        if (String(freshData[del][idx['PalletID']] || '').trim() === TEST_PID) {
+          sh.deleteRow(del + 1);
+        }
+      }
+      Logger.log('Cleaned up ' + TEST_PID);
+    }
+  }
+
+  // ---- (2) sapReadbackConfirmation_ — deliberate no-hit ----
+  if (realMO) {
+    var rb1 = sapReadbackConfirmation_(realPaddedMO, 'PL-TEST-NOHIT');
+    assert('(2) readback no-hit — found:false',
+      rb1.found === false,
+      'found=' + rb1.found + (rb1.error ? ' error=' + rb1.error : ''));
+    assert('(2) readback no-hit — no error (filter accepted)',
+      !rb1.error,
+      rb1.error || 'clean');
+  } else {
+    assert('(2) readback no-hit', false, 'skipped — no real MO');
+  }
+
+  // ---- (3) No false positive on legacy (pre-2b) records ----
+  if (realMO && realPalletId) {
+    var rb2 = sapReadbackConfirmation_(realPaddedMO, realPalletId);
+    assert('(3) no false positive on legacy records — found:false',
+      rb2.found === false,
+      'MO=' + realMO + ' PID=' + realPalletId + ' found=' + rb2.found);
+  } else {
+    assert('(3) no false positive on legacy', false, 'skipped — no real data');
+  }
+
+  // ---- (4) Graceful degrade on bad MO ----
+  var rb3 = sapReadbackConfirmation_('000000000000', 'PL-TEST-BADMO');
+  assert('(4) graceful degrade — found:false, no throw',
+    rb3.found === false,
+    'found=' + rb3.found + ' error=' + (rb3.error || 'none'));
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent('TEST_CONFIRM_RB', 'Confirmation', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions');
 }
