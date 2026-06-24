@@ -109,6 +109,8 @@ function onOpen() {
     .addSubMenu(adminMenu)
     .addSubMenu(sysMenu)
     .addToUi();
+
+  refreshRunbookOnOpen_();
 }
 
 let _ss_ = null;
