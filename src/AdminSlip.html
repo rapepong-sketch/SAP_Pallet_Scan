@@ -92,14 +92,19 @@
 <div class="card">
   <h2>แบ่งเบิกแตกย่อย (FIFO)</h2>
 
-  <label>Storage Location</label>
+  <label>คลังสินค้า (Storage Location)</label>
   <select id="selSloc" onchange="onSlocChange()">
     <option value="">-- กำลังโหลด --</option>
   </select>
 
-  <label>Material</label>
-  <select id="selMaterial" onchange="onMaterialChange()">
+  <label>กลุ่มสินค้า (Product Group)</label>
+  <select id="selGroup" onchange="onGroupChange()" disabled>
     <option value="">-- เลือก SLoc ก่อน --</option>
+  </select>
+
+  <label>วัสดุ (Material)</label>
+  <select id="selMaterial" onchange="onMaterialChange()" disabled>
+    <option value="">-- เลือกกลุ่มสินค้าก่อน --</option>
   </select>
   <div class="avail-info" id="elAvail"></div>
 
@@ -120,6 +125,7 @@
 <script>
 var inFlight = false;
 var lastPlanOk = false;
+var cascadeCache = null;
 var materialsCache = [];
 
 function setFlight(on) {
@@ -195,32 +201,76 @@ function loadSlocs() {
     .slipGetStorageLocations();
 }
 
-function onSlocChange() {
-  var sloc = document.getElementById('selSloc').value;
-  var sel  = document.getElementById('selMaterial');
-  sel.innerHTML = '<option value="">-- กำลังโหลด --</option>';
+function resetGroup() {
+  var selGrp = document.getElementById('selGroup');
+  selGrp.innerHTML = '<option value="">-- เลือก SLoc ก่อน --</option>';
+  selGrp.disabled = true;
+  cascadeCache = null;
+  resetMaterial();
+}
+
+function resetMaterial() {
+  var selMat = document.getElementById('selMaterial');
+  selMat.innerHTML = '<option value="">-- เลือกกลุ่มสินค้าก่อน --</option>';
+  selMat.disabled = true;
   document.getElementById('elAvail').textContent = '';
   materialsCache = [];
   lastPlanOk = false;
   updateCommitBtn();
   document.getElementById('planResult').innerHTML = '';
+}
 
-  if (!sloc) { sel.innerHTML = '<option value="">-- เลือก SLoc ก่อน --</option>'; return; }
+function onSlocChange() {
+  var sloc = document.getElementById('selSloc').value;
+  resetGroup();
+
+  if (!sloc) return;
+
+  var selGrp = document.getElementById('selGroup');
+  selGrp.innerHTML = '<option value="">-- กำลังโหลด --</option>';
 
   google.script.run
     .withSuccessHandler(function(r) {
-      sel.innerHTML = '<option value="">-- เลือก --</option>';
-      if (!r.ok) { showErr(r.error); return; }
-      materialsCache = r.materials;
-      r.materials.forEach(function(m) {
+      if (!r.ok) { showErr(r.error); resetGroup(); return; }
+      cascadeCache = r;
+      selGrp.innerHTML = '<option value="">-- เลือกกลุ่ม --</option>';
+      r.productGroups.forEach(function(g) {
         var o = document.createElement('option');
-        o.value = m.material;
-        o.textContent = m.material + ' — ' + m.name;
-        sel.appendChild(o);
+        o.value = g;
+        o.textContent = g;
+        selGrp.appendChild(o);
       });
+      selGrp.disabled = false;
+      if (r.productGroups.length === 1) {
+        selGrp.value = r.productGroups[0];
+        onGroupChange();
+      }
     })
-    .withFailureHandler(function(e) { showErr(e); })
-    .slipGetMaterialsForSloc(sloc);
+    .withFailureHandler(function(e) { showErr(e); resetGroup(); })
+    .slipGetCascadeForSloc(sloc);
+}
+
+function onGroupChange() {
+  var grp = document.getElementById('selGroup').value;
+  resetMaterial();
+
+  if (!grp || !cascadeCache || !cascadeCache.byGroup[grp]) return;
+
+  var selMat = document.getElementById('selMaterial');
+  selMat.innerHTML = '<option value="">-- เลือกวัสดุ --</option>';
+  var mats = cascadeCache.byGroup[grp];
+  materialsCache = mats;
+  mats.forEach(function(m) {
+    var o = document.createElement('option');
+    o.value = m.code;
+    o.textContent = m.code + ' — ' + m.name;
+    selMat.appendChild(o);
+  });
+  selMat.disabled = false;
+  if (mats.length === 1) {
+    selMat.value = mats[0].code;
+    onMaterialChange();
+  }
 }
 
 function onMaterialChange() {
@@ -231,7 +281,7 @@ function onMaterialChange() {
   document.getElementById('planResult').innerHTML = '';
 
   if (!mat) { el.textContent = ''; return; }
-  var found = materialsCache.filter(function(m) { return m.material === mat; });
+  var found = materialsCache.filter(function(m) { return m.code === mat; });
   if (found.length) {
     el.innerHTML = 'คงเหลือ: <b>' + found[0].availQty + '</b>';
   } else {
