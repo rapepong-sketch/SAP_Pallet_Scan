@@ -82,6 +82,16 @@ function doGet(e) {
     ).setTitle('Access Denied');
   }
 
+  // --- OL schema guard for confirm route (admin sees desync at load, not at write) ---
+  if (app === 'confirm') {
+    var confirmChk = assertOperationLogSchema_();
+    if (!confirmChk.ok) {
+      logEvent('WEBAPP', 'OL_SCHEMA_DESYNC_STARTUP', 'ERROR', 0, 'confirm:' + confirmChk.reason);
+      return HtmlService.createHtmlOutput(renderSchemaErrorPage_(confirmChk, { audience: 'admin' }))
+        .setTitle('ระบบหยุดชั่วคราว');
+    }
+  }
+
   return HtmlService.createTemplateFromFile(page.file)
     .evaluate()
     .setTitle(page.title)
