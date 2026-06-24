@@ -26,6 +26,11 @@
  * Deploy: Execute as Me, Access: DOMAIN (or ANYONE — see appsscript.json)
  */
 function doGet(e) {
+  if (e && e.parameter && e.parameter.probe === 'build') {
+    return ContentService.createTextOutput(CFG.WEBAPP_BUILD)
+      .setMimeType(ContentService.MimeType.TEXT);
+  }
+
   var app = String((e && e.parameter && e.parameter.app) || 'scan').toLowerCase();
 
   // --- Operator page (no auth gate) ---
