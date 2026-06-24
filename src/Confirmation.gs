@@ -247,6 +247,134 @@ function postConfirmation_(payload) {
 // testPostConfirmationDryRun → moved to Tests.gs
 
 // ============================================================================
+// Phase 5 item 2c — retry with readback-first on every attempt
+// ============================================================================
+
+var CONFIRM_MAX_ATTEMPTS_ = 3;
+
+/**
+ * Classify a postConfirmation_ error for retry decisions.
+ * @param {Error} e
+ * @return {{type:'TRANSIENT'|'BUSINESS'|'TIMEOUT_UNKNOWN', code:number}}
+ */
+function _classifyConfirmError_(e) {
+  var msg = String(e.message || e || '');
+  var m = msg.match(/HTTP (\d+)/);
+  var code = m ? parseInt(m[1], 10) : 0;
+  if (code === 403 && /csrf/i.test(msg)) return { type: 'TRANSIENT', code: 403 };
+  if (code === 429) return { type: 'TRANSIENT', code: 429 };
+  if (code >= 500) return { type: 'TRANSIENT', code: code };
+  if (code >= 400) return { type: 'BUSINESS', code: code };
+  return { type: 'TIMEOUT_UNKNOWN', code: 0 };
+}
+
+/**
+ * Heal a pallet whose confirmation was found in SAP but not written back locally.
+ * @param {string} palletId
+ * @param {{confirmationGroup:string, confirmationCount:string}} rb
+ */
+function _healConfirmedPallet_(palletId, rb) {
+  updatePalletScanFields_(palletId, {
+    ConfirmationGroup: rb.confirmationGroup,
+    ConfirmationCount: rb.confirmationCount,
+    ScanStatus:        'CONFIRMED',
+    ConfirmedAt:       new Date(),
+    ConfirmedBy:       'HEAL'
+  });
+  try { backfillMaterialDocument(palletId); } catch (e) {
+    logEvent('CONFIRM', 'HEAL_BACKFILL_ERR', palletId + ' ' + e.message);
+  }
+}
+
+/**
+ * POST a confirmation payload with readback-first retry and exponential backoff.
+ * Readback on EVERY attempt (including first): if SAP already has the confirmation
+ * → heal the local sheet and return without POSTing.
+ *
+ * Retry only transient failures (network timeout, 429, 5xx, 403+csrf).
+ * 4xx business errors throw immediately. If the POST timed out AND the readback
+ * on the next attempt also errors → UNKNOWN_STATE (dead-letter candidate).
+ *
+ * @param {Object} payload — from buildConfirmationPayload_
+ * @param {string} palletId — for readback token filter
+ * @param {Object} [testOverrides] — { readbackFn, postFn, healFn, sleepFn } for mocking
+ * @return {{ok?:boolean, healed?:boolean, unknownState?:boolean,
+ *   confirmationGroup?:string, confirmationCount?:string, session?:Object,
+ *   skipped?:boolean, dryRun?:boolean, error?:string}}
+ */
+function postConfirmationWithRetry_(payload, palletId, testOverrides) {
+  var _readback = (testOverrides && testOverrides.readbackFn) || sapReadbackConfirmation_;
+  var _post     = (testOverrides && testOverrides.postFn)     || postConfirmation_;
+  var _heal     = (testOverrides && testOverrides.healFn)     || _healConfirmedPallet_;
+  var _sleep    = (testOverrides && testOverrides.sleepFn)    || function(ms) { Utilities.sleep(ms); };
+  var MAX       = CONFIRM_MAX_ATTEMPTS_;
+
+  var lastOutcome = 'NONE';
+
+  for (var attempt = 1; attempt <= MAX; attempt++) {
+    // ---- Readback first ----
+    var rb = _readback(palletId);
+
+    if (rb.found) {
+      _heal(palletId, rb);
+      logEvent('CONFIRM', attempt === 1 ? 'HEAL_SKIP' : 'HEAL_AFTER_RETRY',
+        palletId + ' attempt=' + attempt + ' grp=' + rb.confirmationGroup);
+      return { ok: true, healed: true,
+        confirmationGroup: rb.confirmationGroup, confirmationCount: rb.confirmationCount };
+    }
+
+    if (rb.error && lastOutcome === 'TIMEOUT_UNKNOWN') {
+      logEvent('CONFIRM', 'UNKNOWN_STATE',
+        palletId + ' readback error after timeout attempt=' + attempt + ' err=' + rb.error);
+      return { ok: false, unknownState: true,
+        error: 'readback failed after timeout — cannot confirm SAP state' };
+    }
+
+    if (rb.error) {
+      logEvent('CONFIRM', 'READBACK_DEGRADED', palletId + ' attempt=' + attempt + ' ' + rb.error);
+    }
+
+    // ---- POST ----
+    try {
+      var result = _post(payload);
+      return result;
+    } catch (e) {
+      var cls = _classifyConfirmError_(e);
+      logEvent('CONFIRM', 'RETRY_ATTEMPT', palletId +
+        ' attempt=' + attempt + '/' + MAX + ' class=' + cls.type +
+        ' code=' + cls.code + ' ' + String(e.message || '').slice(0, 200));
+
+      if (cls.type === 'BUSINESS') throw e;
+
+      lastOutcome = cls.type;
+      if (attempt < MAX) {
+        _sleep(CFG.RETRY_BASE_MS * Math.pow(2, attempt - 1));
+      }
+    }
+  }
+
+  // ---- Exhausted: final readback ----
+  var finalRb = _readback(palletId);
+  if (finalRb.found) {
+    _heal(palletId, finalRb);
+    logEvent('CONFIRM', 'HEAL_AFTER_RETRY',
+      palletId + ' final-readback grp=' + finalRb.confirmationGroup);
+    return { ok: true, healed: true,
+      confirmationGroup: finalRb.confirmationGroup, confirmationCount: finalRb.confirmationCount };
+  }
+
+  if (lastOutcome === 'TIMEOUT_UNKNOWN') {
+    logEvent('CONFIRM', 'UNKNOWN_STATE',
+      palletId + ' exhausted ' + MAX + ' attempts, last=TIMEOUT');
+    return { ok: false, unknownState: true,
+      error: 'POST timed out ' + MAX + ' times, final readback not found' };
+  }
+
+  logEvent('CONFIRM', 'RETRY_EXHAUSTED', palletId + ' lastOutcome=' + lastOutcome);
+  throw new Error('Confirmation failed after ' + MAX + ' attempts (' + lastOutcome + ')');
+}
+
+// ============================================================================
 // Phase 3 Step 2c Part 2 — MaterialDocument readback + orchestrator
 // ============================================================================
 
@@ -410,34 +538,20 @@ function confirmPallet(palletId) {
       return { alreadyConfirmed: true };
     }
 
-    // ---- SAP readback guard (best-effort, timeout-after-success recovery) ----
-    var rb = sapReadbackConfirmation_(palletId);
-    if (rb.found) {
-      updatePalletScanFields_(palletId, {
-        ConfirmationGroup: rb.confirmationGroup,
-        ConfirmationCount: rb.confirmationCount,
-        ScanStatus:        'CONFIRMED',
-        ConfirmedAt:       new Date(),
-        ConfirmedBy:       'HEAL'
-      });
-      try { backfillMaterialDocument(palletId); } catch (bfErr) {
-        logEvent('CONFIRM', 'HEAL_BACKFILL_ERR', palletId + ' ' + bfErr.message);
-      }
-      logEvent('CONFIRM', 'HEAL_SKIP', palletId + ' found in SAP via readback');
-      return { alreadyConfirmed: true, healed: true };
-    }
-    if (rb.error) {
-      logEvent('CONFIRM', 'READBACK_DEGRADED', palletId + ' ' + rb.error);
-    }
-
-    // ---- Build + POST ----
+    // ---- Build payload ----
     var payload = buildConfirmationPayload_(palletId);
     if (payload && payload.error) {
       logEvent('CONFIRM', 'ERROR', palletId + ' ' + payload.error);
       throw new Error(payload.error);
     }
-    var result = postConfirmation_(payload);
 
+    // ---- POST with readback-first retry ----
+    var result = postConfirmationWithRetry_(payload, palletId);
+
+    if (result.healed) return { alreadyConfirmed: true, healed: true };
+    if (result.unknownState) {
+      throw new Error('Confirmation unknown state: ' + result.error);
+    }
     if (result.skipped || result.dryRun) return result;
 
     if (result.ok) {
@@ -749,28 +863,6 @@ function confirmPalletOverride(palletId, reason, qtyConfirmed) {
     return { success: true, message: 'พาเลทนี้ confirm แล้ว (skip)' };
   }
 
-  // ---- 4b. SAP readback guard (best-effort, timeout-after-success recovery) ----
-  {
-    var ovrRb = sapReadbackConfirmation_(palletId);
-    if (ovrRb.found) {
-      updatePalletScanFields_(palletId, {
-        ConfirmationGroup: ovrRb.confirmationGroup,
-        ConfirmationCount: ovrRb.confirmationCount,
-        ScanStatus:        'CONFIRMED',
-        ConfirmedAt:       new Date(),
-        ConfirmedBy:       'HEAL'
-      });
-      try { backfillMaterialDocument(palletId); } catch (bfErr) {
-        logEvent('OVERRIDE_CONFIRM', 'HEAL_BACKFILL_ERR', palletId + ' ' + bfErr.message);
-      }
-      logEvent('OVERRIDE_CONFIRM', 'HEAL_SKIP', palletId + ' found in SAP via readback');
-      return { success: true, message: 'พาเลทนี้ confirm แล้วใน SAP (healed)' };
-    }
-    if (ovrRb.error) {
-      logEvent('OVERRIDE_CONFIRM', 'READBACK_DEGRADED', palletId + ' ' + ovrRb.error);
-    }
-  }
-
   // ---- 5. QC ALLOW-LIST ----
   if (pallet.QCStatus !== 'INSPECTED' || pallet.QCResult !== 'PASS') {
     if (pallet.QCResult === 'FAIL') {
@@ -843,8 +935,16 @@ function confirmPalletOverride(palletId, reason, qtyConfirmed) {
       ConfirmationText:          String(palletId).slice(0, 40)
     };
 
-    var result = postConfirmation_(payload);
+    var result = postConfirmationWithRetry_(payload, palletId);
 
+    if (result.healed) {
+      logEvent('OVERRIDE_CONFIRM', 'HEAL_SKIP', palletId + ' found in SAP via retry readback');
+      return { success: true, message: 'พาเลทนี้ confirm แล้วใน SAP (healed)' };
+    }
+    if (result.unknownState) {
+      logEvent('OVERRIDE_CONFIRM', 'UNKNOWN_STATE', palletId + ' ' + result.error);
+      return { success: false, message: 'สถานะไม่แน่ใจ — ' + result.error };
+    }
     if (result.skipped) {
       return { success: false, message: 'SAP write disabled' };
     }
@@ -1558,5 +1658,181 @@ function TEST_confirmReadbackGuard() {
   Logger.log('──────────────────────────────────────────');
 
   logEvent('TEST_CONFIRM_RB', 'Confirmation', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions');
+}
+
+// ============================================================================
+// Phase 5 item 2c — TEST: retry classification + behaviour
+// ============================================================================
+
+/**
+ * Mock-based test for postConfirmationWithRetry_. No real SAP calls.
+ * Verifies error classification, MAX_ATTEMPTS, readback-first heal short-circuit,
+ * and UNKNOWN_STATE dead-letter path.
+ */
+function TEST_confirmRetryClassification() {
+  var fn = 'TEST_confirmRetryClassification';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+  }
+
+  var noopHeal = function() {};
+  var noopSleep = function() {};
+  var fakePayload = { OrderID: '000000000001' };
+
+  // ---- (1) Error classifier ----
+  var c1 = _classifyConfirmError_(new Error('SAP Confirmation POST failed HTTP 400: M7/018'));
+  assert('(1a) HTTP 400 → BUSINESS', c1.type === 'BUSINESS', 'type=' + c1.type);
+
+  var c2 = _classifyConfirmError_(new Error('SAP Confirmation POST failed HTTP 429: rate'));
+  assert('(1b) HTTP 429 → TRANSIENT', c2.type === 'TRANSIENT', 'type=' + c2.type);
+
+  var c3 = _classifyConfirmError_(new Error('SAP Confirmation POST failed HTTP 503: unavail'));
+  assert('(1c) HTTP 503 → TRANSIENT', c3.type === 'TRANSIENT', 'type=' + c3.type);
+
+  var c4 = _classifyConfirmError_(new Error('SAP Confirmation POST failed HTTP 403: csrf token'));
+  assert('(1d) HTTP 403+csrf → TRANSIENT', c4.type === 'TRANSIENT', 'type=' + c4.type);
+
+  var c5 = _classifyConfirmError_(new Error('SAP Confirmation POST failed HTTP 403: Forbidden'));
+  assert('(1e) HTTP 403 no csrf → BUSINESS', c5.type === 'BUSINESS', 'type=' + c5.type);
+
+  var c6 = _classifyConfirmError_(new Error('Exception: Request timed out'));
+  assert('(1f) network throw → TIMEOUT_UNKNOWN', c6.type === 'TIMEOUT_UNKNOWN', 'type=' + c6.type);
+
+  var c7 = _classifyConfirmError_(new Error('SAP Confirmation POST failed HTTP 500: internal'));
+  assert('(1g) HTTP 500 → TRANSIENT', c7.type === 'TRANSIENT', 'type=' + c7.type);
+
+  // ---- (2) Readback-first heal: POST never called ----
+  var postCalled = false;
+  var r2 = postConfirmationWithRetry_(fakePayload, 'PL-MOCK-HEAL', {
+    readbackFn: function() {
+      return { found: true, confirmationGroup: 'G99', confirmationCount: '0001',
+        confirmationText: 'PL-MOCK-HEAL' };
+    },
+    postFn: function() { postCalled = true; return { ok: true }; },
+    healFn: noopHeal,
+    sleepFn: noopSleep
+  });
+  assert('(2a) heal result ok + healed', r2.ok === true && r2.healed === true,
+    'ok=' + r2.ok + ' healed=' + r2.healed);
+  assert('(2b) POST never called', postCalled === false, 'postCalled=' + postCalled);
+
+  // ---- (3) MAX_ATTEMPTS respected — transient errors ----
+  var postCount3 = 0;
+  var threw3 = false;
+  try {
+    postConfirmationWithRetry_(fakePayload, 'PL-MOCK-RETRY', {
+      readbackFn: function() { return { found: false }; },
+      postFn: function() { postCount3++; throw new Error('SAP Confirmation POST failed HTTP 503: down'); },
+      healFn: noopHeal,
+      sleepFn: noopSleep
+    });
+  } catch (e) { threw3 = true; }
+  assert('(3a) POST called exactly MAX_ATTEMPTS times',
+    postCount3 === CONFIRM_MAX_ATTEMPTS_,
+    'postCount=' + postCount3 + ' MAX=' + CONFIRM_MAX_ATTEMPTS_);
+  assert('(3b) threw RETRY_EXHAUSTED', threw3 === true, 'threw=' + threw3);
+
+  // ---- (4) Business error — no retry, immediate throw ----
+  var postCount4 = 0;
+  var threw4 = false;
+  try {
+    postConfirmationWithRetry_(fakePayload, 'PL-MOCK-BIZ', {
+      readbackFn: function() { return { found: false }; },
+      postFn: function() { postCount4++; throw new Error('SAP Confirmation POST failed HTTP 400: M7/018'); },
+      healFn: noopHeal,
+      sleepFn: noopSleep
+    });
+  } catch (e) { threw4 = true; }
+  assert('(4a) business error: POST called once', postCount4 === 1, 'postCount=' + postCount4);
+  assert('(4b) business error: threw immediately', threw4 === true, 'threw=' + threw4);
+
+  // ---- (5) UNKNOWN_STATE — timeout + readback always not-found ----
+  var postCount5 = 0;
+  var r5 = postConfirmationWithRetry_(fakePayload, 'PL-MOCK-UNKNOWN', {
+    readbackFn: function() { return { found: false }; },
+    postFn: function() { postCount5++; throw new Error('Exception: Request timed out'); },
+    healFn: noopHeal,
+    sleepFn: noopSleep
+  });
+  assert('(5a) unknownState returned', r5.unknownState === true, 'unknownState=' + r5.unknownState);
+  assert('(5b) POST called exactly MAX_ATTEMPTS times',
+    postCount5 === CONFIRM_MAX_ATTEMPTS_,
+    'postCount=' + postCount5);
+
+  // ---- (6) UNKNOWN_STATE short-circuit — timeout then readback error ----
+  var rbCallCount6 = 0;
+  var postCount6 = 0;
+  var r6 = postConfirmationWithRetry_(fakePayload, 'PL-MOCK-RBFAIL', {
+    readbackFn: function() {
+      rbCallCount6++;
+      if (rbCallCount6 === 1) return { found: false };
+      return { found: false, error: 'HTTP 500 readback fail' };
+    },
+    postFn: function() { postCount6++; throw new Error('Exception: DNS error'); },
+    healFn: noopHeal,
+    sleepFn: noopSleep
+  });
+  assert('(6a) unknownState from readback error after timeout',
+    r6.unknownState === true, 'unknownState=' + r6.unknownState);
+  assert('(6b) POST called only 1 time (stopped on attempt 2 readback)',
+    postCount6 === 1, 'postCount=' + postCount6);
+
+  // ---- (7) Success on retry after transient ----
+  var postCount7 = 0;
+  var r7 = postConfirmationWithRetry_(fakePayload, 'PL-MOCK-RECOVER', {
+    readbackFn: function() { return { found: false }; },
+    postFn: function() {
+      postCount7++;
+      if (postCount7 === 1) throw new Error('SAP Confirmation POST failed HTTP 503: temp');
+      return { ok: true, confirmationGroup: 'G77', confirmationCount: '0001', session: {} };
+    },
+    healFn: noopHeal,
+    sleepFn: noopSleep
+  });
+  assert('(7a) success on 2nd attempt', r7.ok === true && !r7.healed, 'ok=' + r7.ok + ' healed=' + r7.healed);
+  assert('(7b) POST called 2 times', postCount7 === 2, 'postCount=' + postCount7);
+
+  // ---- (8) Heal on retry readback (timeout-after-success) ----
+  var rbCount8 = 0;
+  var postCount8 = 0;
+  var r8 = postConfirmationWithRetry_(fakePayload, 'PL-MOCK-HEALED', {
+    readbackFn: function() {
+      rbCount8++;
+      if (rbCount8 === 1) return { found: false };
+      return { found: true, confirmationGroup: 'G88', confirmationCount: '0013',
+        confirmationText: 'PL-MOCK-HEALED' };
+    },
+    postFn: function() { postCount8++; throw new Error('Exception: timed out'); },
+    healFn: noopHeal,
+    sleepFn: noopSleep
+  });
+  assert('(8a) healed on 2nd attempt readback', r8.ok === true && r8.healed === true,
+    'ok=' + r8.ok + ' healed=' + r8.healed);
+  assert('(8b) POST called once (timed out), healed on retry readback',
+    postCount8 === 1, 'postCount=' + postCount8);
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent('TEST_CONFIRM_RETRY', 'Confirmation', pass ? 'PASS' : 'FAIL', elapsed,
     results.length + ' assertions');
 }
