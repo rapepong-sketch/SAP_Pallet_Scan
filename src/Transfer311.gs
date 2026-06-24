@@ -139,10 +139,15 @@ function buildTransfer311Payload_(txnId, destSloc) {
   }
 
   // ---- Build header + deep insert ----
+  // Phase 5 item 2b: stamp a deterministic token for SAP readback idempotency.
+  // NOTE: creatability of MaterialDocumentHeaderText is NOT yet empirically proven
+  // (no live 311 doc exists; FEATURE_TRANSFER311=DRY_RUN). Proof deferred to 311 LIVE cutover.
+  var token311 = String(txnId).replace(/-/g, '').slice(0, 24);
   var payload = {
-    GoodsMovementCode:   '04',
-    PostingDate:         odataDate,
-    DocumentDate:        odataDate,
+    GoodsMovementCode:              '04',
+    PostingDate:                    odataDate,
+    DocumentDate:                   odataDate,
+    MaterialDocumentHeaderText:     token311,
     to_MaterialDocumentItem: [item]
   };
 
@@ -152,6 +157,63 @@ function buildTransfer311Payload_(txnId, destSloc) {
 // ============================================================================
 // Gate-driven POST — CSRF + idempotency + DRY_RUN flag + writeback
 // ============================================================================
+
+/**
+ * SAP readback: check whether a 311 material document with this token already exists.
+ * READ-ONLY, best-effort — never throws.
+ * NOTE: creatability not yet proven (FEATURE_TRANSFER311=DRY_RUN). Proof deferred to LIVE cutover.
+ *
+ * @param {string} token — 24-char hex token derived from TxnID
+ * @return {{found:boolean, materialDocument?:string, materialDocumentYear?:string, raw?:string, error?:string}}
+ */
+function sapReadbackTransfer311_(token) {
+  try {
+    var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+    var url = buildSapUrl_(serviceRoot + 'A_MaterialDocumentHeader', {
+      '$filter': "MaterialDocumentHeaderText eq '" + String(token) + "' and Plant eq '" + CFG.PLANT + "'",
+      '$select': 'MaterialDocument,MaterialDocumentYear,MaterialDocumentHeaderText',
+      '$top': '1',
+      '$format': 'json'
+    });
+
+    logEvent('TRANSFER311', 'READBACK_URL', url);
+    var creds = getSapCredentials_();
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: {
+        'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+        'Accept': 'application/json'
+      },
+      muteHttpExceptions: true
+    });
+
+    var code = resp.getResponseCode();
+    var body = resp.getContentText();
+
+    if (code < 200 || code >= 300) {
+      logEvent('TRANSFER311', 'READBACK_HTTP_ERR', code + ' ' + body.slice(0, 300));
+      return { found: false, error: 'HTTP ' + code };
+    }
+
+    var parsed = JSON.parse(body);
+    var results = (parsed.d && parsed.d.results) || [];
+
+    if (results.length === 0) {
+      return { found: false };
+    }
+
+    var hit = results[0];
+    return {
+      found: true,
+      materialDocument: hit.MaterialDocument || '',
+      materialDocumentYear: hit.MaterialDocumentYear || '',
+      raw: body.slice(0, 500)
+    };
+  } catch (e) {
+    logEvent('TRANSFER311', 'READBACK_EXCEPTION', e.message);
+    return { found: false, error: e.message };
+  }
+}
 
 /**
  * Post a 311 transfer to SAP for the given TransferLog TxnID.
@@ -189,6 +251,31 @@ function postTransfer311_(txnId, destSloc) {
     var existingDoc = String(tlData[txnRowNum - 1][tlIdx['RefDoc']] || '').trim();
     logEvent('TRANSFER311', TL_SHEET, 'SKIP_IDEMPOTENT', 0, txnId);
     return { success: true, materialDocument: existingDoc, dryRun: false };
+  }
+
+  // ---- 1b. SAP readback guard (best-effort, timeout-after-success recovery) ----
+  var rbToken = String(txnId).replace(/-/g, '').slice(0, 24);
+  var rb = sapReadbackTransfer311_(rbToken);
+  if (rb.found) {
+    tlSh.getRange(txnRowNum, tlIdx['Status'] + 1).setValue('TRANSFERRED');
+    tlSh.getRange(txnRowNum, tlIdx['RefDoc'] + 1).setValue(rb.materialDocument);
+    if (tlIdx['DestSLoc'] !== undefined) {
+      tlSh.getRange(txnRowNum, tlIdx['DestSLoc'] + 1).setValue(destSloc);
+    }
+    if (tlIdx['Note'] !== undefined) {
+      tlSh.getRange(txnRowNum, tlIdx['Note'] + 1)
+        .setValue('HEALED from SAP readback ' + rb.materialDocument);
+    }
+    if (tlIdx['UpdatedAt'] !== undefined) {
+      tlSh.getRange(txnRowNum, tlIdx['UpdatedAt'] + 1).setValue(new Date().toISOString());
+    }
+    logEvent('TRANSFER311', TL_SHEET, 'HEAL_SKIP', 0,
+      txnId + ' found in SAP via readback doc=' + rb.materialDocument);
+    return { success: true, materialDocument: rb.materialDocument,
+      materialDocumentYear: rb.materialDocumentYear || '', dryRun: false };
+  }
+  if (rb.error) {
+    logEvent('TRANSFER311', TL_SHEET, 'READBACK_DEGRADED', 0, txnId + ' ' + rb.error);
   }
 
   // ---- 2. BUILD PAYLOAD (validates destSloc, source≠dest, qty, etc.) ----
@@ -528,4 +615,83 @@ function TEST_runLiveTransfer311() {
   if (result.success) {
     Logger.log('SAP MatDoc: ' + result.materialDocument);
   }
+}
+
+// ============================================================================
+// Phase 5 — TEST: transfer 311 readback stamp + guard
+// ============================================================================
+
+/**
+ * Self-cleaning test for the 311 SAP readback guard (Phase 5 item 2b).
+ * Seeds a TransferLog row, verifies payload stamping + readback behaviour, cleans up.
+ * Calls SAP GET (read-only) — never POSTs.
+ */
+function TEST_transfer311ReadbackStamp() {
+  var fn = 'TEST_transfer311ReadbackStamp';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+  }
+
+  // ---- Seed a TransferLog row for payload test ----
+  var txnId = TEST_seedTransferLogForDryRun();
+
+  try {
+    // ---- (1) Payload stamp ----
+    var payload = buildTransfer311Payload_(txnId, CFG.DEST_SLOCS[0]);
+    var expectedToken = txnId.replace(/-/g, '').slice(0, 24);
+
+    assert('(1) payload has MaterialDocumentHeaderText',
+      payload.MaterialDocumentHeaderText !== undefined,
+      'value=' + (payload.MaterialDocumentHeaderText || '(absent)'));
+
+    assert('(1) token matches expected derivation',
+      payload.MaterialDocumentHeaderText === expectedToken,
+      'got=' + payload.MaterialDocumentHeaderText + ' expected=' + expectedToken);
+
+    assert('(1) token length ≤ 25',
+      (payload.MaterialDocumentHeaderText || '').length <= 25,
+      'len=' + (payload.MaterialDocumentHeaderText || '').length);
+
+    assert('(1) token is 24 chars',
+      (payload.MaterialDocumentHeaderText || '').length === 24,
+      'len=' + (payload.MaterialDocumentHeaderText || '').length);
+
+    // ---- (2) sapReadbackTransfer311_ — no-hit probe ----
+    var rb = sapReadbackTransfer311_('000000000000000000000000');
+    assert('(2) readback no-hit — found:false',
+      rb.found === false,
+      'found=' + rb.found + (rb.error ? ' error=' + rb.error : ''));
+
+    assert('(2) readback no-hit — no throw (graceful)',
+      true, 'reached this line without exception');
+
+  } finally {
+    TEST_cleanupTransferLogDryRun();
+    Logger.log('Cleaned up DRYRUN-TEST-* rows');
+  }
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent('TEST_T311_RB', 'Transfer311', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions');
 }
