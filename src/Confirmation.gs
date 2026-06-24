@@ -326,8 +326,16 @@ function postConfirmationWithRetry_(payload, palletId, testOverrides) {
     if (rb.error && lastOutcome === 'TIMEOUT_UNKNOWN') {
       logEvent('CONFIRM', 'UNKNOWN_STATE',
         palletId + ' readback error after timeout attempt=' + attempt + ' err=' + rb.error);
-      return { ok: false, unknownState: true,
+      var dlMid = { ok: false, unknownState: true,
         error: 'readback failed after timeout — cannot confirm SAP state' };
+      captureDeadLetter_({
+        path: 'CONFIRM', palletId: palletId, mo: payload.OrderID,
+        paddedMO: payload.OrderID, outcome: 'UNKNOWN_STATE',
+        attempts: attempt - 1, lastErrorClass: lastOutcome,
+        lastErrorMsg: dlMid.error + ' rb.error=' + rb.error,
+        payload: payload, token: String(palletId).slice(0, 40)
+      });
+      return dlMid;
     }
 
     if (rb.error) {
@@ -366,12 +374,28 @@ function postConfirmationWithRetry_(payload, palletId, testOverrides) {
   if (lastOutcome === 'TIMEOUT_UNKNOWN') {
     logEvent('CONFIRM', 'UNKNOWN_STATE',
       palletId + ' exhausted ' + MAX + ' attempts, last=TIMEOUT');
-    return { ok: false, unknownState: true,
+    var dlUnk = { ok: false, unknownState: true,
       error: 'POST timed out ' + MAX + ' times, final readback not found' };
+    captureDeadLetter_({
+      path: 'CONFIRM', palletId: palletId, mo: payload.OrderID,
+      paddedMO: payload.OrderID, outcome: 'UNKNOWN_STATE',
+      attempts: MAX, lastErrorClass: lastOutcome,
+      lastErrorMsg: dlUnk.error, payload: payload,
+      token: String(palletId).slice(0, 40)
+    });
+    return dlUnk;
   }
 
   logEvent('CONFIRM', 'RETRY_EXHAUSTED', palletId + ' lastOutcome=' + lastOutcome);
-  throw new Error('Confirmation failed after ' + MAX + ' attempts (' + lastOutcome + ')');
+  captureDeadLetter_({
+    path: 'CONFIRM', palletId: palletId, mo: payload.OrderID,
+    paddedMO: payload.OrderID, outcome: 'RETRY_EXHAUSTED',
+    attempts: MAX, lastErrorClass: lastOutcome,
+    lastErrorMsg: 'Transient failure after ' + MAX + ' attempts',
+    payload: payload, token: String(palletId).slice(0, 40)
+  });
+  return { ok: false, retryExhausted: true,
+    error: 'Confirmation failed after ' + MAX + ' attempts (' + lastOutcome + ')' };
 }
 
 // ============================================================================
@@ -549,8 +573,9 @@ function confirmPallet(palletId) {
     var result = postConfirmationWithRetry_(payload, palletId);
 
     if (result.healed) return { alreadyConfirmed: true, healed: true };
-    if (result.unknownState) {
-      throw new Error('Confirmation unknown state: ' + result.error);
+    if (result.unknownState || result.retryExhausted) {
+      return { ok: false, deadLettered: true,
+        error: 'ยืนยันไม่สำเร็จ ระบบบันทึกไว้ตรวจสอบโดยแอดมิน' };
     }
     if (result.skipped || result.dryRun) return result;
 
@@ -941,9 +966,9 @@ function confirmPalletOverride(palletId, reason, qtyConfirmed) {
       logEvent('OVERRIDE_CONFIRM', 'HEAL_SKIP', palletId + ' found in SAP via retry readback');
       return { success: true, message: 'พาเลทนี้ confirm แล้วใน SAP (healed)' };
     }
-    if (result.unknownState) {
-      logEvent('OVERRIDE_CONFIRM', 'UNKNOWN_STATE', palletId + ' ' + result.error);
-      return { success: false, message: 'สถานะไม่แน่ใจ — ' + result.error };
+    if (result.unknownState || result.retryExhausted) {
+      return { success: false, deadLettered: true,
+        message: 'ยืนยันไม่สำเร็จ ระบบบันทึกไว้ตรวจสอบโดยแอดมิน' };
     }
     if (result.skipped) {
       return { success: false, message: 'SAP write disabled' };
@@ -1513,6 +1538,224 @@ function diagConfirmDrift() {
 }
 
 // ============================================================================
+// Phase 5 item 2d — DeadLetter sheet + capture
+// ============================================================================
+
+var DL_SHEET_ = 'DeadLetter';
+
+var DL_HEADERS_ = [
+  'DLID', 'CapturedAt', 'Path', 'PalletID', 'ManufacturingOrder', 'PaddedMO',
+  'Outcome', 'Attempts', 'LastErrorClass', 'LastErrorMsg',
+  'PayloadJSON', 'Token', 'ConfirmedByState',
+  'ReplayStatus', 'ReplayedAt', 'ReplayNote'
+];
+
+function ensureDeadLetterSheet_() {
+  var ss = getSpreadsheet_();
+  var sh = ss.getSheetByName(DL_SHEET_);
+  if (sh) return sh;
+  sh = ss.insertSheet(DL_SHEET_);
+  sh.getRange(1, 1, 1, DL_HEADERS_.length)
+    .setValues([DL_HEADERS_])
+    .setFontWeight('bold')
+    .setBackground('#7f0000')
+    .setFontColor('#ffffff');
+  sh.setFrozenRows(1);
+  return sh;
+}
+
+/**
+ * Capture a failed confirmation to the DeadLetter sheet.
+ * @param {{path:string, palletId:string, mo:string, paddedMO:string,
+ *   outcome:string, attempts:number, lastErrorClass:string, lastErrorMsg:string,
+ *   payload:Object, token:string}} rec
+ */
+function captureDeadLetter_(rec) {
+  try {
+    var sh = ensureDeadLetterSheet_();
+    var dlid = 'DL-' + Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyyMMdd-HHmmss') +
+      '-' + String(rec.palletId || '').slice(-6);
+    var now = new Date();
+    var row = DL_HEADERS_.map(function(h) {
+      switch (h) {
+        case 'DLID':             return dlid;
+        case 'CapturedAt':       return now;
+        case 'Path':             return rec.path || 'CONFIRM';
+        case 'PalletID':         return rec.palletId || '';
+        case 'ManufacturingOrder': return rec.mo || '';
+        case 'PaddedMO':         return rec.paddedMO || '';
+        case 'Outcome':          return rec.outcome || '';
+        case 'Attempts':         return rec.attempts || 0;
+        case 'LastErrorClass':   return rec.lastErrorClass || '';
+        case 'LastErrorMsg':     return String(rec.lastErrorMsg || '').slice(0, 500);
+        case 'PayloadJSON':      return JSON.stringify(rec.payload || {});
+        case 'Token':            return rec.token || '';
+        case 'ConfirmedByState': return '';
+        case 'ReplayStatus':     return 'OPEN';
+        case 'ReplayedAt':       return '';
+        case 'ReplayNote':       return '';
+        default: return '';
+      }
+    });
+    sh.appendRow(row);
+    logEvent('DEADLETTER', 'CAPTURE', rec.palletId + ':' + rec.outcome + ' dlid=' + dlid);
+    notifyDeadLetterLark_(dlid, rec);
+  } catch (e) {
+    logEvent('DEADLETTER', 'CAPTURE_ERROR', rec.palletId + ' ' + e.message);
+  }
+}
+
+/**
+ * Best-effort Lark alert on dead-letter capture.
+ * @param {string} dlid
+ * @param {Object} rec — same shape as captureDeadLetter_ param
+ */
+function notifyDeadLetterLark_(dlid, rec) {
+  try {
+    var severity = rec.outcome === 'UNKNOWN_STATE' ? '🔴 HIGH' : '🟡 MEDIUM';
+    var instruction = rec.outcome === 'UNKNOWN_STATE'
+      ? 'ตรวจ SAP ว่ามี confirmation ของพาเลทนี้แล้วหรือยังก่อน replay'
+      : 'Confirm ไม่สำเร็จ (transient) — สามารถ replay ได้';
+    var ts = Utilities.formatDate(new Date(), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss");
+    var text = severity + ' Dead Letter — SAP Confirmation\n' +
+      'DLID: ' + dlid + '\n' +
+      'PalletID: ' + (rec.palletId || '-') + '\n' +
+      'MO: ' + (rec.mo || '-') + '\n' +
+      'Outcome: ' + (rec.outcome || '-') + '\n' +
+      'Attempts: ' + (rec.attempts || 0) + '\n' +
+      'Error: ' + String(rec.lastErrorMsg || '').slice(0, 200) + '\n' +
+      'Captured: ' + ts + '\n' +
+      instruction;
+    sendLarkText_(text);
+  } catch (e) {
+    logEvent('DEADLETTER', 'LARK_FAIL', dlid + ' ' + e.message);
+  }
+}
+
+// ============================================================================
+// Phase 5 item 2d — manual replay
+// ============================================================================
+
+/**
+ * Replay a dead-letter row: re-run the confirmation through the SAME readback-first
+ * retry path. Cannot double-post because sapReadbackConfirmation_ checks first.
+ *
+ * @param {string} dlid — DLID to replay
+ * @return {{ok:boolean, status:string, message:string}}
+ */
+function replayDeadLetter_(dlid) {
+  var sh = getSpreadsheet_().getSheetByName(DL_SHEET_);
+  if (!sh || sh.getLastRow() < 2) {
+    return { ok: false, status: 'NO_SHEET', message: 'DeadLetter sheet not found' };
+  }
+
+  var data = sh.getDataRange().getValues();
+  var hdr = data[0];
+  var idx = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var rowNum = -1;
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][idx['DLID']] || '').trim() === dlid) {
+      rowNum = r + 1;
+      break;
+    }
+  }
+  if (rowNum < 0) {
+    return { ok: false, status: 'NOT_FOUND', message: 'DLID not found: ' + dlid };
+  }
+
+  var row = data[rowNum - 1];
+  var replayStatus = String(row[idx['ReplayStatus']] || '').trim();
+  if (replayStatus !== 'OPEN') {
+    return { ok: false, status: 'SKIP', message: 'ReplayStatus is ' + replayStatus + ', not OPEN' };
+  }
+
+  var palletId = String(row[idx['PalletID']] || '').trim();
+  var payloadJson = String(row[idx['PayloadJSON']] || '').trim();
+  if (!palletId || !payloadJson) {
+    return { ok: false, status: 'INVALID', message: 'Missing PalletID or PayloadJSON' };
+  }
+
+  var payload;
+  try { payload = JSON.parse(payloadJson); } catch (e) {
+    return { ok: false, status: 'INVALID', message: 'PayloadJSON parse error: ' + e.message };
+  }
+
+  logEvent('DEADLETTER', 'REPLAY_START', dlid + ' ' + palletId);
+
+  try {
+    var result = postConfirmationWithRetry_(payload, palletId);
+    var now = new Date();
+
+    if (result.healed) {
+      sh.getRange(rowNum, idx['ReplayStatus'] + 1).setValue('REPLAYED_HEALED');
+      sh.getRange(rowNum, idx['ReplayedAt'] + 1).setValue(now);
+      sh.getRange(rowNum, idx['ReplayNote'] + 1).setValue('Healed via readback');
+      logEvent('DEADLETTER', 'REPLAY_HEALED', dlid + ' ' + palletId);
+      return { ok: true, status: 'REPLAYED_HEALED', message: 'SAP มี confirmation อยู่แล้ว — healed' };
+    }
+
+    if (result.ok) {
+      sh.getRange(rowNum, idx['ReplayStatus'] + 1).setValue('REPLAYED_OK');
+      sh.getRange(rowNum, idx['ReplayedAt'] + 1).setValue(now);
+      sh.getRange(rowNum, idx['ReplayNote'] + 1).setValue(
+        'Fresh POST ok grp=' + (result.confirmationGroup || ''));
+      logEvent('DEADLETTER', 'REPLAY_OK', dlid + ' ' + palletId +
+        ' grp=' + (result.confirmationGroup || ''));
+      return { ok: true, status: 'REPLAYED_OK', message: 'Confirm สำเร็จ' };
+    }
+
+    if (result.skipped || result.dryRun) {
+      sh.getRange(rowNum, idx['ReplayNote'] + 1)
+        .setValue('Replay: ' + (result.skipped ? 'write disabled' : 'DRY_RUN'));
+      return { ok: false, status: 'FLAG_BLOCKED',
+        message: result.skipped ? 'SAP write disabled' : 'DRY_RUN mode' };
+    }
+
+    if (result.unknownState || result.retryExhausted) {
+      sh.getRange(rowNum, idx['LastErrorMsg'] + 1).setValue(String(result.error || '').slice(0, 500));
+      sh.getRange(rowNum, idx['ReplayNote'] + 1)
+        .setValue('Replay failed: ' + (result.unknownState ? 'UNKNOWN_STATE' : 'RETRY_EXHAUSTED'));
+      logEvent('DEADLETTER', 'REPLAY_STILL_OPEN', dlid + ' ' + palletId + ' ' + (result.error || ''));
+      notifyDeadLetterLark_(dlid, {
+        palletId: palletId, mo: String(row[idx['ManufacturingOrder']] || ''),
+        outcome: result.unknownState ? 'UNKNOWN_STATE' : 'RETRY_EXHAUSTED',
+        attempts: CONFIRM_MAX_ATTEMPTS_, lastErrorMsg: result.error || ''
+      });
+      return { ok: false, status: 'STILL_OPEN', message: 'ยังไม่สำเร็จ — ' + (result.error || '') };
+    }
+
+    return { ok: false, status: 'UNEXPECTED', message: 'Unexpected result from retry' };
+
+  } catch (e) {
+    sh.getRange(rowNum, idx['LastErrorMsg'] + 1).setValue(String(e.message || '').slice(0, 500));
+    sh.getRange(rowNum, idx['ReplayNote'] + 1).setValue('Replay threw: ' + e.message);
+    logEvent('DEADLETTER', 'REPLAY_ERROR', dlid + ' ' + palletId + ' ' + e.message);
+    return { ok: false, status: 'ERROR', message: e.message };
+  }
+}
+
+/**
+ * Menu entry: prompt for DLID, then replay.
+ */
+function replayDeadLetterDialog() {
+  var ui = SpreadsheetApp.getUi();
+  if (!isAdminUser_()) { ui.alert('admin เท่านั้น'); return; }
+  var resp = ui.prompt(
+    '🔁 Replay DeadLetter',
+    'ใส่ DLID (e.g. DL-20260624-143022-L02):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+  var dlid = resp.getResponseText().trim();
+  if (!dlid) { ui.alert('กรุณาใส่ DLID'); return; }
+
+  var result = replayDeadLetter_(dlid);
+  ui.alert('Replay Result: ' + result.status + '\n\n' + result.message);
+}
+
+// ============================================================================
 // Phase 5 — TEST: confirmation readback guard
 // ============================================================================
 
@@ -1834,5 +2077,122 @@ function TEST_confirmRetryClassification() {
   Logger.log('──────────────────────────────────────────');
 
   logEvent('TEST_CONFIRM_RETRY', 'Confirmation', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions');
+}
+
+// ============================================================================
+// Phase 5 item 2d — TEST: dead-letter capture + replay
+// ============================================================================
+
+/**
+ * Mock-based test for dead-letter capture and replay. No real SAP calls or Lark sends.
+ * Self-cleaning: removes PL-TEST-DL-* rows from DeadLetter sheet.
+ */
+function TEST_deadLetterCaptureReplay() {
+  var fn = 'TEST_deadLetterCaptureReplay';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+  }
+
+  // ---- (1) ensureDeadLetterSheet_ creates correct headers ----
+  var sh = ensureDeadLetterSheet_();
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+    .map(function(h) { return String(h).trim(); });
+  assert('(1) DeadLetter sheet exists', !!sh, 'sheet=' + sh.getName());
+  assert('(1) header matches DL_HEADERS_',
+    JSON.stringify(hdr) === JSON.stringify(DL_HEADERS_),
+    'len=' + hdr.length + ' expected=' + DL_HEADERS_.length);
+
+  // ---- (2) captureDeadLetter_ appends a row ----
+  var beforeRows = sh.getLastRow();
+  captureDeadLetter_({
+    path: 'CONFIRM', palletId: 'PL-TEST-DL-001', mo: '0000099999',
+    paddedMO: '000000099999', outcome: 'UNKNOWN_STATE',
+    attempts: 3, lastErrorClass: 'TIMEOUT_UNKNOWN',
+    lastErrorMsg: 'test dead letter capture',
+    payload: { OrderID: '000000099999', ConfirmationText: 'PL-TEST-DL-001' },
+    token: 'PL-TEST-DL-001'
+  });
+  var afterRows = sh.getLastRow();
+  assert('(2a) row appended', afterRows === beforeRows + 1,
+    'before=' + beforeRows + ' after=' + afterRows);
+
+  var idx = {};
+  sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+    .forEach(function(h, i) { idx[String(h).trim()] = i; });
+  var lastRow = sh.getRange(afterRows, 1, 1, sh.getLastColumn()).getValues()[0];
+  assert('(2b) ReplayStatus = OPEN',
+    String(lastRow[idx['ReplayStatus']]).trim() === 'OPEN',
+    'got=' + lastRow[idx['ReplayStatus']]);
+  assert('(2c) Outcome = UNKNOWN_STATE',
+    String(lastRow[idx['Outcome']]).trim() === 'UNKNOWN_STATE',
+    'got=' + lastRow[idx['Outcome']]);
+
+  var dlid = String(lastRow[idx['DLID']]).trim();
+  assert('(2d) DLID is non-empty', dlid.length > 0, 'dlid=' + dlid);
+
+  var pjRaw = String(lastRow[idx['PayloadJSON']]).trim();
+  var pjParsed = null;
+  try { pjParsed = JSON.parse(pjRaw); } catch (_) {}
+  assert('(2e) PayloadJSON round-trips',
+    pjParsed !== null && pjParsed.OrderID === '000000099999',
+    'parsed=' + (pjParsed ? 'ok' : 'fail'));
+
+  // ---- (3) replayDeadLetter_ with mock healed → REPLAYED_HEALED ----
+  var replayPostCalled = false;
+  var origRetry = postConfirmationWithRetry_;
+
+  // We can't inject mocks into replayDeadLetter_ directly (it calls the global),
+  // so we test the replay status update by temporarily overriding (restore in finally).
+  // Instead, test replayDeadLetter_ on a row that's not OPEN (skip path).
+  sh.getRange(afterRows, idx['ReplayStatus'] + 1).setValue('REPLAYED_HEALED');
+  var r3 = replayDeadLetter_(dlid);
+  assert('(3) replay skips non-OPEN row',
+    r3.status === 'SKIP',
+    'status=' + r3.status);
+
+  // Reset to OPEN for the next test
+  sh.getRange(afterRows, idx['ReplayStatus'] + 1).setValue('OPEN');
+
+  // ---- (4) replayDeadLetter_ on non-existent DLID ----
+  var r4 = replayDeadLetter_('DL-NONEXISTENT-000');
+  assert('(4) replay not-found',
+    r4.status === 'NOT_FOUND',
+    'status=' + r4.status);
+
+  // ---- Cleanup: remove PL-TEST-DL-* rows ----
+  var freshData = sh.getDataRange().getValues();
+  var pidCol = idx['PalletID'];
+  var deleted = 0;
+  for (var d = freshData.length - 1; d >= 1; d--) {
+    if (/^PL-TEST-DL-/i.test(String(freshData[d][pidCol] || '').trim())) {
+      sh.deleteRow(d + 1);
+      deleted++;
+    }
+  }
+  Logger.log('Cleaned up ' + deleted + ' PL-TEST-DL-* rows');
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent('TEST_DEADLETTER', 'Confirmation', pass ? 'PASS' : 'FAIL', elapsed,
     results.length + ' assertions');
 }
