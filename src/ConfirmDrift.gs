@@ -52,12 +52,15 @@ function runConfirmDriftDaily(testOverrides) {
   var idx = {};
   data[0].forEach(function(h, i) { idx[String(h).trim()] = i; });
 
+  var candidateFilter = (testOverrides && testOverrides.candidateFilter) || null;
+
   var candidates = [];
   for (var r = 1; r < data.length; r++) {
     var ss_ = String(data[r][idx['ScanStatus']] || '').trim();
     if (ss_ !== 'CONFIRMED') continue;
     var pid = String(data[r][idx['PalletID']] || '').trim();
-    if (/^PL-TEST-/i.test(pid)) continue;
+    if (!candidateFilter && /^PL-TEST-/i.test(pid)) continue;
+    if (candidateFilter && !candidateFilter(pid)) continue;
 
     var ca = data[r][idx['ConfirmedAt']];
     var caDate = (ca instanceof Date) ? ca : null;
@@ -297,18 +300,22 @@ function TEST_confirmDriftDaily() {
 
   var larkCalls = 0;
   var snapshotCalls = 0;
-  var lastSnapshot = null;
+  var readbackCalls = [];
+
+  var testFilter = function(pid) { return /^PL-TEST-DRIFT-/i.test(pid); };
 
   try {
     var summary = runConfirmDriftDaily({
+      candidateFilter: testFilter,
       readbackFn: function(pid) {
+        readbackCalls.push(pid);
         if (pid === 'PL-TEST-DRIFT-OK')   return { found: true, confirmationGroup: 'G1', confirmationCount: '1', confirmationText: pid };
         if (pid === 'PL-TEST-DRIFT-MISS') return { found: false };
         if (pid === 'PL-TEST-DRIFT-ERR')  return { found: false, error: 'HTTP 500 test' };
-        return sapReadbackConfirmation_(pid);
+        return { found: false, error: 'UNEXPECTED PID: ' + pid };
       },
       larkFn: function() { larkCalls++; },
-      snapshotFn: function(s) { snapshotCalls++; lastSnapshot = s; }
+      snapshotFn: function() { snapshotCalls++; }
     });
 
     // ---- Assertions ----
@@ -324,10 +331,14 @@ function TEST_confirmDriftDaily() {
       summary.driftA.every(function(d) { return d.palletId !== 'PL-TEST-DRIFT-ERR'; }),
       'checked');
 
-    assert('(4) old pallet excluded from scan',
+    assert('(4) old pallet excluded from scan (scanned=3 not 4)',
+      summary.scanned === 3,
+      'scanned=' + summary.scanned);
+
+    assert('(4b) old pallet not in any result',
       !summary.driftA.some(function(d) { return d.palletId === 'PL-TEST-DRIFT-OLD'; }) &&
       !summary.indeterminate.some(function(d) { return d.palletId === 'PL-TEST-DRIFT-OLD'; }),
-      'scanned=' + summary.scanned);
+      'checked');
 
     assert('(5) Lark called (driftA > 0)',
       larkCalls === 1,
@@ -342,9 +353,14 @@ function TEST_confirmDriftDaily() {
       summary.driftA.every(function(d) { return typeof d.confirmedAt === 'string'; }),
       'ranAt type=' + typeof summary.ranAt);
 
+    assert('(7b) readback called only for test pallets',
+      readbackCalls.every(function(pid) { return /^PL-TEST-DRIFT-/i.test(pid); }),
+      'calls=' + readbackCalls.join(','));
+
     // ---- (8) Test all-OK → no Lark ----
     var larkCalls2 = 0;
     runConfirmDriftDaily({
+      candidateFilter: testFilter,
       readbackFn: function() { return { found: true, confirmationGroup: 'G', confirmationCount: '1', confirmationText: 'x' }; },
       larkFn: function() { larkCalls2++; },
       snapshotFn: function() {}
