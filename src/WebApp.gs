@@ -879,6 +879,25 @@ function slipGetMaterialsForSloc(sloc) {
 }
 
 /**
+ * Stock-driven cascade for AdminSlip Card 2.
+ * Groups in-stock materials at a SLoc by ProductGroup.
+ * Admin-gated. JSON-safe return (no Date / Java array).
+ * @param {string} sloc — StorageLocation
+ * @return {{ok:boolean, productGroups?:string[], byGroup?:Object, error?:string}}
+ */
+function slipGetCascadeForSloc(sloc) {
+  if (!isAdminUser_()) return { ok: false, error: 'ไม่มีสิทธิ์ (admin only)' };
+  try {
+    sloc = String(sloc || '').trim();
+    if (!sloc) return { ok: true, productGroups: [], byGroup: {} };
+    var result = slipGetCascadeForSloc_(sloc);
+    return JSON.parse(JSON.stringify({ ok: true, productGroups: result.productGroups, byGroup: result.byGroup }));
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
  * Build receive-slip HTML for matching CONFIRMED pallets.
  * Admin-gated. Reuses getSlipPalletsByFilter_ + buildSlipSheetsHtml.
  * @param {{mode:string, value:string}} query — filter spec

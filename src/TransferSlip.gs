@@ -132,6 +132,49 @@ function getProductGroupMap_() {
   return map;
 }
 
+/**
+ * Stock-driven cascade for AdminSlip Card 2: SLoc → ProductGroup → Material.
+ * Material set is IDENTICAL to slipGetMaterialsForSloc (reuses its stock scan).
+ * ProductGroup looked up via getMaterialMap(); ungrouped → '(ไม่ระบุกลุ่ม)'.
+ *
+ * @param {string} sloc — StorageLocation
+ * @return {{ productGroups: string[], byGroup: Object.<string, Array<{code:string, name:string, availQty:number}>> }}
+ */
+function slipGetCascadeForSloc_(sloc) {
+  var FALLBACK = '(ไม่ระบุกลุ่ม)';
+
+  var stockResult = slipGetMaterialsForSloc(sloc);
+  if (!stockResult.ok) throw new Error(stockResult.error || 'stock query failed');
+
+  var materials = stockResult.materials || [];
+  var mmMap = getMaterialMap();
+
+  var byGroup = {};
+  for (var i = 0; i < materials.length; i++) {
+    var m  = materials[i];
+    var mm = mmMap[m.material];
+    var group = (mm && mm.productGroup) ? mm.productGroup : FALLBACK;
+    var name  = (mm && mm.name) ? mm.name : m.name;
+
+    if (!byGroup[group]) byGroup[group] = [];
+    byGroup[group].push({ code: m.material, name: name, availQty: m.availQty });
+  }
+
+  var productGroups = Object.keys(byGroup).sort(function(a, b) {
+    if (a === FALLBACK) return 1;
+    if (b === FALLBACK) return -1;
+    return a < b ? -1 : (a > b ? 1 : 0);
+  });
+
+  for (var g = 0; g < productGroups.length; g++) {
+    byGroup[productGroups[g]].sort(function(a, b) {
+      return a.code < b.code ? -1 : (a.code > b.code ? 1 : 0);
+    });
+  }
+
+  return { productGroups: productGroups, byGroup: byGroup };
+}
+
 // ============================================================================
 // QR payload
 // ============================================================================
@@ -771,4 +814,160 @@ function TEST_pickSlipsRender_() {
 
   TEST_cleanupFifoPallets_();
   Logger.log('TEST_pickSlipsRender_ complete — ZZTEST data cleaned up');
+}
+
+/**
+ * Self-cleaning test for slipGetCascadeForSloc_.
+ * Seeds PL-TEST-CASCADE-* CONFIRMED pallets at SLoc PW30, then asserts:
+ *   (a) returned material-code set === set from slipGetMaterialsForSloc
+ *   (b) each material's group matches getMaterialMap() lookup
+ *   (c) ungrouped materials land under '(ไม่ระบุกลุ่ม)'
+ *   (d) result is JSON-safe (round-trips through JSON.parse/stringify)
+ * Cleans up all seeded rows on completion.
+ */
+function TEST_slipCascadeForSloc() {
+  var fn = 'TEST_slipCascadeForSloc';
+  var t0 = Date.now();
+  var SLOC = 'PW30';
+  var TEST_MAT  = 'ZZTEST-CASCADE';
+  var TEST_PID1 = 'PL-TEST-CASCADE-L01';
+  var TEST_PID2 = 'PL-TEST-CASCADE-L02';
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+  }
+
+  // ---- Seed CONFIRMED pallets in PalletMaster ----
+  var sh  = getSheet_(PM_SHEET);
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  var now = new Date();
+  var seeds = [
+    { PalletID: TEST_PID1, ManufacturingOrder: 'ZZTEST-MO-CASCADE', Material: TEST_MAT,
+      MaterialName: 'Test Cascade Material', Batch: '', QtyPerPallet: 500, Unit: 'PC',
+      PalletSeq: 1, TotalPallets: 2, WorkCenter: '', ProductionDate: '',
+      TotalQuantity: 1000, Plant: '1100', StorageLocation: SLOC, QRPayload: '',
+      Status: 'CONFIRMED', ScanStatus: 'CONFIRMED', CreatedAt: now, ConfirmedAt: now },
+    { PalletID: TEST_PID2, ManufacturingOrder: 'ZZTEST-MO-CASCADE', Material: TEST_MAT,
+      MaterialName: 'Test Cascade Material', Batch: '', QtyPerPallet: 500, Unit: 'PC',
+      PalletSeq: 2, TotalPallets: 2, WorkCenter: '', ProductionDate: '',
+      TotalQuantity: 1000, Plant: '1100', StorageLocation: SLOC, QRPayload: '',
+      Status: 'CONFIRMED', ScanStatus: 'CONFIRMED', CreatedAt: now, ConfirmedAt: now }
+  ];
+
+  var seedRows = seeds.map(function(s) {
+    return hdr.map(function(h) { return s.hasOwnProperty(h) ? s[h] : ''; });
+  });
+  sh.getRange(sh.getLastRow() + 1, 1, seedRows.length, hdr.length).setValues(seedRows);
+  SpreadsheetApp.flush();
+  Logger.log('Seeded ' + seedRows.length + ' test pallets');
+
+  try {
+    // ---- (a) Material-code set equality ----
+    var cascade = slipGetCascadeForSloc_(SLOC);
+    var stockResult = slipGetMaterialsForSloc(SLOC);
+    var stockCodes = (stockResult.materials || []).map(function(m) { return m.material; }).sort();
+
+    var cascadeCodes = [];
+    cascade.productGroups.forEach(function(g) {
+      cascade.byGroup[g].forEach(function(m) {
+        cascadeCodes.push(m.code);
+      });
+    });
+    cascadeCodes.sort();
+
+    assert('(a) material-code set matches slipGetMaterialsForSloc',
+      JSON.stringify(cascadeCodes) === JSON.stringify(stockCodes),
+      'cascade=' + cascadeCodes.length + ' stock=' + stockCodes.length);
+
+    assert('(a) test material present in cascade',
+      cascadeCodes.indexOf(TEST_MAT) >= 0,
+      TEST_MAT);
+
+    // ---- (b) ProductGroup matches getMaterialMap() ----
+    var mmMap = getMaterialMap();
+    var groupMismatch = [];
+    cascade.productGroups.forEach(function(g) {
+      cascade.byGroup[g].forEach(function(m) {
+        var mm = mmMap[m.code];
+        var expectedGroup = (mm && mm.productGroup) ? mm.productGroup : '(ไม่ระบุกลุ่ม)';
+        if (g !== expectedGroup) {
+          groupMismatch.push(m.code + ': got=' + g + ' expected=' + expectedGroup);
+        }
+      });
+    });
+    assert('(b) ProductGroup matches getMaterialMap()',
+      groupMismatch.length === 0,
+      groupMismatch.length ? groupMismatch.join('; ') : 'all match');
+
+    // ---- (c) Ungrouped materials land under fallback ----
+    var testMatInMap = mmMap[TEST_MAT];
+    var testMatHasGroup = testMatInMap && testMatInMap.productGroup;
+    if (!testMatHasGroup) {
+      var foundInFallback = false;
+      if (cascade.byGroup['(ไม่ระบุกลุ่ม)']) {
+        cascade.byGroup['(ไม่ระบุกลุ่ม)'].forEach(function(m) {
+          if (m.code === TEST_MAT) foundInFallback = true;
+        });
+      }
+      assert('(c) ungrouped test material in fallback group',
+        foundInFallback,
+        TEST_MAT + ' not in getMaterialMap or has no productGroup → should be in (ไม่ระบุกลุ่ม)');
+    } else {
+      assert('(c) test material has group in MaterialMaster, skip fallback check',
+        true,
+        'group=' + testMatInMap.productGroup);
+    }
+
+    // ---- (d) JSON-safe round-trip ----
+    var jsonSafe = true;
+    try {
+      var rt = JSON.parse(JSON.stringify(cascade));
+      jsonSafe = Array.isArray(rt.productGroups) && typeof rt.byGroup === 'object';
+    } catch (e) {
+      jsonSafe = false;
+    }
+    assert('(d) result is JSON-safe (round-trip)',
+      jsonSafe,
+      'JSON.parse(JSON.stringify) succeeded');
+
+  } finally {
+    // ---- Cleanup: delete seeded rows ----
+    var pmData = sh.getDataRange().getValues();
+    var pidCol = idx['PalletID'];
+    var delCount = 0;
+    for (var r = pmData.length - 1; r >= 1; r--) {
+      var pid = String(pmData[r][pidCol] || '').trim();
+      if (pid === TEST_PID1 || pid === TEST_PID2) {
+        sh.deleteRow(r + 1);
+        delCount++;
+      }
+    }
+    Logger.log('Cleaned up ' + delCount + ' test pallet rows');
+  }
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent('TEST_CASCADE', 'TransferSlip', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions, ' + (pass ? 'all pass' : 'some failed'));
 }
