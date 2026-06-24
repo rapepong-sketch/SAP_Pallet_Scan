@@ -901,9 +901,9 @@ function _runCreatabilityProof_(palletIdOverride) {
     return;
   }
 
-  // ---- SAP readback ----
-  out.push('── SAP readback ──');
-  var rb = sapReadbackConfirmation_(target.paddedMO, target.palletId);
+  // ---- SAP readback (token-only filter) ----
+  out.push('── SAP readback (ConfirmationText-only filter) ──');
+  var rb = sapReadbackConfirmation_(target.palletId);
   out.push('  found:              ' + rb.found);
   if (rb.error) {
     out.push('  error:              ' + rb.error);
@@ -911,37 +911,28 @@ function _runCreatabilityProof_(palletIdOverride) {
   if (rb.found) {
     out.push('  ConfirmationGroup:  ' + (rb.confirmationGroup || ''));
     out.push('  ConfirmationCount:  ' + (rb.confirmationCount || ''));
+    out.push('  OrderID:            ' + (rb.orderId || ''));
+    out.push('  ConfirmationText:   "' + (rb.confirmationText || '') + '"');
   }
-
-  var confirmationTextValue = '';
-  if (rb.raw) {
-    try {
-      var parsed = JSON.parse(rb.raw);
-      var results = (parsed.d && parsed.d.results) || [];
-      if (results.length > 0) {
-        confirmationTextValue = results[0].ConfirmationText || '';
-      }
-    } catch (_) {}
-  }
-  out.push('  ConfirmationText:   "' + confirmationTextValue + '"');
   out.push('');
 
   // ---- Verdict ----
   out.push('════════════════════════════════════════');
-  if (rb.found && confirmationTextValue === target.palletId) {
+  if (rb.found && rb.confirmationText === target.palletId) {
     out.push('  ✅ CREATABILITY PROVEN — 2c unlocked');
     out.push('     ConfirmationText === PalletID: exact match');
-  } else if (rb.found && confirmationTextValue !== target.palletId) {
-    out.push('  ⚠️  found:true but ConfirmationText mismatch');
+    out.push('     Record: ConfGrp=' + rb.confirmationGroup + ' Count=' + rb.confirmationCount);
+  } else if (rb.found && rb.confirmationText !== target.palletId) {
+    out.push('  ⛔ STOP — wrong record matched');
     out.push('     expected: "' + target.palletId + '"');
-    out.push('     got:      "' + confirmationTextValue + '"');
+    out.push('     got:      "' + (rb.confirmationText || '') + '"');
     out.push('     → investigate before enabling retry');
   } else {
-    out.push('  ⛔ STOP — token did NOT persist; do not enable retry');
+    out.push('  ⛔ STOP — token not found');
     if (rb.error) {
       out.push('     readback error: ' + rb.error);
     } else {
-      out.push('     found:false — ConfirmationText is empty or not queryable');
+      out.push('     found:false — ConfirmationText filter returned no results');
     }
   }
   out.push('════════════════════════════════════════');
