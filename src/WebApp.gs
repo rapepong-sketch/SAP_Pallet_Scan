@@ -962,6 +962,109 @@ function slipCommitPick(material, sloc, qty, refDoc) {
   }
 }
 
+// ============================================================================
+// Reprint — read-only pallet lookup + render (no status change, no creation)
+// ============================================================================
+
+/**
+ * List PalletMaster rows for the reprint UI. READ-ONLY — no status change.
+ * Admin-gated. Excludes PL-TEST-* pallets from operator-facing results.
+ * @param {{mode:'mo'|'palletId', value:string}} filter
+ * @return {{ok:boolean, pallets?:Array, error?:string}}
+ */
+function listPalletsForReprint(filter) {
+  if (!isAdminUser_()) return { ok: false, pallets: [], error: 'ไม่มีสิทธิ์ (admin only)' };
+  try {
+    filter = filter || {};
+    var mode  = String(filter.mode  || '').trim().toLowerCase();
+    var value = String(filter.value || '').trim();
+    if (!value) return { ok: false, pallets: [], error: 'กรุณาระบุค่าค้นหา' };
+    if (mode !== 'mo' && mode !== 'palletid') {
+      return { ok: false, pallets: [], error: 'mode ต้องเป็น mo หรือ palletId' };
+    }
+
+    var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+    if (!sh || sh.getLastRow() < 2) return { ok: true, pallets: [] };
+
+    var data = sh.getDataRange().getValues();
+    var hdr  = data[0];
+    var idx  = {};
+    hdr.forEach(function(h, i) { idx[h] = i; });
+
+    var fields = ['PalletID', 'ManufacturingOrder', 'Material', 'MaterialName',
+                  'Batch', 'QtyPerPallet', 'Unit', 'PalletSeq', 'TotalPallets',
+                  'Status', 'PrintedAt', 'ScanStatus'];
+    for (var k = 0; k < fields.length; k++) {
+      if (idx[fields[k]] === undefined) {
+        return { ok: false, pallets: [], error: 'Missing column: ' + fields[k] };
+      }
+    }
+
+    var results = [];
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      var pid = String(row[idx['PalletID']] || '').trim();
+      var mo  = String(row[idx['ManufacturingOrder']] || '').trim();
+
+      if (/^PL-TEST-/i.test(pid)) continue;
+
+      var match = (mode === 'mo')
+        ? mo === value
+        : pid === value;
+      if (!match) continue;
+
+      results.push({
+        PalletID:           pid,
+        ManufacturingOrder: mo,
+        Material:           String(row[idx['Material']] || '').trim(),
+        MaterialName:       String(row[idx['MaterialName']] || '').trim(),
+        Batch:              String(row[idx['Batch']] || '').trim(),
+        QtyPerPallet:       Number(row[idx['QtyPerPallet']]) || 0,
+        Unit:               String(row[idx['Unit']] || '').trim(),
+        PalletSeq:          Number(row[idx['PalletSeq']]) || 0,
+        TotalPallets:       Number(row[idx['TotalPallets']]) || 0,
+        Status:             String(row[idx['Status']] || '').trim(),
+        PrintedAt:          _fmtDateStr_(row[idx['PrintedAt']]),
+        ScanStatus:         String(row[idx['ScanStatus']] || '').trim()
+      });
+    }
+
+    results.sort(function(a, b) { return a.PalletSeq - b.PalletSeq; });
+
+    logEvent('REPRINT_LIST', 'PalletMaster', 'OK', 0,
+      mode + '=' + value + ' found=' + results.length);
+    return JSON.parse(JSON.stringify({ ok: true, pallets: results }));
+  } catch (err) {
+    logEvent('REPRINT_LIST', 'PalletMaster', 'ERROR', 0, String(err));
+    return { ok: false, pallets: [], error: 'เกิดข้อผิดพลาด: ' + err.message };
+  }
+}
+
+/**
+ * Render A4 pallet sheets for reprint. READ-ONLY — no status change, no creation.
+ * Admin-gated. Returns plain HTML string for google.script.run.
+ * @param {string[]} palletIds
+ * @return {{ok:boolean, html?:string, count?:number, error?:string}}
+ */
+function reprintPalletSheets(palletIds) {
+  if (!isAdminUser_()) return { ok: false, error: 'ไม่มีสิทธิ์ (admin only)' };
+  try {
+    if (!Array.isArray(palletIds) || palletIds.length === 0) {
+      return { ok: false, error: 'กรุณาเลือกพาเลทอย่างน้อย 1 รายการ' };
+    }
+    var ids = palletIds.map(function(id) { return String(id).trim(); })
+                       .filter(function(id) { return id.length > 0; });
+    if (!ids.length) return { ok: false, error: 'กรุณาเลือกพาเลทอย่างน้อย 1 รายการ' };
+
+    var result = buildPalletSheetsHtml(ids, true);
+    var html = (typeof result === 'string') ? result : result.getContent();
+    return { ok: true, html: html, count: ids.length };
+  } catch (err) {
+    logEvent('REPRINT_RENDER', 'PalletSheet', 'ERROR', 0, String(err));
+    return { ok: false, error: 'เกิดข้อผิดพลาด: ' + err.message };
+  }
+}
+
 /** Format a Date or string to 'dd/MM/yyyy' for JSON transfer to the UI */
 function _fmtDateStr_(d) {
   if (!d) return '';
