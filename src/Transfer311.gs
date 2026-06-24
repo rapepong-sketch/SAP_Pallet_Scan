@@ -167,6 +167,12 @@ function buildTransfer311Payload_(txnId, destSloc) {
  * @return {{found:boolean, materialDocument?:string, materialDocumentYear?:string, raw?:string, error?:string}}
  */
 function sapReadbackTransfer311_(token) {
+  // OPEN (311 LIVE): no-hit readback returned HTTP 400 in TEST_ with
+  //   filter "MaterialDocumentHeaderText eq '{t}' and Plant eq '1100'".
+  //   Plant may be item-level (not header-filterable) on A_MaterialDocumentHeader.
+  //   Isolate at 311 LIVE cutover: test token-only filter, then +Plant, then
+  //   +PostingDate, to find the 400 source. Guard currently degrades (safe) but
+  //   would never catch a real 311 double-post until this is resolved.
   try {
     var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
     var url = buildSapUrl_(serviceRoot + 'A_MaterialDocumentHeader', {
