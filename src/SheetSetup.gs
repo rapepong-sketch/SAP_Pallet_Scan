@@ -91,7 +91,11 @@ function onOpen() {
     .addSeparator()
     .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets')
     .addSeparator()
-    .addItem('🔁 [Admin] Replay DeadLetter (by DLID)',  'replayDeadLetterDialog');
+    .addItem('🔁 [Admin] Replay DeadLetter (by DLID)',  'replayDeadLetterDialog')
+    .addSeparator()
+    .addItem('🩺 ตรวจ Confirm Drift (ตอนนี้)',        'runConfirmDriftDaily')
+    .addItem('⏰ ติดตั้ง Trigger Drift รายวัน',        'installConfirmDriftTrigger')
+    .addItem('⏹ ถอน Trigger Drift',                   'uninstallConfirmDriftTrigger');
 
   // ── ⚙ ระบบ ──────────────────────────────────────────────────────────────
   const sysMenu = ui.createMenu('⚙ ระบบ')
