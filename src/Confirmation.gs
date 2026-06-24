@@ -319,19 +319,24 @@ function readMaterialDocument_(confirmationGroup, confirmationCount, session) {
 
 /**
  * SAP readback: check whether a confirmation with this PalletID token already exists.
+ * Filters on ConfirmationText ALONE — PalletID is globally unique, so OrderID scoping
+ * is unnecessary and avoids the padded/unpadded mismatch (SAP returns OrderID unpadded).
+ * SAP creates multiple ConfirmationCount rows per POST; ConfirmationText lands on one
+ * of them (not necessarily Count=1), so token-only filter is the reliable approach.
+ *
  * READ-ONLY, best-effort — never throws. Returns {found:false, error} on any failure
  * so callers can fall through to normal POST behaviour.
  *
- * @param {string} paddedMO — 12-digit zero-padded ManufacturingOrder
  * @param {string} palletId — PalletID stamped into ConfirmationText
- * @return {{found:boolean, confirmationGroup?:string, confirmationCount?:string, raw?:string, error?:string}}
+ * @return {{found:boolean, confirmationGroup?:string, confirmationCount?:string,
+ *   orderId?:string, confirmationText?:string, error?:string}}
  */
-function sapReadbackConfirmation_(paddedMO, palletId) {
+function sapReadbackConfirmation_(palletId) {
   try {
     var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.PROD_ORDER_CONF;
     var url = buildSapUrl_(serviceRoot + 'ProdnOrdConf2', {
-      '$filter': "OrderID eq '" + paddedMO + "' and ConfirmationText eq '" + String(palletId) + "'",
-      '$select': 'ConfirmationGroup,ConfirmationCount,OrderOperation,ConfirmationText',
+      '$filter': "ConfirmationText eq '" + String(palletId) + "'",
+      '$select': 'ConfirmationGroup,ConfirmationCount,OrderID,OrderOperation,ConfirmationText',
       '$top': '1',
       '$format': 'json'
     });
@@ -367,7 +372,8 @@ function sapReadbackConfirmation_(paddedMO, palletId) {
       found: true,
       confirmationGroup: hit.ConfirmationGroup || '',
       confirmationCount: hit.ConfirmationCount || '',
-      raw: body.slice(0, 500)
+      orderId:           hit.OrderID || '',
+      confirmationText:  hit.ConfirmationText || ''
     };
   } catch (e) {
     logEvent('CONFIRM', 'READBACK_EXCEPTION', e.message);
@@ -405,9 +411,7 @@ function confirmPallet(palletId) {
     }
 
     // ---- SAP readback guard (best-effort, timeout-after-success recovery) ----
-    var mo = pallet.ManufacturingOrder;
-    var paddedMO = String(mo).trim().padStart(12, '0');
-    var rb = sapReadbackConfirmation_(paddedMO, palletId);
+    var rb = sapReadbackConfirmation_(palletId);
     if (rb.found) {
       updatePalletScanFields_(palletId, {
         ConfirmationGroup: rb.confirmationGroup,
@@ -746,10 +750,8 @@ function confirmPalletOverride(palletId, reason, qtyConfirmed) {
   }
 
   // ---- 4b. SAP readback guard (best-effort, timeout-after-success recovery) ----
-  var ovrMo = pallet.ManufacturingOrder;
-  if (ovrMo) {
-    var ovrPaddedMO = String(ovrMo).trim().padStart(12, '0');
-    var ovrRb = sapReadbackConfirmation_(ovrPaddedMO, palletId);
+  {
+    var ovrRb = sapReadbackConfirmation_(palletId);
     if (ovrRb.found) {
       updatePalletScanFields_(palletId, {
         ConfirmationGroup: ovrRb.confirmationGroup,
@@ -1510,34 +1512,41 @@ function TEST_confirmReadbackGuard() {
     }
   }
 
-  // ---- (2) sapReadbackConfirmation_ — deliberate no-hit ----
-  if (realMO) {
-    var rb1 = sapReadbackConfirmation_(realPaddedMO, 'PL-TEST-NOHIT');
-    assert('(2) readback no-hit — found:false',
-      rb1.found === false,
-      'found=' + rb1.found + (rb1.error ? ' error=' + rb1.error : ''));
-    assert('(2) readback no-hit — no error (filter accepted)',
-      !rb1.error,
-      rb1.error || 'clean');
-  } else {
-    assert('(2) readback no-hit', false, 'skipped — no real MO');
-  }
+  // ---- (2) sapReadbackConfirmation_ — deliberate no-hit (token-only filter) ----
+  var rb1 = sapReadbackConfirmation_('PL-TEST-NOHIT');
+  assert('(2) readback no-hit — found:false',
+    rb1.found === false,
+    'found=' + rb1.found + (rb1.error ? ' error=' + rb1.error : ''));
+  assert('(2) readback no-hit — no error (filter accepted)',
+    !rb1.error,
+    rb1.error || 'clean');
 
-  // ---- (3) No false positive on legacy (pre-2b) records ----
-  if (realMO && realPalletId) {
-    var rb2 = sapReadbackConfirmation_(realPaddedMO, realPalletId);
+  // ---- (3) No false positive on legacy (pre-stamp) records ----
+  if (realPalletId) {
+    var rb2 = sapReadbackConfirmation_(realPalletId);
     assert('(3) no false positive on legacy records — found:false',
       rb2.found === false,
-      'MO=' + realMO + ' PID=' + realPalletId + ' found=' + rb2.found);
+      'PID=' + realPalletId + ' found=' + rb2.found);
   } else {
     assert('(3) no false positive on legacy', false, 'skipped — no real data');
   }
 
-  // ---- (4) Graceful degrade on bad MO ----
-  var rb3 = sapReadbackConfirmation_('000000000000', 'PL-TEST-BADMO');
+  // ---- (4) Graceful degrade on nonsense token ----
+  var rb3 = sapReadbackConfirmation_('PL-TEST-BADMO');
   assert('(4) graceful degrade — found:false, no throw',
     rb3.found === false,
     'found=' + rb3.found + ' error=' + (rb3.error || 'none'));
+
+  // ---- (5) Positive hit on known post-stamp pallet (PL-1000036346-L02) ----
+  var KNOWN_STAMPED = 'PL-1000036346-L02';
+  var rb5 = sapReadbackConfirmation_(KNOWN_STAMPED);
+  assert('(5) known post-stamp pallet — found:true',
+    rb5.found === true,
+    'found=' + rb5.found + (rb5.error ? ' error=' + rb5.error : '') +
+    ' grp=' + (rb5.confirmationGroup || '') + ' cnt=' + (rb5.confirmationCount || ''));
+  assert('(5) confirmationText matches PalletID',
+    rb5.confirmationText === KNOWN_STAMPED,
+    'got="' + (rb5.confirmationText || '') + '" expected="' + KNOWN_STAMPED + '"');
 
   var elapsed = Date.now() - t0;
   Logger.log('');
