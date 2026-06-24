@@ -95,6 +95,55 @@ function _normOpNo_(v) {
 }
 
 // ============================================================================
+// Schema assertion (read-only — never mutates the sheet)
+// ============================================================================
+
+/**
+ * Assert that the live OperationLog header matches OL_HEADERS exactly.
+ * READ-ONLY: never writes to the sheet.
+ *
+ * @param {string[]} [liveHeaderOverride] — if provided, used instead of reading
+ *   the sheet (for tests). Otherwise reads row 1 from the live OperationLog sheet.
+ * @return {{ ok:boolean, expected:string[], actual:string[], reason:string }}
+ */
+function assertOperationLogSchema_(liveHeaderOverride) {
+  var liveHdr;
+
+  if (liveHeaderOverride) {
+    liveHdr = liveHeaderOverride.map(function(h) { return String(h).trim(); });
+  } else {
+    var sh = getSpreadsheet_().getSheetByName(OL_SHEET);
+    if (!sh) return { ok: true, expected: OL_HEADERS, actual: [], reason: 'NO_SHEET' };
+    var lastCol = sh.getLastColumn();
+    if (lastCol < 1) return { ok: true, expected: OL_HEADERS, actual: [], reason: 'NO_SHEET' };
+    liveHdr = sh.getRange(1, 1, 1, lastCol).getValues()[0]
+      .map(function(h) { return String(h).trim(); });
+  }
+
+  if (liveHdr.length !== OL_HEADERS.length) {
+    return {
+      ok: false,
+      expected: OL_HEADERS,
+      actual: liveHdr,
+      reason: 'LENGTH ' + liveHdr.length + '!=' + OL_HEADERS.length
+    };
+  }
+
+  for (var i = 0; i < OL_HEADERS.length; i++) {
+    if (liveHdr[i] !== OL_HEADERS[i]) {
+      return {
+        ok: false,
+        expected: OL_HEADERS,
+        actual: liveHdr,
+        reason: 'ORDER@idx' + i + ' ' + liveHdr[i] + '!=' + OL_HEADERS[i]
+      };
+    }
+  }
+
+  return { ok: true, expected: OL_HEADERS, actual: liveHdr, reason: 'MATCH' };
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
 
@@ -155,11 +204,9 @@ function logOperation(entry) {
 
   // Write-time guard: verify OL_HEADERS matches the live sheet header.
   // If they differ, appendRow would put data in wrong columns (data corruption).
-  var liveHdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
-    .map(function(h) { return String(h).trim(); });
-  if (liveHdr.length !== OL_HEADERS.length ||
-      !liveHdr.every(function(h, i) { return h === OL_HEADERS[i]; })) {
-    var detail = 'OL_HEADERS=[' + OL_HEADERS.join(',') + '] sheet=[' + liveHdr.join(',') + ']';
+  var chk = assertOperationLogSchema_();
+  if (!chk.ok) {
+    var detail = 'OL_HEADERS=[' + OL_HEADERS.join(',') + '] sheet=[' + chk.actual.join(',') + ']';
     logEvent('OL_SCHEMA_DESYNC', OL_SHEET, 'ERROR', 0, detail);
     throw new Error('OperationLog schema desync — OL_HEADERS does not match sheet header. ' + detail);
   }
@@ -500,4 +547,108 @@ function _olReorderResult_(status, extra) {
   logEvent('REORDER_OPLOG_BUCKETS', 'OperationLog', status, 0,
     JSON.stringify({ status: status, detail: extra.detail || '' }).slice(0, 500));
   return JSON.parse(JSON.stringify(result));
+}
+
+// ============================================================================
+// Test harness — assertOperationLogSchema_ guard
+// ============================================================================
+
+/**
+ * Self-cleaning test for assertOperationLogSchema_ (read-only guard).
+ * Uses liveHeaderOverride only — never mutates the live OperationLog sheet.
+ * Run from Apps Script Editor → select TEST_OLSchemaGuard → Run.
+ */
+function TEST_OLSchemaGuard() {
+  var fn = 'TEST_OLSchemaGuard';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+  }
+
+  // Snapshot live sheet header before any test (for read-only check at the end)
+  var sh = getSpreadsheet_().getSheetByName(OL_SHEET);
+  var headerBefore = null;
+  if (sh && sh.getLastColumn() > 0) {
+    headerBefore = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+      .map(function(h) { return String(h).trim(); });
+  }
+
+  // ---- (1) Correct header → ok:true ----
+  var r1 = assertOperationLogSchema_(OL_HEADERS.slice());
+  assert('(1) correct header → ok:true',
+    r1.ok === true,
+    'ok=' + r1.ok + ' reason=' + r1.reason);
+
+  // ---- (2) Swapped adjacent headers → ok:false with ORDER reason ----
+  var swapped = OL_HEADERS.slice();
+  var swapIdx = OL_HEADERS.indexOf('ActualMachine');
+  var swapIdx2 = OL_HEADERS.indexOf('PDResult');
+  swapped[swapIdx]  = OL_HEADERS[swapIdx2];
+  swapped[swapIdx2] = OL_HEADERS[swapIdx];
+
+  var r2 = assertOperationLogSchema_(swapped);
+  assert('(2) swapped headers → ok:false',
+    r2.ok === false,
+    'ok=' + r2.ok + ' reason=' + r2.reason);
+
+  var expectIdx = Math.min(swapIdx, swapIdx2);
+  assert('(2) reason names offending index',
+    r2.reason.indexOf('ORDER@idx' + expectIdx) >= 0,
+    'reason=' + r2.reason + ' expectedIdx=' + expectIdx);
+
+  // ---- (3) Short header (drop last col) → ok:false with LENGTH reason ----
+  var short = OL_HEADERS.slice(0, -1);
+  var r3 = assertOperationLogSchema_(short);
+  assert('(3) short header → ok:false',
+    r3.ok === false,
+    'ok=' + r3.ok + ' reason=' + r3.reason);
+
+  assert('(3) reason contains LENGTH',
+    r3.reason.indexOf('LENGTH') >= 0,
+    'reason=' + r3.reason);
+
+  assert('(3) reason shows actual!=expected length',
+    r3.reason.indexOf(short.length + '!=' + OL_HEADERS.length) >= 0,
+    'reason=' + r3.reason);
+
+  // ---- (4) Read-only check: live sheet header unchanged ----
+  var headerAfter = null;
+  if (sh && sh.getLastColumn() > 0) {
+    headerAfter = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+      .map(function(h) { return String(h).trim(); });
+  }
+
+  if (headerBefore === null && headerAfter === null) {
+    assert('(4) read-only: no OL sheet before or after',
+      true, 'sheet does not exist — guard never touched it');
+  } else {
+    assert('(4) read-only: live header unchanged',
+      JSON.stringify(headerBefore) === JSON.stringify(headerAfter),
+      'before=' + (headerBefore ? headerBefore.length : 'null') +
+      ' after=' + (headerAfter ? headerAfter.length : 'null'));
+  }
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent('TEST_OL_GUARD', 'OperationLog', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions, ' + (pass ? 'all pass' : 'some failed'));
 }
