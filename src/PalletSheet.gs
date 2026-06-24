@@ -30,7 +30,10 @@ function buildPalletSheetsHtml(palletIds, isReprint) {
   const mmMap     = getMaterialMap(); // name fallback
   const timestamp = fmtDate_(new Date());
 
-  const sheets = pallets.map(p => buildOneSheetHtml_(p, poMap, mmMap, timestamp));
+  const reprintTs = isReprint
+    ? Utilities.formatDate(new Date(), 'Asia/Bangkok', 'dd/MM/yyyy HH:mm')
+    : '';
+  const sheets = pallets.map(p => buildOneSheetHtml_(p, poMap, mmMap, timestamp, reprintTs));
 
   const html = `<!DOCTYPE html>
 <html>
@@ -102,7 +105,7 @@ function reprintDialog() {
 // Internal: one sheet HTML
 // ============================================================================
 
-function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
+function buildOneSheetHtml_(p, poMap, mmMap, timestamp, reprintTs) {
   // mo MUST be resolved before ops-fetch and poMap lookup — fallback extracts MO from PalletID
   // so the sheet still renders correctly even when ManufacturingOrder column was renamed/empty.
   const mo = p.ManufacturingOrder ||
@@ -145,6 +148,10 @@ function buildOneSheetHtml_(p, poMap, mmMap, timestamp) {
   h += `</div>`;
   h += `<div class="hdr-qr"><img src="${buildPsQrUrl_(p.QRPayload)}" width="110" height="110" alt="QR"></div>`;
   h += `</div>`;
+
+  if (reprintTs) {
+    h += `<div class="reprint-badge">REPRINT &middot; ${esc_(reprintTs)}</div>`;
+  }
 
   // Info bar
   h += `<table class="info-bar">`;
@@ -294,6 +301,11 @@ body{font-family:'Sarabun',Arial,sans-serif;font-size:9pt;background:#f0f0f0}
 .rules-row{display:flex;gap:1.5mm}
 .rule{flex:1;background:#fff9e6;border:1px solid #f0c14b;padding:1mm 2mm;
   font-size:7.5pt;line-height:1.4}
+
+/* Reprint badge */
+.reprint-badge{display:inline-block;background:#fff3cd;border:1px solid #ffc107;
+  color:#856404;font-size:7.5pt;font-weight:bold;padding:0.8mm 3mm;
+  border-radius:3px;margin-bottom:1mm;letter-spacing:.3px}
 </style>`;
 
 // ============================================================================
