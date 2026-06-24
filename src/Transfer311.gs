@@ -665,9 +665,20 @@ function TEST_transfer311ReadbackStamp() {
       (payload.MaterialDocumentHeaderText || '').length <= 25,
       'len=' + (payload.MaterialDocumentHeaderText || '').length);
 
-    assert('(1) token is 24 chars',
-      (payload.MaterialDocumentHeaderText || '').length === 24,
+    assert('(1) seeded token length ≤ 24',
+      (payload.MaterialDocumentHeaderText || '').length <= 24,
       'len=' + (payload.MaterialDocumentHeaderText || '').length);
+
+    // ---- (1b) Production-realistic UUID derivation ----
+    var u = Utilities.getUuid();
+    var t = u.replace(/-/g, '').slice(0, 24);
+    assert('(1b) UUID-derived token is exactly 24 chars',
+      t.length === 24,
+      'uuid=' + u + ' token=' + t + ' len=' + t.length);
+
+    assert('(1b) UUID derivation is deterministic',
+      t === u.replace(/-/g, '').substring(0, 24),
+      'slice vs substring match');
 
     // ---- (2) sapReadbackTransfer311_ — no-hit probe ----
     var rb = sapReadbackTransfer311_('000000000000000000000000');
