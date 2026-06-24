@@ -469,6 +469,293 @@ function runPhase5TokenFieldProbe() {
 }
 
 // ============================================================================
+// Deep diagnosis — why ConfirmationText did not persist
+// ============================================================================
+
+/**
+ * Deep $metadata + live GET diagnosis for ConfirmationText non-persistence.
+ * READ-ONLY. No POST. *** DELETE WITH Phase5Item2aProbe.gs ***
+ */
+function runConfirmTextDiagnosis() {
+  var t0 = Date.now();
+  var out = [];
+  out.push('══════════════════════════════════════════════════════════════════');
+  out.push('  ConfirmationText Non-Persistence Diagnosis');
+  out.push('  Timestamp: ' + Utilities.formatDate(new Date(), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss"));
+  out.push('  Sample: OrderID=001000036346 ConfGrp=83850 PID=PL-1000036346-L02');
+  out.push('  READ-ONLY: GET only, no POST');
+  out.push('══════════════════════════════════════════════════════════════════');
+  out.push('');
+
+  var confRoot = CFG.SAP_BASE_URL + CFG.SERVICES.PROD_ORDER_CONF;
+
+  // ================================================================
+  // 1. $metadata DEEP READ
+  // ================================================================
+  out.push('════════════════════════════════════════');
+  out.push('  1. $metadata DEEP READ');
+  out.push('════════════════════════════════════════');
+  out.push('');
+
+  var metaResp = _probeGetXml_(confRoot + '$metadata', 'DIAG_META');
+
+  if (metaResp.code !== 200) {
+    out.push('FAIL: $metadata HTTP ' + metaResp.code);
+    out.push(metaResp.body.slice(0, 500));
+    _showDiagDialog_(out, Date.now() - t0);
+    return;
+  }
+
+  var xml = metaResp.body;
+
+  // ---- 1a. Find EntitySet ProdnOrdConf2 → its EntityType ----
+  out.push('── 1a. EntitySet → EntityType mapping ──');
+  var esMatch = xml.match(/EntitySet\s+Name="ProdnOrdConf2"[^>]*EntityType="([^"]+)"/);
+  var entityTypeFQN = esMatch ? esMatch[1] : '(not found)';
+  out.push('  EntitySet ProdnOrdConf2 → EntityType: ' + entityTypeFQN);
+
+  var etName = entityTypeFQN.split('.').pop();
+  out.push('  Short EntityType name: ' + etName);
+  out.push('');
+
+  // ---- 1b. Extract Key fields ----
+  out.push('── 1b. Key of ' + etName + ' ──');
+  var etBlockRe = new RegExp('EntityType\\s+Name="' + etName + '"[\\s\\S]*?</EntityType>', 'i');
+  var etBlock = xml.match(etBlockRe);
+  if (!etBlock) {
+    out.push('  FAIL: EntityType block not found for ' + etName);
+  } else {
+    var keyRefs = etBlock[0].match(/<PropertyRef\s+Name="([^"]+)"/g) || [];
+    out.push('  Key PropertyRefs (' + keyRefs.length + '):');
+    keyRefs.forEach(function(kr) {
+      var kn = kr.match(/Name="([^"]+)"/);
+      out.push('    ' + (kn ? kn[1] : kr));
+    });
+  }
+  out.push('');
+
+  // ---- 1c. ALL properties on this EntityType ----
+  out.push('── 1c. ALL Properties on ' + etName + ' ──');
+  if (etBlock) {
+    var propMatches = etBlock[0].match(/<Property[^>]*\/?>|<Property[^>]*>[^<]*<\/Property>/g) || [];
+    out.push('  Total properties: ' + propMatches.length);
+    out.push('');
+    propMatches.forEach(function(ptag) {
+      var nm = (ptag.match(/\bName="([^"]+)"/) || [])[1] || '?';
+      var ty = (ptag.match(/\bType="([^"]+)"/) || [])[1] || '?';
+      var ml = (ptag.match(/\bMaxLength="([^"]+)"/) || [])[1] || '';
+      var cr = (ptag.match(/\bsap:creatable="([^"]+)"/) || [])[1] || '';
+      var fl = (ptag.match(/\bsap:filterable="([^"]+)"/) || [])[1] || '';
+      var up = (ptag.match(/\bsap:updatable="([^"]+)"/) || [])[1] || '';
+      var label = (ptag.match(/\bsap:label="([^"]+)"/) || [])[1] || '';
+
+      var line = '  ' + nm;
+      line += '  Type=' + ty;
+      if (ml) line += '  MaxLen=' + ml;
+      if (cr) line += '  creat=' + cr;
+      if (fl) line += '  filter=' + fl;
+      if (up) line += '  upd=' + up;
+      if (label) line += '  label="' + label + '"';
+
+      if (nm === 'ConfirmationText') line = '  >>> ' + line.trim() + ' <<<';
+      out.push(line);
+    });
+  }
+  out.push('');
+
+  // ---- 1d. NavigationProperties ----
+  out.push('── 1d. NavigationProperties on ' + etName + ' ──');
+  if (etBlock) {
+    var navMatches = etBlock[0].match(/<NavigationProperty[^>]*\/?>/g) || [];
+    out.push('  Total NavigationProperties: ' + navMatches.length);
+    navMatches.forEach(function(ntag) {
+      var nm = (ntag.match(/\bName="([^"]+)"/) || [])[1] || '?';
+      var rel = (ntag.match(/\bRelationship="([^"]+)"/) || [])[1] || '';
+      var toRole = (ntag.match(/\bToRole="([^"]+)"/) || [])[1] || '';
+      out.push('  ' + nm + '  → ' + toRole + '  rel=' + rel);
+    });
+    if (navMatches.length === 0) {
+      out.push('  (none)');
+    }
+  }
+  out.push('');
+
+  // ---- 1e. Search for ANY text-related EntityType/EntitySet in entire $metadata ----
+  out.push('── 1e. Search for text-related EntityTypes/EntitySets ──');
+  var textESMatches = xml.match(/EntitySet\s+Name="[^"]*[Tt]ext[^"]*"/g) || [];
+  var textETMatches = xml.match(/EntityType\s+Name="[^"]*[Tt]ext[^"]*"/g) || [];
+  var longTextMatches = xml.match(/EntitySet\s+Name="[^"]*[Ll]ong[Tt]ext[^"]*"/g) || [];
+  out.push('  EntitySets with "Text": ' + (textESMatches.length ? textESMatches.join(', ') : '(none)'));
+  out.push('  EntityTypes with "Text": ' + (textETMatches.length ? textETMatches.join(', ') : '(none)'));
+  out.push('  EntitySets with "LongText": ' + (longTextMatches.length ? longTextMatches.join(', ') : '(none)'));
+  out.push('');
+
+  // ================================================================
+  // 2. LIVE GET — the exact confirmation(s) we created
+  // ================================================================
+  out.push('════════════════════════════════════════');
+  out.push('  2. LIVE GET — ConfirmationGroup 83850');
+  out.push('════════════════════════════════════════');
+  out.push('');
+
+  // ---- 2a. Filter by ConfirmationGroup, wide $select ----
+  out.push('── 2a. Filter by ConfirmationGroup ──');
+  var url2a = buildSapUrl_(confRoot + 'ProdnOrdConf2', {
+    '$filter': "ConfirmationGroup eq '83850'",
+    '$select': 'ConfirmationGroup,ConfirmationCount,OrderID,OrderOperation,ConfirmationText',
+    '$top': '20',
+    '$format': 'json'
+  });
+  var r2a = _probeGet_(url2a, 'DIAG_2A');
+  if (r2a.code === 200) {
+    var p2a = JSON.parse(r2a.body);
+    var res2a = (p2a.d && p2a.d.results) || [];
+    out.push('  HTTP 200, ' + res2a.length + ' record(s)');
+    var anyText = false;
+    res2a.forEach(function(c, i) {
+      var ct = c.ConfirmationText || '';
+      if (ct) anyText = true;
+      out.push('    [' + (i + 1) + '] Grp=' + c.ConfirmationGroup +
+        ' Cnt=' + c.ConfirmationCount +
+        ' OrderID=' + c.OrderID +
+        ' Op=' + c.OrderOperation +
+        ' Text="' + ct + '"');
+    });
+    out.push('  Any ConfirmationText populated? ' + (anyText ? 'YES' : 'NO'));
+  } else {
+    out.push('  HTTP ' + r2a.code);
+    out.push('  ' + r2a.body.slice(0, 500));
+  }
+  out.push('');
+
+  // ---- 2b. Key-based GET on one specific record ----
+  out.push('── 2b. Key-based GET — (83850, 0001) ──');
+  var url2b = buildSapUrl_(confRoot + "ProdnOrdConf2(ConfirmationGroup='83850',ConfirmationCount='0001')", {
+    '$format': 'json'
+  });
+  var r2b = _probeGet_(url2b, 'DIAG_2B');
+  if (r2b.code === 200) {
+    var p2b = JSON.parse(r2b.body);
+    var d2b = p2b.d || p2b;
+    out.push('  HTTP 200');
+    var allFields = Object.keys(d2b).sort();
+    out.push('  ALL returned fields (' + allFields.length + '):');
+    allFields.forEach(function(f) {
+      if (f === '__metadata') return;
+      var v = d2b[f];
+      var display = (v === null || v === undefined) ? '(null)' :
+        (typeof v === 'object' ? JSON.stringify(v).slice(0, 80) : String(v));
+      var marker = (f === 'ConfirmationText') ? ' <<<' : '';
+      out.push('    ' + f + ' = ' + display + marker);
+    });
+    if (d2b.__metadata && d2b.__metadata.uri) {
+      out.push('  __metadata.uri: ' + d2b.__metadata.uri);
+    }
+  } else {
+    out.push('  HTTP ' + r2b.code);
+    out.push('  ' + r2b.body.slice(0, 500));
+  }
+  out.push('');
+
+  // ---- 2c. Try $expand on any text-related navigation ----
+  out.push('── 2c. $expand probes on text navigations ──');
+  var navNames = [];
+  if (etBlock) {
+    var navAll = etBlock[0].match(/<NavigationProperty[^>]*Name="([^"]+)"/g) || [];
+    navAll.forEach(function(n) {
+      var nm = (n.match(/Name="([^"]+)"/) || [])[1];
+      if (nm) navNames.push(nm);
+    });
+  }
+
+  var textNavs = navNames.filter(function(n) {
+    return /text|long|note|comment/i.test(n);
+  });
+
+  if (textNavs.length === 0) {
+    out.push('  No text-related NavigationProperties found');
+    out.push('  Trying all navigations for reference:');
+    navNames.forEach(function(nav) {
+      out.push('    ' + nav);
+    });
+  }
+
+  var expandTargets = textNavs.length > 0 ? textNavs : navNames.slice(0, 3);
+  expandTargets.forEach(function(nav) {
+    out.push('');
+    out.push('  Expanding: ' + nav);
+    var urlExp = buildSapUrl_(confRoot + "ProdnOrdConf2(ConfirmationGroup='83850',ConfirmationCount='0001')", {
+      '$expand': nav,
+      '$format': 'json'
+    });
+    var rExp = _probeGet_(urlExp, 'DIAG_2C_' + nav);
+    if (rExp.code === 200) {
+      var pExp = JSON.parse(rExp.body);
+      var dExp = pExp.d || pExp;
+      var navData = dExp[nav];
+      if (!navData) {
+        out.push('    nav property "' + nav + '" not in response');
+      } else if (navData.results) {
+        out.push('    collection: ' + navData.results.length + ' item(s)');
+        navData.results.forEach(function(item, i) {
+          out.push('    [' + i + '] ' + JSON.stringify(item).slice(0, 200));
+        });
+      } else if (typeof navData === 'object') {
+        out.push('    single entity: ' + JSON.stringify(navData).slice(0, 300));
+      }
+    } else {
+      out.push('    HTTP ' + rExp.code + ': ' + rExp.body.slice(0, 200));
+    }
+  });
+  out.push('');
+
+  // ================================================================
+  // 3. Key summary
+  // ================================================================
+  out.push('════════════════════════════════════════');
+  out.push('  3. ProdnOrdConf2 Key');
+  out.push('════════════════════════════════════════');
+  if (etBlock) {
+    var keyNames = [];
+    (etBlock[0].match(/<PropertyRef\s+Name="([^"]+)"/g) || []).forEach(function(kr) {
+      var kn = (kr.match(/Name="([^"]+)"/) || [])[1];
+      if (kn) keyNames.push(kn);
+    });
+    out.push('  Key: (' + keyNames.join(', ') + ')');
+    out.push('  This means a single confirmation is identified by: ' + keyNames.join(' + '));
+  }
+  out.push('');
+
+  // ================================================================
+  // 4. Verdict
+  // ================================================================
+  out.push('════════════════════════════════════════');
+  out.push('  4. VERDICT');
+  out.push('════════════════════════════════════════');
+  out.push('  (Interpret from the data above — Claude will analyze the pasted output.)');
+  out.push('');
+
+  _showDiagDialog_(out, Date.now() - t0);
+}
+
+function _showDiagDialog_(lines, elapsed) {
+  lines.push('');
+  lines.push('── Elapsed: ' + elapsed + 'ms ──');
+  lines.push('*** Phase5Item2aProbe.gs is TEMPORARY — delete before go-live ***');
+
+  var report = lines.join('\n');
+  Logger.log(report);
+  logEvent('PROBE_P5', 'CONF_TEXT_DIAG', 'DONE', elapsed, 'diagnosis complete');
+
+  var escaped = report.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  var html = HtmlService.createHtmlOutput(
+    '<pre style="font-family:monospace;font-size:12px;white-space:pre-wrap;max-width:100%;padding:12px">' +
+    escaped + '</pre>'
+  ).setWidth(950).setHeight(750).setTitle('ConfirmationText Diagnosis');
+  SpreadsheetApp.getUi().showModelessDialog(html, 'ConfirmationText Non-Persistence Diagnosis');
+}
+
+// ============================================================================
 // Creatability proof — run AFTER one supervised real confirmation post-redeploy
 // ============================================================================
 

@@ -78,7 +78,8 @@ function onOpen() {
     .addSeparator()
     .addItem('🔬 [Probe] Phase 5 Token Fields',            'runPhase5TokenFieldProbe')   // TEMPORARY — delete with Phase5Item2aProbe.gs
     .addItem('🔬 [Proof] Confirm Creatability',            'runConfirmCreatabilityProof')   // TEMPORARY — delete with Phase5Item2aProbe.gs
-    .addItem('🔬 [Proof] Confirm Creatability (by ID)',   'runConfirmCreatabilityProofById');  // TEMPORARY — delete with Phase5Item2aProbe.gs
+    .addItem('🔬 [Proof] Confirm Creatability (by ID)',   'runConfirmCreatabilityProofById')  // TEMPORARY — delete with Phase5Item2aProbe.gs
+    .addItem('🔬 [Diag] ConfirmText Non-Persist',         'runConfirmTextDiagnosis');  // TEMPORARY — delete with Phase5Item2aProbe.gs
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
