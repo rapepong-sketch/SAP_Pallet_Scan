@@ -11,9 +11,6 @@
 
 const CFG = {
 
-  // ---- Build version (bump on meaningful server changes that require redeploy) ----
-  WEBAPP_BUILD: 'p5s1-2d',
-
   // ---- Safety gate -------------------------------------------------------
   DRY_RUN: false, // ✅ PDFG filter verified — writing to sheet
 
@@ -189,9 +186,4 @@ function getActiveUserSafe_() {
   } catch (e) {
     return 'unknown';
   }
-}
-
-function setRunbookExecUrl(url) {
-  PropertiesService.getScriptProperties().setProperty('WEBAPP_EXEC_URL', String(url || '').trim());
-  logEvent('RUNBOOK', 'SET_EXEC_URL', url);
 }

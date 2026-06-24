@@ -95,11 +95,7 @@ function onOpen() {
 
   // ── ⚙ ระบบ ──────────────────────────────────────────────────────────────
   const sysMenu = ui.createMenu('⚙ ระบบ')
-    .addItem('📊 System Status',                   'showSystemStatusDialog')
-    .addSeparator()
-    .addItem('📋 เปิด Runbook',                    'openRunbookSheet')
-    .addItem('🔄 Refresh สถานะ Runbook',           'refreshRunbookStatus')
-    .addItem('🔁 Stamp Redeploy',                  'stampRedeploy');
+    .addItem('📊 System Status',                   'showSystemStatusDialog');
 
   // ── Top-level menu ──────────────────────────────────────────────────────
   ui.createMenu('🏭 Pallet Tracker')
@@ -109,8 +105,6 @@ function onOpen() {
     .addSubMenu(adminMenu)
     .addSubMenu(sysMenu)
     .addToUi();
-
-  refreshRunbookOnOpen_();
 }
 
 let _ss_ = null;
