@@ -77,7 +77,8 @@ function onOpen() {
     .addItem('🧪 [Test] Yield/QC Report',                 'TEST_yieldQcReport_')
     .addSeparator()
     .addItem('🔬 [Probe] Phase 5 Token Fields',            'runPhase5TokenFieldProbe')   // TEMPORARY — delete with Phase5Item2aProbe.gs
-    .addItem('🔬 [Proof] Confirm Creatability',            'runConfirmCreatabilityProof');  // TEMPORARY — delete with Phase5Item2aProbe.gs
+    .addItem('🔬 [Proof] Confirm Creatability',            'runConfirmCreatabilityProof')   // TEMPORARY — delete with Phase5Item2aProbe.gs
+    .addItem('🔬 [Proof] Confirm Creatability (by ID)',   'runConfirmCreatabilityProofById');  // TEMPORARY — delete with Phase5Item2aProbe.gs
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')

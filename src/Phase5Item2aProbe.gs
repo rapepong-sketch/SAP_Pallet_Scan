@@ -472,24 +472,55 @@ function runPhase5TokenFieldProbe() {
 // Creatability proof — run AFTER one supervised real confirmation post-redeploy
 // ============================================================================
 
+// Pallets confirmed BEFORE this timestamp lack the ConfirmationText stamp.
+// Update to the actual redeploy time (Asia/Bangkok) when known.
+var STAMP_DEPLOY_AT_ = (function() {
+  var d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+})();
+
 /**
- * Auto-pick the most recently confirmed real pallet, call sapReadbackConfirmation_,
- * and report whether ConfirmationText was persisted by SAP.
- * READ-ONLY. No writes (except EventLog).
- *
- * *** DELETE THIS FUNCTION WITH THE REST OF Phase5Item2aProbe.gs ***
+ * Menu entry: auto-pick most recently confirmed real pallet and prove creatability.
+ * *** DELETE WITH Phase5Item2aProbe.gs ***
  */
 function runConfirmCreatabilityProof() {
+  _runCreatabilityProof_(null);
+}
+
+/**
+ * Menu entry: prompt for a specific PalletID and prove creatability on that pallet.
+ * *** DELETE WITH Phase5Item2aProbe.gs ***
+ */
+function runConfirmCreatabilityProofById() {
+  var ui = SpreadsheetApp.getUi();
+  var resp = ui.prompt(
+    '🔬 Creatability Proof — by PalletID',
+    'ใส่ PalletID ของพาเลทที่เพิ่ง confirm หลัง redeploy:',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+  var pid = resp.getResponseText().trim();
+  if (!pid) { ui.alert('กรุณาใส่ PalletID'); return; }
+  _runCreatabilityProof_(pid);
+}
+
+/**
+ * Core creatability proof logic. If palletIdOverride is provided, use that
+ * exact pallet; otherwise auto-pick the most recently confirmed.
+ * @param {string|null} palletIdOverride
+ */
+function _runCreatabilityProof_(palletIdOverride) {
   var t0 = Date.now();
   var out = [];
   out.push('══════════════════════════════════════════════════════════════════');
   out.push('  Phase 5 Item 2b — Creatability Proof');
   out.push('  Timestamp: ' + Utilities.formatDate(new Date(), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss"));
+  out.push('  Mode: ' + (palletIdOverride ? 'by PalletID (' + palletIdOverride + ')' : 'auto-pick (most recent)'));
   out.push('  READ-ONLY: GET only, no POST');
   out.push('══════════════════════════════════════════════════════════════════');
   out.push('');
 
-  // ---- Pick the most recently confirmed real pallet ----
   var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
   if (!sh || sh.getLastRow() < 2) {
     out.push('STOP — PalletMaster is empty');
@@ -501,45 +532,91 @@ function runConfirmCreatabilityProof() {
   var idx = {};
   data[0].forEach(function(h, i) { idx[String(h).trim()] = i; });
 
-  var best = null;
-  var bestAt = null;
-  for (var r = 1; r < data.length; r++) {
-    var ss = String(data[r][idx['ScanStatus']] || '').trim();
-    if (ss !== 'CONFIRMED') continue;
-    var pid = String(data[r][idx['PalletID']] || '').trim();
-    if (/^PL-TEST-/i.test(pid)) continue;
-    var mo = String(data[r][idx['ManufacturingOrder']] || '').trim();
-    if (!mo) continue;
-    var ca = data[r][idx['ConfirmedAt']];
-    if (!(ca instanceof Date)) continue;
-    if (!bestAt || ca.getTime() > bestAt.getTime()) {
-      bestAt = ca;
+  var target = null;
+
+  if (palletIdOverride) {
+    // ---- Lookup by specific PalletID ----
+    for (var r = 1; r < data.length; r++) {
+      var pid = String(data[r][idx['PalletID']] || '').trim();
+      if (pid !== palletIdOverride) continue;
+      var ss = String(data[r][idx['ScanStatus']] || '').trim();
+      if (ss !== 'CONFIRMED') {
+        out.push('STOP — PalletID ' + palletIdOverride + ' is not CONFIRMED (ScanStatus=' + ss + ')');
+        _showProofDialog_(out, Date.now() - t0);
+        return;
+      }
+      var mo = String(data[r][idx['ManufacturingOrder']] || '').trim();
+      var ca = data[r][idx['ConfirmedAt']];
       var stripped = mo.replace(/^0+/, '') || '0';
-      best = {
+      target = {
         palletId: pid,
         mo: mo,
         paddedMO: ('000000000000' + stripped).slice(-12),
-        confirmedAt: ca
+        confirmedAt: (ca instanceof Date) ? ca : null
       };
+      break;
+    }
+    if (!target) {
+      out.push('STOP — PalletID ' + palletIdOverride + ' not found in PalletMaster');
+      _showProofDialog_(out, Date.now() - t0);
+      return;
+    }
+  } else {
+    // ---- Auto-pick most recently confirmed real pallet ----
+    var bestAt = null;
+    for (var r2 = 1; r2 < data.length; r2++) {
+      var ss2 = String(data[r2][idx['ScanStatus']] || '').trim();
+      if (ss2 !== 'CONFIRMED') continue;
+      var pid2 = String(data[r2][idx['PalletID']] || '').trim();
+      if (/^PL-TEST-/i.test(pid2)) continue;
+      var mo2 = String(data[r2][idx['ManufacturingOrder']] || '').trim();
+      if (!mo2) continue;
+      var ca2 = data[r2][idx['ConfirmedAt']];
+      if (!(ca2 instanceof Date)) continue;
+      if (!bestAt || ca2.getTime() > bestAt.getTime()) {
+        bestAt = ca2;
+        var stripped2 = mo2.replace(/^0+/, '') || '0';
+        target = {
+          palletId: pid2,
+          mo: mo2,
+          paddedMO: ('000000000000' + stripped2).slice(-12),
+          confirmedAt: ca2
+        };
+      }
+    }
+    if (!target) {
+      out.push('STOP — no real CONFIRMED pallet with ConfirmedAt found');
+      _showProofDialog_(out, Date.now() - t0);
+      return;
     }
   }
 
-  if (!best) {
-    out.push('STOP — no real CONFIRMED pallet with ConfirmedAt found');
+  out.push('── Selected pallet ──');
+  out.push('  PalletID:    ' + target.palletId);
+  out.push('  MO:          ' + target.mo);
+  out.push('  paddedMO:    ' + target.paddedMO);
+  out.push('  ConfirmedAt: ' + (target.confirmedAt
+    ? Utilities.formatDate(target.confirmedAt, 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss")
+    : '(not a Date)'));
+  out.push('  Deploy cutoff: ' + Utilities.formatDate(STAMP_DEPLOY_AT_, 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss"));
+  out.push('');
+
+  // ---- Staleness guard ----
+  if (target.confirmedAt && target.confirmedAt.getTime() < STAMP_DEPLOY_AT_.getTime()) {
+    out.push('════════════════════════════════════════');
+    out.push('  ⚠️  INCONCLUSIVE — newest confirmed pallet predates the 2b deploy.');
+    out.push('     ConfirmedAt ' + Utilities.formatDate(target.confirmedAt, 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss") +
+      ' < deploy cutoff ' + Utilities.formatDate(STAMP_DEPLOY_AT_, 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss"));
+    out.push('     Confirm a NEW pallet AFTER redeploy, then re-run.');
+    out.push('     (Use "by ID" menu entry to target the exact pallet.)');
+    out.push('════════════════════════════════════════');
     _showProofDialog_(out, Date.now() - t0);
     return;
   }
 
-  out.push('── Selected pallet (most recent ConfirmedAt) ──');
-  out.push('  PalletID:    ' + best.palletId);
-  out.push('  MO:          ' + best.mo);
-  out.push('  paddedMO:    ' + best.paddedMO);
-  out.push('  ConfirmedAt: ' + Utilities.formatDate(best.confirmedAt, 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss"));
-  out.push('');
-
   // ---- SAP readback ----
   out.push('── SAP readback ──');
-  var rb = sapReadbackConfirmation_(best.paddedMO, best.palletId);
+  var rb = sapReadbackConfirmation_(target.paddedMO, target.palletId);
   out.push('  found:              ' + rb.found);
   if (rb.error) {
     out.push('  error:              ' + rb.error);
@@ -549,7 +626,6 @@ function runConfirmCreatabilityProof() {
     out.push('  ConfirmationCount:  ' + (rb.confirmationCount || ''));
   }
 
-  // Extract ConfirmationText from raw if present
   var confirmationTextValue = '';
   if (rb.raw) {
     try {
@@ -565,12 +641,12 @@ function runConfirmCreatabilityProof() {
 
   // ---- Verdict ----
   out.push('════════════════════════════════════════');
-  if (rb.found && confirmationTextValue === best.palletId) {
+  if (rb.found && confirmationTextValue === target.palletId) {
     out.push('  ✅ CREATABILITY PROVEN — 2c unlocked');
     out.push('     ConfirmationText === PalletID: exact match');
-  } else if (rb.found && confirmationTextValue !== best.palletId) {
+  } else if (rb.found && confirmationTextValue !== target.palletId) {
     out.push('  ⚠️  found:true but ConfirmationText mismatch');
-    out.push('     expected: "' + best.palletId + '"');
+    out.push('     expected: "' + target.palletId + '"');
     out.push('     got:      "' + confirmationTextValue + '"');
     out.push('     → investigate before enabling retry');
   } else {
@@ -578,10 +654,7 @@ function runConfirmCreatabilityProof() {
     if (rb.error) {
       out.push('     readback error: ' + rb.error);
     } else {
-      out.push('     found:false — ConfirmationText is empty or not queryable on this record');
-      out.push('     This pallet was confirmed BEFORE the 2b stamp was deployed,');
-      out.push('     or SAP did not persist ConfirmationText. Re-confirm a NEW pallet');
-      out.push('     after redeploy and re-run this proof.');
+      out.push('     found:false — ConfirmationText is empty or not queryable');
     }
   }
   out.push('════════════════════════════════════════');
