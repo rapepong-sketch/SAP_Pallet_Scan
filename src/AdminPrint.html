@@ -133,6 +133,35 @@ body{font-family:'Sarabun','Segoe UI',Arial,sans-serif;background:#f0f2f5;color:
   </div>
 </div>
 
+<!-- ===== Reprint card (isolated from creation flow) ===== -->
+<div class="sec" id="secReprint">
+  <h3>พิมพ์ซ้ำ / Reprint</h3>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <label style="display:inline-flex;align-items:center;gap:4px;font-size:.9em;cursor:pointer">
+      <input type="radio" name="rpMode" value="mo" checked> SAP Order
+    </label>
+    <label style="display:inline-flex;align-items:center;gap:4px;font-size:.9em;cursor:pointer">
+      <input type="radio" name="rpMode" value="palletId"> Pallet ID
+    </label>
+    <input type="text" id="rpValue" placeholder="ใส่ SAP Order หรือ Pallet ID"
+      style="flex:1;min-width:180px;padding:8px 10px;border:1px solid #ccc;border-radius:5px;font-size:15px;font-family:inherit">
+    <button class="btn btn-sec" id="btnRpSearch" onclick="rpSearch()">ค้นหาพาเลท</button>
+  </div>
+
+  <div id="rpListWrap" style="display:none">
+    <div style="margin-bottom:6px">
+      <label style="display:inline-flex;align-items:center;gap:4px;font-size:.88em;cursor:pointer">
+        <input type="checkbox" id="rpSelectAll" onchange="rpToggleAll()"> เลือกทั้งหมด
+      </label>
+      <span id="rpCount" style="font-size:.82em;color:#888;margin-left:10px"></span>
+    </div>
+    <div id="rpList" style="max-height:280px;overflow-y:auto;border:1px solid #eee;border-radius:6px"></div>
+    <div style="margin-top:10px">
+      <button class="btn btn-pri" id="btnRpPrint" onclick="rpPrint()" disabled>พิมพ์ซ้ำ</button>
+    </div>
+  </div>
+</div>
+
 <!-- Confirm modal -->
 <div class="modal-bg" id="modalBg">
   <div class="modal">
@@ -721,6 +750,130 @@ function padSeq(n) { return n < 10 ? '0' + n : String(n); }
 function esc(s) {
   if (!s) return '';
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ========== Reprint ==========
+
+var rpPallets = [];
+
+function rpSearch() {
+  var mode  = document.querySelector('input[name="rpMode"]:checked').value;
+  var value = document.getElementById('rpValue').value.trim();
+  if (!value) { showSt('กรุณาระบุค่าค้นหา', 'err'); return; }
+  document.getElementById('btnRpSearch').disabled = true;
+  document.getElementById('rpListWrap').style.display = 'none';
+  rpPallets = [];
+  showSt('<span class="spin"></span> กำลังค้นหาพาเลท...', 'info');
+
+  google.script.run
+    .withSuccessHandler(function(r) {
+      document.getElementById('btnRpSearch').disabled = false;
+      hideSt();
+      if (!r.ok) { showSt(r.error || 'ค้นหาล้มเหลว', 'err'); return; }
+      rpPallets = r.pallets || [];
+      rpRenderList();
+    })
+    .withFailureHandler(function(e) {
+      document.getElementById('btnRpSearch').disabled = false;
+      showSt('Error: ' + e.message, 'err');
+    })
+    .listPalletsForReprint({ mode: mode, value: value });
+}
+
+function rpRenderList() {
+  var wrap = document.getElementById('rpListWrap');
+  var list = document.getElementById('rpList');
+  var count = document.getElementById('rpCount');
+  list.innerHTML = '';
+
+  if (!rpPallets.length) {
+    wrap.style.display = 'block';
+    count.textContent = 'ไม่พบพาเลท';
+    document.getElementById('btnRpPrint').disabled = true;
+    return;
+  }
+
+  var html = '<table style="width:100%;border-collapse:collapse;font-size:.85em">';
+  html += '<tr style="background:#f8f9fa">';
+  html += '<th style="padding:5px 8px;text-align:left;width:30px"></th>';
+  html += '<th style="padding:5px 8px;text-align:left">Pallet ID</th>';
+  html += '<th style="padding:5px 8px;text-align:left">MO</th>';
+  html += '<th style="padding:5px 8px;text-align:left">Material</th>';
+  html += '<th style="padding:5px 8px;text-align:left">Batch</th>';
+  html += '<th style="padding:5px 8px;text-align:right">Qty</th>';
+  html += '<th style="padding:5px 8px;text-align:center">Seq</th>';
+  html += '<th style="padding:5px 8px;text-align:left">Status</th>';
+  html += '<th style="padding:5px 8px;text-align:left">PrintedAt</th>';
+  html += '</tr>';
+
+  rpPallets.forEach(function(p, i) {
+    html += '<tr style="border-bottom:1px solid #eee">';
+    html += '<td style="padding:4px 8px"><input type="checkbox" class="rp-cb" data-idx="' + i + '" onchange="rpUpdateBtn()" checked></td>';
+    html += '<td style="padding:4px 8px;font-weight:600">' + esc(p.PalletID) + '</td>';
+    html += '<td style="padding:4px 8px">' + esc(p.ManufacturingOrder) + '</td>';
+    html += '<td style="padding:4px 8px">' + esc(p.Material) + (p.MaterialName ? ' <span style="color:#888;font-size:.85em">' + esc(p.MaterialName) + '</span>' : '') + '</td>';
+    html += '<td style="padding:4px 8px">' + esc(p.Batch) + '</td>';
+    html += '<td style="padding:4px 8px;text-align:right">' + fmt(p.QtyPerPallet) + ' ' + esc(p.Unit) + '</td>';
+    html += '<td style="padding:4px 8px;text-align:center">' + p.PalletSeq + '/' + p.TotalPallets + '</td>';
+    html += '<td style="padding:4px 8px">' + esc(p.ScanStatus || p.Status) + '</td>';
+    html += '<td style="padding:4px 8px">' + esc(p.PrintedAt || '-') + '</td>';
+    html += '</tr>';
+  });
+  html += '</table>';
+  list.innerHTML = html;
+  count.textContent = rpPallets.length + ' พาเลท';
+  document.getElementById('rpSelectAll').checked = true;
+  wrap.style.display = 'block';
+  rpUpdateBtn();
+}
+
+function rpToggleAll() {
+  var checked = document.getElementById('rpSelectAll').checked;
+  var cbs = document.querySelectorAll('.rp-cb');
+  for (var i = 0; i < cbs.length; i++) cbs[i].checked = checked;
+  rpUpdateBtn();
+}
+
+function rpUpdateBtn() {
+  var cbs = document.querySelectorAll('.rp-cb:checked');
+  document.getElementById('btnRpPrint').disabled = (cbs.length === 0);
+}
+
+function rpPrint() {
+  var cbs = document.querySelectorAll('.rp-cb:checked');
+  var ids = [];
+  for (var i = 0; i < cbs.length; i++) {
+    var idx = parseInt(cbs[i].getAttribute('data-idx'), 10);
+    ids.push(rpPallets[idx].PalletID);
+  }
+  if (!ids.length) return;
+
+  var win = window.open('', '_blank');
+  if (!win) { showSt('Popup ถูกบล็อก — กรุณาอนุญาต popup แล้วลองใหม่', 'err'); return; }
+  win.document.write('<html><body style="font-family:sans-serif;padding:30px;text-align:center">' +
+    '<p>กำลังโหลดใบพิมพ์ซ้ำ (' + ids.length + ' ใบ)...</p></body></html>');
+  document.getElementById('btnRpPrint').disabled = true;
+  showSt('<span class="spin"></span> กำลังสร้างใบพิมพ์ซ้ำ...', 'info');
+
+  google.script.run
+    .withSuccessHandler(function(r) {
+      document.getElementById('btnRpPrint').disabled = false;
+      hideSt();
+      if (!r.ok) { win.close(); showSt(r.error || 'พิมพ์ซ้ำล้มเหลว', 'err'); return; }
+      win.document.open();
+      win.document.write(r.html);
+      win.document.close();
+    })
+    .withFailureHandler(function(e) {
+      document.getElementById('btnRpPrint').disabled = false;
+      hideSt();
+      win.document.open();
+      win.document.write('<html><body style="font-family:sans-serif;padding:30px">' +
+        '<p style="color:#dc3545">Error: ' + e.message + '</p></body></html>');
+      win.document.close();
+      showSt('Error: ' + e.message, 'err');
+    })
+    .reprintPalletSheets(ids);
 }
 </script>
 </body>

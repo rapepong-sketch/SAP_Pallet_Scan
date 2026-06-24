@@ -50,6 +50,9 @@
  * OVERRIDE UI TEST HELPERS:
  *   seedOverrideTestPallet_()       — insert 5 fake QC_COMPLETE candidates (varied SLoc+Material)
  *   cleanupOverrideTestPallet_()    — remove all fake candidate rows (PL-TEST-OVR* + legacy)
+ *
+ * REPRINT:
+ *   TEST_reprintFlow()              — seed+reprint+assert render-only (self-cleaning)
  * ──────────────────────────────────────────────────────────────
  */
 
@@ -1580,6 +1583,161 @@ function cleanupOverrideTestPallet_() {
   logEvent('TEST_CLEANUP', 'OVERRIDE', 'OK', 0, toDelete.length + ' rows deleted');
   Logger.log('cleanupOverrideTestPallet_: deleted ' + toDelete.length + ' row(s)');
   return toDelete.length;
+}
+
+// ============================================================================
+// Reprint test — proves render-only, no status change
+// ============================================================================
+
+/**
+ * Self-cleaning test for the reprint path.
+ * Seeds a PL-TEST-REPRINT-L01 pallet, snapshots its PM row, calls
+ * reprintPalletSheets, then asserts:
+ *   (a) returned HTML is a non-empty string,
+ *   (b) PM row is unchanged (ScanStatus, Status, PrintedAt, 4 buckets identical),
+ *   (c) an EventLog REPRINT entry was written for this pallet.
+ */
+function TEST_reprintFlow() {
+  var fn = 'TEST_reprintFlow';
+  var t0 = Date.now();
+  var testPid = 'PL-TEST-REPRINT-L01';
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var sh  = getSheet_(PM_SHEET);
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  // ---- Seed ----
+  var seedVals = {
+    PalletID:           testPid,
+    ManufacturingOrder: '9999999999',
+    Material:           'TESTMAT-REPRINT',
+    MaterialName:       'Test Reprint Material',
+    Batch:              'BATCH01',
+    QtyPerPallet:       100,
+    Unit:               'PC',
+    PalletSeq:          1,
+    TotalPallets:       1,
+    WorkCenter:         '',
+    ProductionDate:     '',
+    TotalQuantity:      100,
+    Plant:              '1100',
+    StorageLocation:    '',
+    QRPayload:          'PALLET|' + testPid + '|9999999999|TESTMAT-REPRINT|BATCH01|100',
+    Status:             'CREATED',
+    ScanStatus:         'CREATED',
+    CreatedAt:          new Date(),
+    GoodQty:            '',
+    RepairQty:          '',
+    DefectQty:          '',
+    AwaitConvQty:       ''
+  };
+  var seedRow = hdr.map(function(h) { return seedVals.hasOwnProperty(h) ? seedVals[h] : ''; });
+  sh.getRange(sh.getLastRow() + 1, 1, 1, hdr.length).setValues([seedRow]);
+  SpreadsheetApp.flush();
+  Logger.log('Seeded ' + testPid);
+
+  var pass = true;
+  var results = [];
+
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    if (!ok) pass = false;
+    Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + name + (detail ? ': ' + detail : ''));
+  }
+
+  try {
+    // ---- Snapshot BEFORE ----
+    var beforeData = sh.getDataRange().getValues();
+    var beforeRow = null;
+    var beforeRowNum = -1;
+    for (var r = 1; r < beforeData.length; r++) {
+      if (String(beforeData[r][idx['PalletID']] || '').trim() === testPid) {
+        beforeRow = beforeData[r];
+        beforeRowNum = r;
+        break;
+      }
+    }
+    assert('seed found', beforeRow !== null);
+
+    var snapFields = ['ScanStatus', 'Status', 'PrintedAt', 'GoodQty', 'RepairQty', 'DefectQty', 'AwaitConvQty'];
+    var snapshot = {};
+    snapFields.forEach(function(f) {
+      snapshot[f] = idx[f] !== undefined ? beforeRow[idx[f]] : undefined;
+    });
+
+    // ---- Call reprintPalletSheets ----
+    var result = reprintPalletSheets([testPid]);
+
+    // (a) Returned HTML is a non-empty string
+    assert('(a) result.ok', result.ok === true, 'ok=' + result.ok + ' error=' + (result.error || ''));
+    assert('(a) html is string', typeof result.html === 'string');
+    assert('(a) html non-empty', result.html && result.html.length > 100, 'len=' + (result.html ? result.html.length : 0));
+    assert('(a) html contains REPRINT', result.html && result.html.indexOf('REPRINT') !== -1);
+
+    // (b) PM row unchanged
+    SpreadsheetApp.flush();
+    var afterData = sh.getDataRange().getValues();
+    var afterRow = null;
+    for (var r2 = 1; r2 < afterData.length; r2++) {
+      if (String(afterData[r2][idx['PalletID']] || '').trim() === testPid) {
+        afterRow = afterData[r2];
+        break;
+      }
+    }
+    assert('(b) row still exists', afterRow !== null);
+
+    snapFields.forEach(function(f) {
+      if (idx[f] === undefined) return;
+      var before = String(snapshot[f] == null ? '' : snapshot[f]);
+      var after  = String(afterRow[idx[f]] == null ? '' : afterRow[idx[f]]);
+      assert('(b) ' + f + ' unchanged', before === after,
+        'before=' + before + ' after=' + after);
+    });
+
+    // (c) EventLog has REPRINT entry
+    var elSh = getSheet_(CFG.SHEETS.EVENT_LOG);
+    var elData = elSh.getDataRange().getValues();
+    var foundReprint = false;
+    for (var e = elData.length - 1; e >= Math.max(1, elData.length - 20); e--) {
+      var evType = String(elData[e][1] || '').trim();
+      var evNote = String(elData[e][5] || '').trim();
+      if (evType === 'PALLET_SHEET' && String(elData[e][3] || '').trim() === 'REPRINT' &&
+          evNote.indexOf(testPid) !== -1) {
+        foundReprint = true;
+        break;
+      }
+    }
+    assert('(c) REPRINT event logged', foundReprint);
+
+  } finally {
+    // ---- Cleanup: delete test row ----
+    var cleanData = sh.getDataRange().getValues();
+    for (var c = cleanData.length - 1; c >= 1; c--) {
+      if (String(cleanData[c][idx['PalletID']] || '').trim() === testPid) {
+        sh.deleteRow(c + 1);
+        Logger.log('Cleaned up ' + testPid + ' at row ' + (c + 1));
+        break;
+      }
+    }
+  }
+
+  Logger.log('');
+  Logger.log('========================================');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED'));
+  Logger.log('========================================');
+  for (var si = 0; si < results.length; si++) {
+    Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
+      (results[si].detail ? ' (' + results[si].detail + ')' : ''));
+  }
+  logEvent(fn, 'PalletMaster', pass ? 'PASS' : 'FAIL', Date.now() - t0,
+    results.filter(function(r) { return !r.ok; }).map(function(r) { return r.name; }).join(', ') || 'all pass');
 }
 
 // ============================================================================
