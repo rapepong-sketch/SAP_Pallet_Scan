@@ -37,8 +37,11 @@ function runConfirmDriftDaily(testOverrides) {
   var _snapshot = (testOverrides && testOverrides.snapshotFn) || _driftWriteSnapshot_;
 
   var ranAt = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
-  var cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - CD_WINDOW_DAYS_);
+  var windowCutoff = new Date();
+  windowCutoff.setDate(windowCutoff.getDate() - CD_WINDOW_DAYS_);
+
+  var stampFloor = new Date(CFG.CONFIRM_TEXT_STAMP_SINCE || '2026-06-24T03:00:00');
+  var cutoff = (stampFloor.getTime() > windowCutoff.getTime()) ? stampFloor : windowCutoff;
 
   var ss = getSpreadsheet_();
   var sh = ss.getSheetByName(PM_SHEET);
@@ -55,6 +58,7 @@ function runConfirmDriftDaily(testOverrides) {
   var candidateFilter = (testOverrides && testOverrides.candidateFilter) || null;
 
   var candidates = [];
+  var preStampSkipped = 0;
   for (var r = 1; r < data.length; r++) {
     var ss_ = String(data[r][idx['ScanStatus']] || '').trim();
     if (ss_ !== 'CONFIRMED') continue;
@@ -68,7 +72,10 @@ function runConfirmDriftDaily(testOverrides) {
       try { caDate = new Date(ca); } catch (_) {}
       if (!caDate || isNaN(caDate.getTime())) caDate = null;
     }
-    if (caDate && caDate.getTime() < cutoff.getTime()) continue;
+    if (caDate && caDate.getTime() < cutoff.getTime()) {
+      if (caDate.getTime() >= windowCutoff.getTime()) preStampSkipped++;
+      continue;
+    }
 
     candidates.push({
       palletId: pid,
@@ -101,12 +108,14 @@ function runConfirmDriftDaily(testOverrides) {
     ok: okCount,
     driftA: driftA,
     indeterminate: indeterminate,
+    preStampSkipped: preStampSkipped,
     ranAt: ranAt
   };
 
   logEvent('CONFIRM_DRIFT', 'RUN', 'OK', 0,
     'scanned=' + summary.scanned + ' ok=' + okCount +
-    ' driftA=' + driftA.length + ' indet=' + indeterminate.length);
+    ' driftA=' + driftA.length + ' indet=' + indeterminate.length +
+    ' preStampSkip=' + preStampSkipped);
 
   _snapshot(summary);
 
@@ -139,9 +148,12 @@ function _driftWriteSnapshot_(summary) {
   try {
     var sh = _ensureConfirmDriftSheet_();
     var palletIds = summary.driftA.map(function(d) { return d.palletId; });
-    var note = summary.indeterminate.length > 0
-      ? 'indeterminate: ' + summary.indeterminate.map(function(d) { return d.palletId; }).join(',')
-      : '';
+    var noteParts = [];
+    if (summary.preStampSkipped > 0) noteParts.push('preStampSkipped=' + summary.preStampSkipped);
+    if (summary.indeterminate.length > 0) {
+      noteParts.push('indeterminate: ' + summary.indeterminate.map(function(d) { return d.palletId; }).join(','));
+    }
+    var note = noteParts.join('; ');
     var row = CD_HEADERS_.map(function(h) {
       switch (h) {
         case 'RanAt':               return summary.ranAt;
@@ -281,12 +293,17 @@ function TEST_confirmDriftDaily() {
 
   var now = new Date();
   var fiveDaysAgo = new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000);
+  var stampDate = new Date(CFG.CONFIRM_TEXT_STAMP_SINCE);
+  var afterStamp = new Date(stampDate.getTime() + 24 * 60 * 60 * 1000);
+  var beforeStamp = new Date(stampDate.getTime() - 24 * 60 * 60 * 1000);
 
   var seeds = [
-    { PalletID: 'PL-TEST-DRIFT-OK',   ScanStatus: 'CONFIRMED', ConfirmedAt: now, ManufacturingOrder: 'ZZTEST-001' },
-    { PalletID: 'PL-TEST-DRIFT-MISS', ScanStatus: 'CONFIRMED', ConfirmedAt: now, ManufacturingOrder: 'ZZTEST-002' },
-    { PalletID: 'PL-TEST-DRIFT-ERR',  ScanStatus: 'CONFIRMED', ConfirmedAt: now, ManufacturingOrder: 'ZZTEST-003' },
-    { PalletID: 'PL-TEST-DRIFT-OLD',  ScanStatus: 'CONFIRMED', ConfirmedAt: fiveDaysAgo, ManufacturingOrder: 'ZZTEST-004' }
+    { PalletID: 'PL-TEST-DRIFT-OK',      ScanStatus: 'CONFIRMED', ConfirmedAt: now,         ManufacturingOrder: 'ZZTEST-001' },
+    { PalletID: 'PL-TEST-DRIFT-MISS',    ScanStatus: 'CONFIRMED', ConfirmedAt: now,         ManufacturingOrder: 'ZZTEST-002' },
+    { PalletID: 'PL-TEST-DRIFT-ERR',     ScanStatus: 'CONFIRMED', ConfirmedAt: now,         ManufacturingOrder: 'ZZTEST-003' },
+    { PalletID: 'PL-TEST-DRIFT-OLD',     ScanStatus: 'CONFIRMED', ConfirmedAt: fiveDaysAgo, ManufacturingOrder: 'ZZTEST-004' },
+    { PalletID: 'PL-TEST-DRIFT-POSTSTP', ScanStatus: 'CONFIRMED', ConfirmedAt: afterStamp,  ManufacturingOrder: 'ZZTEST-005' },
+    { PalletID: 'PL-TEST-DRIFT-PRESTP',  ScanStatus: 'CONFIRMED', ConfirmedAt: beforeStamp, ManufacturingOrder: 'ZZTEST-006' }
   ];
 
   var seedRows = seeds.map(function(s) {
@@ -309,9 +326,10 @@ function TEST_confirmDriftDaily() {
       candidateFilter: testFilter,
       readbackFn: function(pid) {
         readbackCalls.push(pid);
-        if (pid === 'PL-TEST-DRIFT-OK')   return { found: true, confirmationGroup: 'G1', confirmationCount: '1', confirmationText: pid };
-        if (pid === 'PL-TEST-DRIFT-MISS') return { found: false };
-        if (pid === 'PL-TEST-DRIFT-ERR')  return { found: false, error: 'HTTP 500 test' };
+        if (pid === 'PL-TEST-DRIFT-OK')      return { found: true, confirmationGroup: 'G1', confirmationCount: '1', confirmationText: pid };
+        if (pid === 'PL-TEST-DRIFT-MISS')    return { found: false };
+        if (pid === 'PL-TEST-DRIFT-ERR')     return { found: false, error: 'HTTP 500 test' };
+        if (pid === 'PL-TEST-DRIFT-POSTSTP') return { found: true, confirmationGroup: 'G5', confirmationCount: '1', confirmationText: pid };
         return { found: false, error: 'UNEXPECTED PID: ' + pid };
       },
       larkFn: function() { larkCalls++; },
@@ -331,14 +349,22 @@ function TEST_confirmDriftDaily() {
       summary.driftA.every(function(d) { return d.palletId !== 'PL-TEST-DRIFT-ERR'; }),
       'checked');
 
-    assert('(4) old pallet excluded from scan (scanned=3 not 4)',
-      summary.scanned === 3,
+    assert('(4) scanned=4 (OK+MISS+ERR+POSTSTP; OLD+PRESTP excluded)',
+      summary.scanned === 4,
       'scanned=' + summary.scanned);
 
     assert('(4b) old pallet not in any result',
       !summary.driftA.some(function(d) { return d.palletId === 'PL-TEST-DRIFT-OLD'; }) &&
       !summary.indeterminate.some(function(d) { return d.palletId === 'PL-TEST-DRIFT-OLD'; }),
       'checked');
+
+    assert('(4c) pre-stamp pallet excluded from scan',
+      !readbackCalls.some(function(pid) { return pid === 'PL-TEST-DRIFT-PRESTP'; }),
+      'readbackCalls=' + readbackCalls.join(','));
+
+    assert('(4d) post-stamp pallet included in scan',
+      readbackCalls.some(function(pid) { return pid === 'PL-TEST-DRIFT-POSTSTP'; }),
+      'readbackCalls=' + readbackCalls.join(','));
 
     assert('(5) Lark called (driftA > 0)',
       larkCalls === 1,

@@ -59,6 +59,11 @@ const CFG = {
     DRY_RUN:   'DRY_RUN'            // 'true'(default)  | 'false'
   },
 
+  // ---- Phase 5: ConfirmationText stamp deploy date (Asia/Bangkok) --------
+  // Pallets confirmed BEFORE this date have no ConfirmationText → token-only
+  // readback cannot validate them → excluded from drift scan.
+  CONFIRM_TEXT_STAMP_SINCE: '2026-06-24T10:00:00',
+
   // ---- Phase 3: Web app --------------------------------------------------
   WEB_APP_TITLE: 'ใบติดตามพาเลท - PJ Chonburi',
 
