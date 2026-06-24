@@ -30,6 +30,12 @@ function doGet(e) {
 
   // --- Operator page (no auth gate) ---
   if (app === 'scan') {
+    var olChk = assertOperationLogSchema_();
+    if (!olChk.ok) {
+      logEvent('WEBAPP', 'OL_SCHEMA_DESYNC_STARTUP', 'ERROR', 0, olChk.reason);
+      return HtmlService.createHtmlOutput(renderSchemaErrorPage_(olChk))
+        .setTitle('ระบบหยุดชั่วคราว');
+    }
     return HtmlService.createTemplateFromFile('Scanner')
       .evaluate()
       .setTitle(CFG.WEB_APP_TITLE)
@@ -1091,4 +1097,53 @@ function _fmtDateStr_(d) {
     return Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd/MM/yyyy');
   }
   return String(d);
+}
+
+// ============================================================================
+// OL schema error page (startup guard)
+// ============================================================================
+
+/**
+ * Render a readable Thai error page when OperationLog schema desync is
+ * detected at web-app startup. Instructs operator to notify admin and
+ * shows expected vs actual header order for diagnosis.
+ *
+ * @param {{ ok:boolean, expected:string[], actual:string[], reason:string }} chk
+ * @return {string} full HTML
+ */
+function renderSchemaErrorPage_(chk) {
+  var esc = function(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  };
+
+  var expectedList = chk.expected.map(function(h, i) {
+    var match = chk.actual[i] === h;
+    return '<tr style="background:' + (match ? '#fff' : '#ffeaea') + '">' +
+      '<td style="padding:4px 8px;border:1px solid #ddd;text-align:center">' + (i + 1) + '</td>' +
+      '<td style="padding:4px 8px;border:1px solid #ddd">' + esc(h) + '</td>' +
+      '<td style="padding:4px 8px;border:1px solid #ddd">' + esc(chk.actual[i] != null ? chk.actual[i] : '—') + '</td>' +
+      '</tr>';
+  }).join('\n');
+
+  return '<!DOCTYPE html><html lang="th"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>ระบบหยุดชั่วคราว</title>' +
+    '<style>body{font-family:"Sarabun",sans-serif;max-width:700px;margin:40px auto;padding:0 20px;color:#333}' +
+    'h1{color:#c0392b;font-size:1.5em}h2{font-size:1.1em;margin-top:24px}' +
+    'table{border-collapse:collapse;width:100%;margin:12px 0;font-size:0.9em}' +
+    '.note{background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:12px 16px;margin:16px 0;font-size:0.95em}' +
+    '.fix{background:#e8f5e9;border:1px solid #4caf50;border-radius:6px;padding:12px 16px;margin:16px 0;font-size:0.9em;color:#2e7d32}</style>' +
+    '</head><body>' +
+    '<h1>ระบบสแกนหยุดชั่วคราว</h1>' +
+    '<p>ไม่สามารถเปิดหน้าสแกนได้ เนื่องจากโครงสร้างคอลัมน์ของ OperationLog ไม่ตรงกับที่ระบบคาดหวัง</p>' +
+    '<div class="note">กรุณาแจ้งผู้ดูแลระบบ (Admin) เพื่อตรวจสอบและแก้ไข</div>' +
+    '<h2>รายละเอียดสำหรับผู้ดูแล</h2>' +
+    '<p>สาเหตุ: <code>' + esc(chk.reason) + '</code></p>' +
+    '<table><thead><tr>' +
+    '<th style="padding:4px 8px;border:1px solid #ddd;background:#f8f9fa">#</th>' +
+    '<th style="padding:4px 8px;border:1px solid #ddd;background:#f8f9fa">คาดหวัง (Expected)</th>' +
+    '<th style="padding:4px 8px;border:1px solid #ddd;background:#f8f9fa">ปัจจุบัน (Actual)</th>' +
+    '</tr></thead><tbody>' + expectedList + '</tbody></table>' +
+    '<div class="fix">วิธีแก้ไข: เรียกใช้ฟังก์ชัน <strong>reorderOperationLogBuckets</strong> ผ่านเมนู Apps Script Editor เพื่อจัดเรียงคอลัมน์ใหม่</div>' +
+    '</body></html>';
 }
