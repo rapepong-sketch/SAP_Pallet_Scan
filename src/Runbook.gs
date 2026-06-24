@@ -161,7 +161,7 @@ function refreshRunbookStatus() {
   var lastStamp = props['LAST_REDEPLOY_AT'] || 'ยังไม่ได้ stamp';
   var lastBuild = props['LAST_REDEPLOY_BUILD'] || '-';
   if (labelToRow['Last Redeploy Stamp']) {
-    sh.getRange(labelToRow['Last Redeploy Stamp'], 2).setValue(lastStamp);
+    sh.getRange(labelToRow['Last Redeploy Stamp'], 2).setNumberFormat('@').setValue(lastStamp);
   }
   if (labelToRow['Last Redeploy Build']) {
     sh.getRange(labelToRow['Last Redeploy Build'], 2).setValue(lastBuild);
@@ -170,7 +170,7 @@ function refreshRunbookStatus() {
   // ---- Timestamp ----
   var now = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
   if (labelToRow['Last Status Refresh']) {
-    sh.getRange(labelToRow['Last Status Refresh'], 2).setValue(now);
+    sh.getRange(labelToRow['Last Status Refresh'], 2).setNumberFormat('@').setValue(now);
   }
 
   logEvent('RUNBOOK', 'REFRESH', 'OK', 0,
