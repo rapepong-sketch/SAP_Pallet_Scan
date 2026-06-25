@@ -167,16 +167,16 @@ function buildTransfer311Payload_(txnId, destSloc) {
  * @return {{found:boolean, materialDocument?:string, materialDocumentYear?:string, raw?:string, error?:string}}
  */
 function sapReadbackTransfer311_(token) {
-  // OPEN (311 LIVE): no-hit readback returned HTTP 400 in TEST_ with
-  //   filter "MaterialDocumentHeaderText eq '{t}' and Plant eq '1100'".
-  //   Plant may be item-level (not header-filterable) on A_MaterialDocumentHeader.
-  //   Isolate at 311 LIVE cutover: test token-only filter, then +Plant, then
-  //   +PostingDate, to find the 400 source. Guard currently degrades (safe) but
-  //   would never catch a real 311 double-post until this is resolved.
+  // RESOLVED 2026-06-25 (T1 probe): Plant is item-level on this tenant —
+  // "Property Plant not found in type A_MaterialDocumentHeaderType" (HTTP 400).
+  // Readback is token-only by MaterialDocumentHeaderText (MaxLength 25, fits
+  // 24-char txnId), mirroring confirmation readback. Plant filtering unnecessary:
+  // token uniquely identifies the txn. See Transfer311Probe.gs PROBE_* (A=200,
+  // B=400, C=200, D=200, metadata Plant=false).
   try {
     var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
     var url = buildSapUrl_(serviceRoot + 'A_MaterialDocumentHeader', {
-      '$filter': "MaterialDocumentHeaderText eq '" + String(token) + "' and Plant eq '" + CFG.PLANT + "'",
+      '$filter': "MaterialDocumentHeaderText eq '" + String(token) + "'",
       '$select': 'MaterialDocument,MaterialDocumentYear,MaterialDocumentHeaderText',
       '$top': '1',
       '$format': 'json'
