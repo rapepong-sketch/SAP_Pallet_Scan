@@ -81,7 +81,8 @@ function onOpen() {
     .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof')
     .addItem('🔍 Verify 311 Stock Settle (RO)',              'PROBE_verify311StockSettle')
     .addItem('🔍 Probe D/C Direction 842/843 (RO)',          'PROBE_dcDirection311')
-    .addItem('⚠️ FIX 311 Housekeeping Restore (WRITES)',    'TEST_transfer311HousekeepingRestore');
+    .addItem('⚠️ FIX 311 Housekeeping Restore (WRITES)',    'TEST_transfer311HousekeepingRestore')
+    .addItem('🔍 Probe MatDoc Cancellation Mechanism (RO)', 'PROBE_materialDocCancellation');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')

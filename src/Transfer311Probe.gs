@@ -928,6 +928,179 @@ function TEST_transfer311HousekeepingRestore() {
     'Restored to baseline: ' + restored);
 }
 
+// ============================================================================
+// Probe cancellation mechanism in API_MATERIAL_DOCUMENT_SRV $metadata
+// ============================================================================
+
+function PROBE_materialDocCancellation() {
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+  var url = buildSapUrl_(serviceRoot + '$metadata');
+
+  Logger.log('FETCH_URL [cancel metadata] ' + url);
+  var r = probeRawGet_(url, 'application/xml');
+  Logger.log('[cancel metadata] HTTP ' + r.code + ' length=' + r.text.length);
+
+  if (r.code >= 400) {
+    SpreadsheetApp.getUi().alert('❌ $metadata fetch failed: HTTP ' + r.code);
+    return;
+  }
+
+  var xml = r.text;
+
+  // ==== PART 1: FunctionImports ====
+  var fiBlocks = xml.match(/<FunctionImport[\s\S]*?(?:\/>|<\/FunctionImport>)/g) || [];
+  var functionImports = [];
+
+  Logger.log('[PART 1] Found ' + fiBlocks.length + ' FunctionImport block(s)');
+  for (var i = 0; i < fiBlocks.length; i++) {
+    var block = fiBlocks[i];
+    Logger.log('[FunctionImport ' + (i + 1) + ']\n' + block);
+
+    var nameMatch   = block.match(/Name="([^"]+)"/);
+    var methodMatch = block.match(/m:HttpMethod="([^"]+)"/);
+    var returnMatch = block.match(/ReturnType="([^"]+)"/);
+
+    var params = [];
+    var paramMatches = block.match(/<Parameter[^>]*\/>/g) || [];
+    for (var p = 0; p < paramMatches.length; p++) {
+      var pName = (paramMatches[p].match(/Name="([^"]+)"/) || [])[1] || '?';
+      var pType = (paramMatches[p].match(/Type="([^"]+)"/) || [])[1] || '?';
+      var pMode = (paramMatches[p].match(/Mode="([^"]+)"/) || [])[1] || '';
+      params.push(pName + ':' + pType + (pMode ? '(' + pMode + ')' : ''));
+    }
+
+    functionImports.push({
+      name:       (nameMatch   || [])[1] || '?',
+      httpMethod: (methodMatch || [])[1] || '?',
+      returnType: (returnMatch || [])[1] || 'void',
+      params:     params
+    });
+  }
+
+  // ==== PART 2: Reversal fields on Header + Item EntityTypes ====
+  var reversalFields = [
+    'ReversedMaterialDocument', 'ReversedMaterialDocumentYear',
+    'GoodsMovementIsCancelled', 'ReferenceDocument', 'InventoryTransactionType'
+  ];
+
+  var headerBlock = (xml.match(
+    /<EntityType\s+Name="A_MaterialDocumentHeaderType"[^>]*>[\s\S]*?<\/EntityType>/
+  ) || [''])[0];
+  var itemBlock = (xml.match(
+    /<EntityType\s+Name="A_MaterialDocumentItemType"[^>]*>[\s\S]*?<\/EntityType>/
+  ) || [''])[0];
+
+  var reversalFieldsOnHeader = {};
+  var reversalFieldsOnItem = {};
+
+  for (var f = 0; f < reversalFields.length; f++) {
+    var field = reversalFields[f];
+
+    // Header
+    var hPropRe = new RegExp('<Property[^>]*Name="' + field + '"[^>]*/>', 'i');
+    var hMatch = headerBlock.match(hPropRe);
+    if (hMatch) {
+      var hCreatable = (hMatch[0].match(/sap:creatable="([^"]+)"/) || [])[1] || 'not specified';
+      var hUpdatable = (hMatch[0].match(/sap:updatable="([^"]+)"/) || [])[1] || 'not specified';
+      reversalFieldsOnHeader[field] = 'EXISTS creatable=' + hCreatable + ' updatable=' + hUpdatable;
+      Logger.log('[PART 2 header] ' + field + ': ' + hMatch[0]);
+    } else {
+      reversalFieldsOnHeader[field] = 'NOT FOUND';
+    }
+
+    // Item
+    var iPropRe = new RegExp('<Property[^>]*Name="' + field + '"[^>]*/>', 'i');
+    var iMatch = itemBlock.match(iPropRe);
+    if (iMatch) {
+      var iCreatable = (iMatch[0].match(/sap:creatable="([^"]+)"/) || [])[1] || 'not specified';
+      var iUpdatable = (iMatch[0].match(/sap:updatable="([^"]+)"/) || [])[1] || 'not specified';
+      reversalFieldsOnItem[field] = 'EXISTS creatable=' + iCreatable + ' updatable=' + iUpdatable;
+      Logger.log('[PART 2 item] ' + field + ': ' + iMatch[0]);
+    } else {
+      reversalFieldsOnItem[field] = 'NOT FOUND';
+    }
+  }
+
+  // ==== PART 3: EntitySets — flag cancel/reversal candidates ====
+  var esMatches = xml.match(/<EntitySet\s+Name="[^"]+"/g) || [];
+  var entitySets = [];
+  var cancelSets = [];
+  for (var e = 0; e < esMatches.length; e++) {
+    var esName = (esMatches[e].match(/Name="([^"]+)"/) || [])[1] || '?';
+    entitySets.push(esName);
+    if (/cancel|revers/i.test(esName)) {
+      cancelSets.push(esName);
+    }
+  }
+  Logger.log('[PART 3] EntitySets (' + entitySets.length + '): ' +
+    entitySets.join(', '));
+  if (cancelSets.length) {
+    Logger.log('[PART 3] Cancel/Reverse EntitySets: ' + cancelSets.join(', '));
+  }
+
+  // ==== Determine candidate mechanism ====
+  var cancelFIs = functionImports.filter(function(fi) {
+    return /cancel|revers/i.test(fi.name);
+  });
+
+  var candidateMechanism = 'unknown — needs probe';
+  if (cancelFIs.length > 0) {
+    candidateMechanism = 'FunctionImport:' + cancelFIs.map(function(fi) {
+      return fi.name;
+    }).join(',');
+  } else if (reversalFieldsOnHeader['ReversedMaterialDocument'] &&
+             reversalFieldsOnHeader['ReversedMaterialDocument'].indexOf('creatable=true') !== -1) {
+    candidateMechanism = 'POST header with ReversedMaterialDocument (creatable=true)';
+  } else if (reversalFieldsOnItem['ReversedMaterialDocument'] &&
+             reversalFieldsOnItem['ReversedMaterialDocument'].indexOf('creatable=true') !== -1) {
+    candidateMechanism = 'POST item with ReversedMaterialDocument (creatable=true on item)';
+  }
+
+  var summary = {
+    functionImports:       functionImports,
+    reversalFieldsOnHeader: reversalFieldsOnHeader,
+    reversalFieldsOnItem:   reversalFieldsOnItem,
+    entitySets:            entitySets,
+    cancelEntitySets:      cancelSets,
+    candidateMechanism:    candidateMechanism
+  };
+
+  Logger.log('[STRUCTURED SUMMARY]\n' + JSON.stringify(summary, null, 2));
+
+  // ==== UI alert ====
+  var alertLines = ['MatDoc Cancellation Mechanism Probe (READ-ONLY)\n'];
+  alertLines.push('Candidate: ' + candidateMechanism + '\n');
+
+  if (cancelFIs.length > 0) {
+    alertLines.push('Cancel/Reverse FunctionImports:');
+    cancelFIs.forEach(function(fi) {
+      alertLines.push('  ' + fi.name + ' (' + fi.httpMethod + ') params=[' +
+        fi.params.join(', ') + ']');
+    });
+  } else {
+    alertLines.push('No Cancel/Reverse FunctionImports found.');
+  }
+
+  alertLines.push('\nReversal fields (header):');
+  reversalFields.forEach(function(field) {
+    alertLines.push('  ' + field + ': ' + reversalFieldsOnHeader[field]);
+  });
+
+  alertLines.push('\nReversal fields (item):');
+  reversalFields.forEach(function(field) {
+    alertLines.push('  ' + field + ': ' + reversalFieldsOnItem[field]);
+  });
+
+  if (cancelSets.length > 0) {
+    alertLines.push('\nCancel/Reverse EntitySets: ' + cancelSets.join(', '));
+  }
+
+  alertLines.push('\nAll EntitySets: ' + entitySets.join(', '));
+  alertLines.push('\nFull details in Executions log.');
+
+  SpreadsheetApp.getUi().alert(alertLines.join('\n'));
+}
+
 function probeStockQty_(stockRoot, material, plant, sloc, batch) {
   var filterExpr = "Material eq '" + material + "'" +
     " and Plant eq '" + plant + "'" +
