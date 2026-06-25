@@ -12,7 +12,7 @@
  * Reuses:
  *  - lookupPalletById_()        (PalletSheet.gs)      — PalletMaster row by PalletID
  *  - updatePalletScanFields_()  (PalletSheet.gs)      — write fields by column name
- *  - getFinalOperationCached_() (ProductionOrders.gs)  — sheet-only FinalOperation cache
+ *  - getFinalOperationForMo_() (ProductionOrders.gs)   — FinalOperation with populate-on-miss
  *  - sapWriteEnabled_() / isDryRun_() (Flags.gs)      — feature flag readers
  *  - getCsrfSession_(serviceUrl) (SapClient.gs)       — CSRF token + cookie pair
  *  - getSapCredentials_()       (Config.gs)           — Basic Auth credentials
@@ -621,7 +621,9 @@ function confirmPallet(palletId) {
 /**
  * Return all PalletMaster rows eligible for confirmation (ScanStatus === 'QC_COMPLETE').
  * Each object includes a readiness check (FinalOperation cached + QtyPerPallet valid).
- * READ-ONLY — does not POST anything.
+ * Populate-on-miss: uses getFinalOperationForMo_ (OperationsJSON / SAP fallback) when
+ * the sheet cache is cold, deduped by MO so each resolves at most once per call.
+ * READ-ONLY wrt SAP — may write FinalOperation cache to ProductionOrders sheet.
  * @return {Array<{PalletID:string, ManufacturingOrder:string, Material:string,
  *   QtyPerPallet:number, Unit:string, WorkCenter:string, QCResult:string,
  *   PalletSeq:number, finalOperation:string, ready:boolean, readyReason:string}>}
@@ -645,6 +647,7 @@ function listConfirmablePallets() {
   }
 
   var results = [];
+  var foCache = {};
   for (var r = 1; r < data.length; r++) {
     var row = data[r];
     var status = String(row[idx['ScanStatus']] || '').trim();
@@ -656,7 +659,21 @@ function listConfirmablePallets() {
     var mo  = String(row[idx['ManufacturingOrder']] || '').trim();
     var qty = Number(row[idx['QtyPerPallet']]) || 0;
 
-    var finalOp = getFinalOperationCached_(mo);
+    var finalOp;
+    if (foCache.hasOwnProperty(mo)) {
+      finalOp = foCache[mo];
+    } else {
+      var cachedVal = getFinalOperationCached_(mo);
+      if (cachedVal) {
+        finalOp = cachedVal;
+      } else {
+        finalOp = getFinalOperationForMo_(mo);
+        if (finalOp) {
+          logEvent('CONFIRM_LIST', mo, 'POPULATE_ON_MISS', 0, 'FinalOp=' + finalOp);
+        }
+      }
+      foCache[mo] = finalOp || '';
+    }
     var ready = true;
     var readyReason = '';
 
@@ -2195,4 +2212,191 @@ function TEST_deadLetterCaptureReplay() {
 
   logEvent('TEST_DEADLETTER', 'Confirmation', pass ? 'PASS' : 'FAIL', elapsed,
     results.length + ' assertions');
+}
+
+// ============================================================================
+// Phase 5: TEST — Populate-on-miss FinalOperation in listConfirmablePallets
+// ============================================================================
+
+/**
+ * Self-cleaning test for the populate-on-miss FinalOperation path added to
+ * listConfirmablePallets(). Seeds a ZZTEST MO in ProductionOrders with
+ * OperationsJSON but empty FinalOperation, plus 3 PalletMaster rows for the
+ * same MO (ScanStatus=QC_COMPLETE). Asserts:
+ *   1) getFinalOperationForMo_ resolves the correct final op AND writes it back
+ *   2) listConfirmablePallets returns all 3 pallets as ready
+ *   3) Dedupe: only 1 POPULATE_ON_MISS event logged (not 3)
+ * Deletes all test rows on exit (try/finally). No SAP POST.
+ */
+function TEST_finalOpPopulateOnMiss() {
+  var fn = 'TEST_finalOpPopulateOnMiss';
+  var TEST_MO = 'ZZTEST_FOMISS';
+  var PALLET_IDS = ['PL-ZZFOMISS-L01', 'PL-ZZFOMISS-L02', 'PL-ZZFOMISS-L03'];
+  var t0 = Date.now();
+
+  // ---- Seed ProductionOrders row: OperationsJSON present, FinalOperation empty ----
+  var foSh = getSpreadsheet_().getSheetByName('ProductionOrders');
+  var foHdr = foSh.getRange(1, 1, 1, foSh.getLastColumn()).getValues()[0];
+  var foIdx = {};
+  foHdr.forEach(function(h, i) { foIdx[h] = i; });
+
+  var testOps = [
+    { opNo: '0010', opText: 'Cut', workCenter: 'WC01' },
+    { opNo: '0020', opText: 'Sand', workCenter: 'WC02' },
+    { opNo: '0030', opText: 'Pack', workCenter: 'WC03' }
+  ];
+  var foRow = new Array(foHdr.length).fill('');
+  foRow[foIdx['ManufacturingOrder']] = TEST_MO;
+  foRow[foIdx['OperationsJSON']]     = JSON.stringify(testOps);
+  foRow[foIdx['Operations']]         = '0010:WC01|Cut; 0020:WC02|Sand; 0030:WC03|Pack';
+  if (foIdx['Material'] !== undefined)   foRow[foIdx['Material']]   = 'ZZTEST-MAT';
+  if (foIdx['IsReleased'] !== undefined) foRow[foIdx['IsReleased']] = true;
+  foSh.appendRow(foRow);
+
+  // ---- Seed 3 PalletMaster rows for the same MO ----
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var pmHdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  pmHdr.forEach(function(h, i) { pmIdx[h] = i; });
+
+  PALLET_IDS.forEach(function(pid, seq) {
+    var pmRow = new Array(pmHdr.length).fill('');
+    pmRow[pmIdx['PalletID']]            = pid;
+    pmRow[pmIdx['ManufacturingOrder']]   = TEST_MO;
+    pmRow[pmIdx['Material']]             = 'ZZTEST-MAT';
+    pmRow[pmIdx['QtyPerPallet']]         = 100;
+    pmRow[pmIdx['Unit']]                 = 'PC';
+    pmRow[pmIdx['WorkCenter']]           = 'WC01';
+    pmRow[pmIdx['QCResult']]             = 'PASS';
+    pmRow[pmIdx['PalletSeq']]            = seq + 1;
+    pmRow[pmIdx['ScanStatus']]           = 'QC_COMPLETE';
+    if (pmIdx['Plant'] !== undefined)    pmRow[pmIdx['Plant']] = CFG.PLANT;
+    pmSh.appendRow(pmRow);
+  });
+
+  SpreadsheetApp.flush();
+
+  var pass = true;
+  var detail = '';
+
+  try {
+    // ---- Assert 1: getFinalOperationForMo_ resolves + writes back ----
+    var resolved = getFinalOperationForMo_(TEST_MO);
+    SpreadsheetApp.flush();
+
+    if (resolved !== '0030') {
+      pass = false;
+      detail += 'resolved=' + resolved + '(expected 0030) FAIL. ';
+    } else {
+      detail += 'resolved=0030 OK. ';
+    }
+
+    // Verify written back to sheet cell
+    var foData = foSh.getDataRange().getValues();
+    var foWritten = '';
+    for (var i = foData.length - 1; i >= 1; i--) {
+      if (String(foData[i][foIdx['ManufacturingOrder']] || '').trim() === TEST_MO) {
+        foWritten = String(foData[i][foIdx['FinalOperation']] || '').trim();
+        break;
+      }
+    }
+    if (foWritten !== '0030') {
+      pass = false;
+      detail += 'cellWriteback=' + foWritten + '(expected 0030) FAIL. ';
+    } else {
+      detail += 'cellWriteback=0030 OK. ';
+    }
+
+    // ---- Assert 2 + 3: listConfirmablePallets with cold cache + dedupe ----
+    // Clear FinalOperation again to test the list path
+    for (var j = foData.length - 1; j >= 1; j--) {
+      if (String(foData[j][foIdx['ManufacturingOrder']] || '').trim() === TEST_MO) {
+        foSh.getRange(j + 1, foIdx['FinalOperation'] + 1).setValue('');
+        break;
+      }
+    }
+    SpreadsheetApp.flush();
+
+    // Snapshot POPULATE_ON_MISS count before list call
+    var evSh = getSpreadsheet_().getSheetByName('EventLog');
+    var missBefore = 0;
+    if (evSh && evSh.getLastRow() > 1) {
+      var evRows = evSh.getDataRange().getValues();
+      for (var e = 0; e < evRows.length; e++) {
+        if (String(evRows[e][1] || '') === 'CONFIRM_LIST' &&
+            String(evRows[e][2] || '') === TEST_MO &&
+            String(evRows[e][3] || '') === 'POPULATE_ON_MISS') {
+          missBefore++;
+        }
+      }
+    }
+
+    var candidates = listConfirmablePallets();
+    SpreadsheetApp.flush();
+
+    var testPallets = candidates.filter(function(c) {
+      return PALLET_IDS.indexOf(c.PalletID) !== -1;
+    });
+
+    if (testPallets.length !== 3) {
+      pass = false;
+      detail += 'listCount=' + testPallets.length + '(expected 3) FAIL. ';
+    } else {
+      var allReady = testPallets.every(function(p) {
+        return p.ready && p.finalOperation === '0030';
+      });
+      if (!allReady) {
+        pass = false;
+        detail += 'readiness FAIL: ';
+        testPallets.forEach(function(p) {
+          detail += p.PalletID + ':ready=' + p.ready + ',fo=' + p.finalOperation + ' ';
+        });
+      } else {
+        detail += 'list:3×ready OK. ';
+      }
+    }
+
+    // Count POPULATE_ON_MISS after — should be exactly 1 more (dedupe)
+    var missAfter = 0;
+    evSh = getSpreadsheet_().getSheetByName('EventLog');
+    if (evSh && evSh.getLastRow() > 1) {
+      var evRows2 = evSh.getDataRange().getValues();
+      for (var e2 = 0; e2 < evRows2.length; e2++) {
+        if (String(evRows2[e2][1] || '') === 'CONFIRM_LIST' &&
+            String(evRows2[e2][2] || '') === TEST_MO &&
+            String(evRows2[e2][3] || '') === 'POPULATE_ON_MISS') {
+          missAfter++;
+        }
+      }
+    }
+    var missCount = missAfter - missBefore;
+    if (missCount !== 1) {
+      pass = false;
+      detail += 'dedupe:missCount=' + missCount + '(expected 1) FAIL. ';
+    } else {
+      detail += 'dedupe:1miss OK. ';
+    }
+
+  } catch (ex) {
+    pass = false;
+    detail += 'EXCEPTION: ' + ex.message;
+  } finally {
+    // ---- Cleanup: delete all test rows ----
+    var pmClean = pmSh.getDataRange().getValues();
+    for (var d = pmClean.length - 1; d >= 1; d--) {
+      if (PALLET_IDS.indexOf(String(pmClean[d][pmIdx['PalletID']] || '').trim()) !== -1) {
+        pmSh.deleteRow(d + 1);
+      }
+    }
+    var foClean = foSh.getDataRange().getValues();
+    for (var d2 = foClean.length - 1; d2 >= 1; d2--) {
+      if (String(foClean[d2][foIdx['ManufacturingOrder']] || '').trim() === TEST_MO) {
+        foSh.deleteRow(d2 + 1);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
+  logEvent(fn, TEST_MO, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
 }
