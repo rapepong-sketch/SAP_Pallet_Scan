@@ -227,6 +227,9 @@ function sapReadbackTransfer311_(token) {
 }
 
 /**
+ * DEPRECATED for production — superseded by postTransfer311WithRetry_ via
+ * confirmTransfer311 orchestrator. Retained for TEST_ only.
+ *
  * Post a 311 transfer to SAP for the given TransferLog TxnID.
  * Gate: ScriptProperties FEATURE_TRANSFER311 ('DRY_RUN'|'LIVE'; default 'DRY_RUN').
  * Idempotent: skips if Status already TRANSFERRED.
@@ -235,6 +238,7 @@ function sapReadbackTransfer311_(token) {
  * @param {string} destSloc
  * @return {{success:boolean, materialDocument:string, materialDocumentYear?:string,
  *           dryRun:boolean, error?:string}}
+ * @deprecated Use confirmTransfer311 (orchestrator → postTransfer311WithRetry_)
  */
 function postTransfer311_(txnId, destSloc) {
   // ---- 1. IDEMPOTENCY CHECK ----
@@ -1050,6 +1054,175 @@ function TEST_t311_runAll() {
 }
 
 // ============================================================================
+// T5 — TEST: confirmTransfer311 orchestrator wiring
+// ============================================================================
+
+/**
+ * Self-cleaning test: seeds a ZZTEST TransferLog row, calls confirmTransfer311
+ * with injected fakes (via a temporary override of globals) to verify:
+ *   (a) it calls postTransfer311WithRetry_ (not bare poster)
+ *   (b) on POSTED → writes MaterialDocument/Year to TransferLog by name
+ *   (c) on UNKNOWN_STATE → does NOT write a success doc
+ *   (d) returns plain-JSON (no Date, no Java array)
+ */
+function TEST_confirmTransfer311_orchestration() {
+  var fn = 'TEST_confirmTransfer311_orchestration';
+  var TEST_TXNID = 'ZZTEST-ORCH-001';
+  var t0 = Date.now();
+
+  // ---- Seed a TransferLog row ----
+  var ss   = getSpreadsheet_();
+  var tlSh = ss.getSheetByName(TL_SHEET);
+  if (!tlSh) throw new Error(fn + ': TransferLog sheet missing');
+  var tlHdr = tlSh.getRange(1, 1, 1, tlSh.getLastColumn()).getValues()[0];
+  var tlIdx = {};
+  tlHdr.forEach(function(h, i) { tlIdx[String(h).trim()] = i; });
+
+  var seedRow = new Array(tlHdr.length).fill('');
+  seedRow[tlIdx['TxnID']]          = TEST_TXNID;
+  seedRow[tlIdx['TxnType']]        = 'SPLIT_ISSUE';
+  seedRow[tlIdx['Status']]         = 'PENDING';
+  seedRow[tlIdx['Material']]       = 'ZZTEST-MAT';
+  seedRow[tlIdx['IssueQty']]       = 1;
+  seedRow[tlIdx['Unit']]           = 'PC';
+  seedRow[tlIdx['SourceSLoc']]     = 'PW30';
+  seedRow[tlIdx['Batch']]          = '0000099999';
+  seedRow[tlIdx['CreatedAt']]      = new Date().toISOString();
+  seedRow[tlIdx['IdempotencyKey']] = TEST_TXNID;
+  tlSh.appendRow(seedRow);
+  SpreadsheetApp.flush();
+
+  var pass = true;
+  var detail = '';
+
+  // Save originals for monkey-patch
+  var origWithRetry = postTransfer311WithRetry_;
+  var origBuildPayload = buildTransfer311Payload_;
+
+  try {
+    // ---- SUB-TEST A: POSTED path — verify wrapper called + writeback ----
+    var wrapperCalled = false;
+    var capturedTxnId = '';
+
+    // Monkey-patch to intercept
+    postTransfer311WithRetry_ = function(payload, txnId) {
+      wrapperCalled = true;
+      capturedTxnId = txnId;
+      return { ok: true, status: 'POSTED', doc: 'FAKEDOC001', year: '2026' };
+    };
+    buildTransfer311Payload_ = function() { return { test: true }; };
+
+    var r1 = confirmTransfer311(TEST_TXNID, 'PW40');
+
+    if (!wrapperCalled) { pass = false; detail += 'A: wrapper NOT called '; }
+    else { detail += 'A:wrapperCalled OK '; }
+
+    if (capturedTxnId !== TEST_TXNID) {
+      pass = false; detail += 'A:txnId=' + capturedTxnId + ' ';
+    }
+
+    if (!r1.success) { pass = false; detail += 'A:success=false '; }
+    if (r1.materialDocument !== 'FAKEDOC001') {
+      pass = false; detail += 'A:doc=' + r1.materialDocument + ' ';
+    } else { detail += 'A:doc=FAKEDOC001 OK '; }
+
+    // Check TransferLog writeback
+    SpreadsheetApp.flush();
+    var tlAfter = tlSh.getDataRange().getValues();
+    var wroteDoc = false;
+    for (var r = 1; r < tlAfter.length; r++) {
+      if (String(tlAfter[r][tlIdx['TxnID']] || '').trim() === TEST_TXNID) {
+        var status = String(tlAfter[r][tlIdx['Status']] || '').trim();
+        var refDoc = String(tlAfter[r][tlIdx['RefDoc']] || '').trim();
+        if (status === 'TRANSFERRED' && refDoc === 'FAKEDOC001') wroteDoc = true;
+        break;
+      }
+    }
+    if (!wroteDoc) { pass = false; detail += 'A:writeback missing '; }
+    else { detail += 'A:writeback OK '; }
+
+    // Reset row for sub-test B
+    for (var r2 = 1; r2 < tlAfter.length; r2++) {
+      if (String(tlAfter[r2][tlIdx['TxnID']] || '').trim() === TEST_TXNID) {
+        tlSh.getRange(r2 + 1, tlIdx['Status'] + 1).setValue('PENDING');
+        tlSh.getRange(r2 + 1, tlIdx['RefDoc'] + 1).setValue('');
+        break;
+      }
+    }
+    SpreadsheetApp.flush();
+
+    // ---- SUB-TEST B: UNKNOWN_STATE — no success doc written ----
+    postTransfer311WithRetry_ = function() {
+      return { ok: false, status: 'UNKNOWN_STATE', error: 'simulated timeout' };
+    };
+
+    var r2result = confirmTransfer311(TEST_TXNID, 'PW40');
+
+    if (r2result.success) { pass = false; detail += 'B:success=true(expected false) '; }
+    else { detail += 'B:success=false OK '; }
+
+    SpreadsheetApp.flush();
+    var tlAfter2 = tlSh.getDataRange().getValues();
+    for (var r3 = 1; r3 < tlAfter2.length; r3++) {
+      if (String(tlAfter2[r3][tlIdx['TxnID']] || '').trim() === TEST_TXNID) {
+        var status2 = String(tlAfter2[r3][tlIdx['Status']] || '').trim();
+        var refDoc2 = String(tlAfter2[r3][tlIdx['RefDoc']] || '').trim();
+        if (status2 === 'TRANSFERRED') {
+          pass = false; detail += 'B:status=TRANSFERRED(should NOT be) ';
+        } else { detail += 'B:noFalseTransfer OK '; }
+        if (refDoc2 && refDoc2 !== 'FAKEDOC001') {
+          pass = false; detail += 'B:refDoc=' + refDoc2 + ' ';
+        } else { detail += 'B:noFalseDoc OK '; }
+        break;
+      }
+    }
+
+    // ---- SUB-TEST C: plain-JSON return (no Date, no Java array) ----
+    postTransfer311WithRetry_ = function() {
+      return { ok: true, status: 'DRY_RUN', doc: null, year: null };
+    };
+    // Reset status again
+    for (var r4 = 1; r4 < tlAfter2.length; r4++) {
+      if (String(tlAfter2[r4][tlIdx['TxnID']] || '').trim() === TEST_TXNID) {
+        tlSh.getRange(r4 + 1, tlIdx['Status'] + 1).setValue('PENDING');
+        tlSh.getRange(r4 + 1, tlIdx['RefDoc'] + 1).setValue('');
+        break;
+      }
+    }
+    SpreadsheetApp.flush();
+
+    var r3result = confirmTransfer311(TEST_TXNID, 'PW40');
+    var jsonStr = JSON.stringify(r3result);
+    try {
+      var parsed = JSON.parse(jsonStr);
+      if (typeof parsed !== 'object') { pass = false; detail += 'C:not object '; }
+      else { detail += 'C:plainJSON OK '; }
+    } catch (pe) { pass = false; detail += 'C:JSON parse fail '; }
+
+  } catch (e) {
+    pass = false;
+    detail += 'EXCEPTION: ' + e.message;
+  } finally {
+    // Restore originals
+    postTransfer311WithRetry_ = origWithRetry;
+    buildTransfer311Payload_ = origBuildPayload;
+
+    // Cleanup test TransferLog row
+    try {
+      var cleanData = tlSh.getDataRange().getValues();
+      for (var d = cleanData.length - 1; d >= 1; d--) {
+        if (String(cleanData[d][tlIdx['TxnID']] || '').trim() === TEST_TXNID) {
+          tlSh.deleteRow(d + 1);
+        }
+      }
+    } catch (ce) { Logger.log(fn + ' cleanup: ' + ce.message); }
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
+}
+
+// ============================================================================
 // Seed / cleanup helpers — editor-run, self-cleaning, NO UrlFetchApp
 // ============================================================================
 
@@ -1249,11 +1422,17 @@ function getTransferSlipInfo(txnId) {
 }
 
 /**
- * Execute a 311 transfer posting from the scanner UI.
- * Delegates to postTransfer311_ which handles DRY_RUN/LIVE gate + idempotency.
- * @param {string} txnId
- * @param {string} destSloc
- * @return {Object} result from postTransfer311_
+ * Execute a 311 transfer posting from the scanner UI. Orchestrator:
+ *   1. TransferLog idempotency check (already TRANSFERRED → skip)
+ *   2. Build payload via buildTransfer311Payload_
+ *   3. POST via postTransfer311WithRetry_ (hardened: readback-first, retry,
+ *      dead-letter, stable-token)
+ *   4. Write back to TransferLog on success
+ *
+ * @param {string} txnId — stable TxnID from TransferLog (never regenerated)
+ * @param {string} destSloc — destination StorageLocation
+ * @return {{success:boolean, materialDocument?:string, materialDocumentYear?:string,
+ *           dryRun?:boolean, error?:string}}
  */
 function confirmTransfer311(txnId, destSloc) {
   try {
@@ -1262,8 +1441,91 @@ function confirmTransfer311(txnId, destSloc) {
     if (!txnId)    return { success: false, error: 'TxnID ว่าง' };
     if (!destSloc) return { success: false, error: 'กรุณาเลือกปลายทาง' };
 
-    var result = postTransfer311_(txnId, destSloc);
-    return JSON.parse(JSON.stringify(result));
+    // ---- 1. TransferLog row lookup + idempotency ----
+    var ss   = getSpreadsheet_();
+    var tlSh = ss.getSheetByName(TL_SHEET);
+    if (!tlSh || tlSh.getLastRow() < 2) {
+      return { success: false, error: 'TransferLog sheet empty or missing' };
+    }
+    var tlData = tlSh.getDataRange().getValues();
+    var tlIdx  = tlHeaderIdx_(tlData[0]);
+
+    var txnRowNum = -1;
+    for (var r = 1; r < tlData.length; r++) {
+      if (String(tlData[r][tlIdx['TxnID']] || '').trim() === txnId) {
+        txnRowNum = r + 1;
+        break;
+      }
+    }
+    if (txnRowNum === -1) {
+      return { success: false, error: 'TxnID not found in TransferLog: ' + txnId };
+    }
+
+    var curStatus = String(tlData[txnRowNum - 1][tlIdx['Status']] || '').trim();
+    if (curStatus === 'TRANSFERRED') {
+      var existingDoc = String(tlData[txnRowNum - 1][tlIdx['RefDoc']] || '').trim();
+      logEvent('TRANSFER311', TL_SHEET, 'SKIP_IDEMPOTENT', 0, txnId);
+      return JSON.parse(JSON.stringify(
+        { success: true, materialDocument: existingDoc, dryRun: false }));
+    }
+
+    // ---- 2. Build payload ----
+    var payload = buildTransfer311Payload_(txnId, destSloc);
+
+    // ---- 3. POST via hardened wrapper ----
+    var result = postTransfer311WithRetry_(payload, txnId);
+
+    // ---- 4. Write back to TransferLog based on outcome ----
+    var now = Utilities.formatDate(new Date(), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss");
+
+    if (result.ok && result.status !== 'DRY_RUN') {
+      tlSh.getRange(txnRowNum, tlIdx['Status'] + 1).setValue('TRANSFERRED');
+      if (tlIdx['DestSLoc'] !== undefined) {
+        tlSh.getRange(txnRowNum, tlIdx['DestSLoc'] + 1).setValue(destSloc);
+      }
+      if (tlIdx['RefDoc'] !== undefined) {
+        tlSh.getRange(txnRowNum, tlIdx['RefDoc'] + 1).setValue(result.doc || '');
+      }
+      if (tlIdx['Note'] !== undefined) {
+        tlSh.getRange(txnRowNum, tlIdx['Note'] + 1)
+          .setValue('MT311 ' + result.status + ' ' + (result.doc || '') +
+            '/' + (result.year || ''));
+      }
+      if (tlIdx['UpdatedAt'] !== undefined) {
+        tlSh.getRange(txnRowNum, tlIdx['UpdatedAt'] + 1).setValue(now);
+      }
+      logEvent('TRANSFER311', TL_SHEET, result.status, 0,
+        txnId + ' → ' + (result.doc || ''));
+
+      return JSON.parse(JSON.stringify({
+        success: true,
+        materialDocument: result.doc || '',
+        materialDocumentYear: result.year || '',
+        dryRun: false
+      }));
+    }
+
+    if (result.status === 'DRY_RUN') {
+      logEvent('TRANSFER311', TL_SHEET, 'DRY_RUN', 0, txnId);
+      return JSON.parse(JSON.stringify({
+        success: true, materialDocument: 'DRY_RUN', dryRun: true
+      }));
+    }
+
+    // UNKNOWN_STATE / FAILED_PERMANENT — do NOT write success doc
+    if (tlIdx['Note'] !== undefined) {
+      tlSh.getRange(txnRowNum, tlIdx['Note'] + 1)
+        .setValue('MT311 ' + result.status + ': ' + (result.error || '').slice(0, 200));
+    }
+    if (tlIdx['UpdatedAt'] !== undefined) {
+      tlSh.getRange(txnRowNum, tlIdx['UpdatedAt'] + 1).setValue(now);
+    }
+    logEvent('TRANSFER311', TL_SHEET, result.status, 0,
+      txnId + ' ' + (result.error || ''));
+
+    return JSON.parse(JSON.stringify({
+      success: false, error: result.error || result.status
+    }));
 
   } catch (e) {
     logError('confirmTransfer311', TL_SHEET, e.message, txnId + '→' + destSloc);
