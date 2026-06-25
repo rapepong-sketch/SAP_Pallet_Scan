@@ -349,6 +349,69 @@ function postTransfer311_(txnId, destSloc) {
 }
 
 // ============================================================================
+// Reverse-by-reference via Cancel bound FunctionImport
+// ============================================================================
+
+/**
+ * Reverse a material document by calling the Cancel FunctionImport on
+ * API_MATERIAL_DOCUMENT_SRV. SAP auto-creates reversal (auto-312, correct
+ * direction) and stamps ReversedMaterialDocument=origDoc on items.
+ * Edm.String params MUST be single-quoted.
+ * Proven 2026-06-25 docs 4900215913→4900215914.
+ *
+ * @param {string} matDoc  - MaterialDocument number (e.g. '4900215913')
+ * @param {string} matDocYear - MaterialDocumentYear (e.g. '2026')
+ * @return {{ok:boolean, http:number, reversalDoc?:string, reversalYear?:string,
+ *           raw?:string, body?:string}}
+ */
+function reverseMaterialDocByRef_(matDoc, matDocYear) {
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+
+  var session = getCsrfSession_(serviceRoot);
+  var creds   = getSapCredentials_();
+
+  // OData v2 FunctionImport with Edm.String params requires single-quoted
+  // string literals: MaterialDocument='4900215913', MaterialDocumentYear='2026'.
+  // buildSapUrl_ encodes values, so passing "'val'" produces %27val%27.
+  var cancelUrl = buildSapUrl_(serviceRoot + 'Cancel', {
+    'MaterialDocument':     "'" + matDoc + "'",
+    'MaterialDocumentYear': "'" + matDocYear + "'"
+  });
+
+  Logger.log('FETCH_URL [Cancel FunctionImport] ' + cancelUrl);
+  var resp = UrlFetchApp.fetch(cancelUrl, {
+    method: 'post',
+    headers: {
+      'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+      'X-CSRF-Token':  session.token,
+      'Cookie':        session.cookies,
+      'Content-Type':  'application/json',
+      'Accept':        'application/json'
+    },
+    payload: '',
+    muteHttpExceptions: true
+  });
+
+  var code = resp.getResponseCode();
+  var body = resp.getContentText();
+  Logger.log('[Cancel] HTTP ' + code + ' :: ' + body.slice(0, 800));
+
+  if (code !== 200 && code !== 201) {
+    return { ok: false, http: code, body: body.slice(0, 800) };
+  }
+
+  var parsed = JSON.parse(body);
+  var d = parsed.d || parsed;
+  return {
+    ok:           true,
+    http:         code,
+    reversalDoc:  d.MaterialDocument || '',
+    reversalYear: d.MaterialDocumentYear || '',
+    raw:          body.slice(0, 500)
+  };
+}
+
+// ============================================================================
 // Seed / cleanup helpers — editor-run, self-cleaning, NO UrlFetchApp
 // ============================================================================
 
