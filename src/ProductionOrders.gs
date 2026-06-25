@@ -106,14 +106,15 @@ function pullProductionOrders() {
     // (เช่น orders ที่ถูก CNF/DLV/TECO ไปแล้วหลังจาก pull ครั้งก่อน)
     const activeKeys = {};
     rows.forEach(function(r) { activeKeys[String(r[0])] = true; });
-    const staleCount = removeStaleOrders_(activeKeys);
+    const staleResult = removeStaleOrders_(activeKeys);
 
     logEvent(fn, endpoint, 'OK', Date.now() - t0,
       'fetched=' + raw.length + ' released=' + released.length +
       ' inserted=' + stats.inserted + ' updated=' + stats.updated +
-      ' staleRemoved=' + staleCount);
+      ' staleRemoved=' + staleResult.deleted + ' staleProtected=' + staleResult.protected);
     console.log('Done: inserted=' + stats.inserted + ', updated=' + stats.updated +
-                ', staleRemoved=' + staleCount);
+                ', staleRemoved=' + staleResult.deleted +
+                ', staleProtected=' + staleResult.protected);
     return released.length;
 
   } catch (e) {
@@ -324,28 +325,79 @@ function upsertProductionOrders_(rows) {
 }
 
 /**
+ * Build the set of ManufacturingOrders that still have unconfirmed pallets
+ * in PalletMaster (any ScanStatus other than 'CONFIRMED'). These MOs must
+ * survive in the ProductionOrders sheet even after leaving the SAP REL set,
+ * because their pallets still need the cached FinalOperation / order data.
+ * @return {Object} { "1000036346": true, ... }
+ */
+function buildOpenPalletMoSet_() {
+  var moSet = {};
+  try {
+    var sh = getSpreadsheet_().getSheetByName('PalletMaster');
+    if (!sh || sh.getLastRow() < 2) return moSet;
+    var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    var moCol     = hdr.indexOf('ManufacturingOrder');
+    var statusCol = hdr.indexOf('ScanStatus');
+    var pidCol    = hdr.indexOf('PalletID');
+    if (moCol === -1 || statusCol === -1) return moSet;
+    var data = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+    for (var i = 0; i < data.length; i++) {
+      var pid = pidCol !== -1 ? String(data[i][pidCol] || '').trim() : '';
+      if (/^PL-TEST-/i.test(pid)) continue;
+      var status = String(data[i][statusCol] || '').trim();
+      if (status && status !== 'CONFIRMED') {
+        var mo = String(data[i][moCol] || '').trim();
+        if (mo) moSet[mo] = true;
+      }
+    }
+  } catch (e) {
+    logError('buildOpenPalletMoSet_', 'PalletMaster', e.message, '');
+  }
+  return moSet;
+}
+
+/**
  * ลบ rows ที่ key (ManufacturingOrder) ไม่อยู่ใน activeKeys set
  * ใช้หลัง upsert เพื่อลบ stale orders (CNF/DLV/TECO ไปแล้วนับจาก pull ครั้งก่อน)
+ * Protected: MOs that still have unconfirmed pallets in PalletMaster are kept
+ * (annotated IsReleased=false) even when they leave the REL set.
  * @param {Object} activeKeys — { "2000004325": true, ... }
- * @return {number} จำนวน rows ที่ลบ
+ * @return {{deleted: number, protected: number}}
  */
 function removeStaleOrders_(activeKeys) {
   const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
   const lastRow = sh.getLastRow();
-  if (lastRow <= 1) return 0;
+  if (lastRow <= 1) return { deleted: 0, protected: 0 };
+
+  const protectedMos = buildOpenPalletMoSet_();
+
+  const hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const isRelCol = hdr.indexOf('IsReleased');
 
   const keys = sh.getRange(2, 1, lastRow - 1, 1).getValues();
   const toDelete = [];
+  var protectedCount = 0;
   keys.forEach(function(r, i) {
     const k = String(r[0]).replace('.0', '').trim();
-    if (k && !activeKeys[k]) toDelete.push(i + 2);
+    if (k && !activeKeys[k]) {
+      if (protectedMos[k]) {
+        protectedCount++;
+        if (isRelCol !== -1) {
+          sh.getRange(i + 2, isRelCol + 1).setValue(false);
+        }
+        logEvent('PO_SYNC', 'STALE_DELETE_SKIPPED_OPEN_PALLET', k);
+      } else {
+        toDelete.push(i + 2);
+      }
+    }
   });
 
   // ลบจากล่างขึ้นบน
   for (let i = toDelete.length - 1; i >= 0; i--) {
     sh.deleteRow(toDelete[i]);
   }
-  return toDelete.length;
+  return { deleted: toDelete.length, protected: protectedCount };
 }
 
 /**
@@ -700,6 +752,10 @@ function computeFinalOperation_(ops) {
  * (buildOperationsCacheFields_ / computeFinalOperation_), so this never
  * diverges from what a fresh pullProductionOrders() sync would produce.
  *
+ * Resilient: if the MO row was deleted (e.g. by removeStaleOrders_ after the
+ * order left the REL set), recreates a minimal row from the SAP routing fetch
+ * so the Refresh button on AdminConfirm recovers instead of crashing.
+ *
  * Reads/writes by column name — no numeric index. No bulk loop here; call
  * once per MO. Run testRefreshOneOrder() to verify before any batch pass.
  *
@@ -716,9 +772,10 @@ function refreshOrderOperationCache(mo) {
 
     const sh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
     const lastRow = sh.getLastRow();
-    if (lastRow < 2) throw new Error('ProductionOrders sheet has no data rows');
 
-    const hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    const hdr = (lastRow >= 1)
+      ? sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0]
+      : CFG.HEADERS.PRODUCTION_ORDERS;
     const moCol      = hdr.indexOf('ManufacturingOrder');
     const opsJsonCol = hdr.indexOf('OperationsJSON');
     const opsCol     = hdr.indexOf('Operations');
@@ -728,20 +785,43 @@ function refreshOrderOperationCache(mo) {
     if (opsCol === -1)     throw new Error('Operations column not found in ProductionOrders sheet');
     if (finalOpCol === -1) throw new Error('FinalOperation column not found in ProductionOrders sheet');
 
-    const keys = sh.getRange(2, 1, lastRow - 1, 1).getValues();
     let rowNum = -1;
-    for (let i = 0; i < keys.length; i++) {
-      if (String(keys[i][0] || '').trim() === mo) { rowNum = i + 2; break; }
+    if (lastRow >= 2) {
+      const keys = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < keys.length; i++) {
+        if (String(keys[i][0] || '').trim() === mo) { rowNum = i + 2; break; }
+      }
     }
-    if (rowNum === -1) throw new Error('ManufacturingOrder not found in ProductionOrders sheet: ' + mo);
 
-    const ops = fetchOperationsForMO_(mo); // live SAP fetch — same path PalletSheet/getOperationsForOrder use
+    const ops = fetchOperationsForMO_(mo);
+    if (!ops.length && rowNum === -1) {
+      throw new Error('ManufacturingOrder not found in sheet and no operations in SAP: ' + mo);
+    }
     const cacheFields = buildOperationsCacheFields_(ops);
     const finalOp = computeFinalOperation_(ops);
+    var finalOpPadded = _normOpNo_(finalOp);
+
+    if (rowNum === -1) {
+      // Row was deleted — recreate a minimal row from SAP routing
+      var newRow = new Array(hdr.length).fill('');
+      newRow[moCol]      = mo;
+      newRow[opsJsonCol]  = cacheFields.opsJson;
+      newRow[opsCol]      = cacheFields.operationsStr;
+      newRow[finalOpCol]  = finalOpPadded;
+      var isRelCol    = hdr.indexOf('IsReleased');
+      var lastSyncCol = hdr.indexOf('LastSyncAt');
+      if (isRelCol !== -1)    newRow[isRelCol]    = false;
+      if (lastSyncCol !== -1) newRow[lastSyncCol] = new Date();
+      sh.appendRow(newRow);
+      var appendedRow = sh.getLastRow();
+      sh.getRange(appendedRow, finalOpCol + 1).setNumberFormat('@').setValue(finalOpPadded);
+
+      logEvent(fn, mo, 'RECREATED', Date.now() - t0, 'final=' + finalOp + ' ops=' + ops.length);
+      return { mo: mo, opCount: ops.length, finalOperation: finalOp };
+    }
 
     sh.getRange(rowNum, opsJsonCol + 1).setValue(cacheFields.opsJson);
     sh.getRange(rowNum, opsCol + 1).setValue(cacheFields.operationsStr);
-    var finalOpPadded = _normOpNo_(finalOp);
     sh.getRange(rowNum, finalOpCol + 1).setNumberFormat('@').setValue(finalOpPadded);
 
     logEvent(fn, mo, 'OK', Date.now() - t0, 'final=' + finalOp + ' ops=' + ops.length);
@@ -947,4 +1027,172 @@ function migrateFinalOpLeadingZeros() {
     logError(fn, 'MIGRATE_FINALOP_PAD', e.message, '');
     throw e;
   }
+}
+
+// ============================================================================
+// Phase 5: TEST — Stale-delete protection for MOs with open pallets
+// ============================================================================
+
+/**
+ * Self-cleaning test for removeStaleOrders_ open-pallet protection.
+ * Seeds two ZZTEST MOs in ProductionOrders + one PalletMaster pallet for
+ * MO-A (ScanStatus=QC_COMPLETE). Runs removeStaleOrders_ with an activeKeys
+ * set that EXCLUDES both MOs. Asserts:
+ *   1) MO-A (has open pallet) is NOT deleted — protected
+ *   2) MO-B (no open pallets) IS deleted — genuinely stale
+ *   3) STALE_DELETE_SKIPPED_OPEN_PALLET logged for MO-A
+ *   4) MO-A's IsReleased is set to false (annotation)
+ * Deletes all test rows on exit (try/finally). No SAP call.
+ */
+function TEST_staleDeleteProtectsOpenPallets() {
+  var fn = 'TEST_staleDeleteProtectsOpenPallets';
+  var MO_PROTECTED = 'ZZTEST_STALE_A';
+  var MO_DELETABLE = 'ZZTEST_STALE_B';
+  var TEST_PID     = 'PL-ZZSTALE-L01';
+  var t0 = Date.now();
+
+  var poSh = getSheet_(CFG.SHEETS.PRODUCTION_ORDERS);
+  var poHdr = poSh.getRange(1, 1, 1, poSh.getLastColumn()).getValues()[0];
+  var poIdx = {};
+  poHdr.forEach(function(h, i) { poIdx[h] = i; });
+
+  var pmSh = getSpreadsheet_().getSheetByName('PalletMaster');
+  var pmHdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  pmHdr.forEach(function(h, i) { pmIdx[h] = i; });
+
+  // ---- Seed ProductionOrders rows for both MOs ----
+  [MO_PROTECTED, MO_DELETABLE].forEach(function(mo) {
+    var row = new Array(poHdr.length).fill('');
+    row[poIdx['ManufacturingOrder']] = mo;
+    if (poIdx['Material'] !== undefined) row[poIdx['Material']] = 'ZZTEST-MAT';
+    if (poIdx['IsReleased'] !== undefined) row[poIdx['IsReleased']] = true;
+    poSh.appendRow(row);
+  });
+
+  // ---- Seed one PalletMaster pallet for MO_PROTECTED only ----
+  var pmRow = new Array(pmHdr.length).fill('');
+  pmRow[pmIdx['PalletID']]            = TEST_PID;
+  pmRow[pmIdx['ManufacturingOrder']]   = MO_PROTECTED;
+  pmRow[pmIdx['Material']]             = 'ZZTEST-MAT';
+  pmRow[pmIdx['QtyPerPallet']]         = 100;
+  pmRow[pmIdx['Unit']]                 = 'PC';
+  pmRow[pmIdx['ScanStatus']]           = 'QC_COMPLETE';
+  if (pmIdx['PalletSeq'] !== undefined) pmRow[pmIdx['PalletSeq']] = 1;
+  if (pmIdx['Plant'] !== undefined)     pmRow[pmIdx['Plant']] = CFG.PLANT;
+  pmSh.appendRow(pmRow);
+
+  SpreadsheetApp.flush();
+
+  // Snapshot EventLog count for STALE_DELETE_SKIPPED before
+  var evSh = getSpreadsheet_().getSheetByName('EventLog');
+  var skipBefore = 0;
+  if (evSh && evSh.getLastRow() > 1) {
+    var evData = evSh.getDataRange().getValues();
+    for (var e = 0; e < evData.length; e++) {
+      if (String(evData[e][1] || '') === 'PO_SYNC' &&
+          String(evData[e][2] || '') === 'STALE_DELETE_SKIPPED_OPEN_PALLET' &&
+          String(evData[e][3] || '') === MO_PROTECTED) {
+        skipBefore++;
+      }
+    }
+  }
+
+  var pass = true;
+  var detail = '';
+
+  try {
+    // activeKeys includes ALL existing MOs EXCEPT the two test MOs —
+    // simulates them leaving the REL set without deleting real production data
+    var activeKeys = {};
+    var existingMos = poSh.getRange(2, 1, poSh.getLastRow() - 1, 1).getValues();
+    existingMos.forEach(function(r) {
+      var k = String(r[0]).replace('.0', '').trim();
+      if (k && k !== MO_PROTECTED && k !== MO_DELETABLE) activeKeys[k] = true;
+    });
+    var result = removeStaleOrders_(activeKeys);
+
+    SpreadsheetApp.flush();
+
+    // ---- Assert 1: MO_PROTECTED still in sheet ----
+    var poData = poSh.getDataRange().getValues();
+    var foundProtected = false;
+    var protectedIsRel = null;
+    var foundDeletable = false;
+    for (var r = 1; r < poData.length; r++) {
+      var mo = String(poData[r][poIdx['ManufacturingOrder']] || '').trim();
+      if (mo === MO_PROTECTED) {
+        foundProtected = true;
+        protectedIsRel = poData[r][poIdx['IsReleased']];
+      }
+      if (mo === MO_DELETABLE) foundDeletable = true;
+    }
+
+    if (!foundProtected) {
+      pass = false;
+      detail += 'FAIL:MO_PROTECTED deleted. ';
+    } else {
+      detail += 'protected:kept OK. ';
+    }
+
+    // ---- Assert 2: MO_DELETABLE removed ----
+    if (foundDeletable) {
+      pass = false;
+      detail += 'FAIL:MO_DELETABLE not deleted. ';
+    } else {
+      detail += 'deletable:removed OK. ';
+    }
+
+    // ---- Assert 3: STALE_DELETE_SKIPPED event logged ----
+    var skipAfter = 0;
+    evSh = getSpreadsheet_().getSheetByName('EventLog');
+    if (evSh && evSh.getLastRow() > 1) {
+      var evData2 = evSh.getDataRange().getValues();
+      for (var e2 = 0; e2 < evData2.length; e2++) {
+        if (String(evData2[e2][1] || '') === 'PO_SYNC' &&
+            String(evData2[e2][2] || '') === 'STALE_DELETE_SKIPPED_OPEN_PALLET' &&
+            String(evData2[e2][3] || '') === MO_PROTECTED) {
+          skipAfter++;
+        }
+      }
+    }
+    var skipCount = skipAfter - skipBefore;
+    if (skipCount !== 1) {
+      pass = false;
+      detail += 'FAIL:skipEvent=' + skipCount + '(expected 1). ';
+    } else {
+      detail += 'skipEvent:1 OK. ';
+    }
+
+    // ---- Assert 4: IsReleased annotated to false ----
+    if (foundProtected && protectedIsRel !== false) {
+      pass = false;
+      detail += 'FAIL:IsReleased=' + protectedIsRel + '(expected false). ';
+    } else if (foundProtected) {
+      detail += 'IsReleased:false OK. ';
+    }
+
+  } catch (ex) {
+    pass = false;
+    detail += 'EXCEPTION: ' + ex.message;
+  } finally {
+    // ---- Cleanup: delete test rows ----
+    var pmClean = pmSh.getDataRange().getValues();
+    for (var d = pmClean.length - 1; d >= 1; d--) {
+      if (String(pmClean[d][pmIdx['PalletID']] || '').trim() === TEST_PID) {
+        pmSh.deleteRow(d + 1);
+      }
+    }
+    var poClean = poSh.getDataRange().getValues();
+    for (var d2 = poClean.length - 1; d2 >= 1; d2--) {
+      var cmo = String(poClean[d2][poIdx['ManufacturingOrder']] || '').trim();
+      if (cmo === MO_PROTECTED || cmo === MO_DELETABLE) {
+        poSh.deleteRow(d2 + 1);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
+  logEvent(fn, 'ProductionOrders', pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
 }
