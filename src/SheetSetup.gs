@@ -80,7 +80,8 @@ function onOpen() {
     .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates')
     .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof')
     .addItem('🔍 Verify 311 Stock Settle (RO)',              'PROBE_verify311StockSettle')
-    .addItem('🔍 Probe D/C Direction 842/843 (RO)',          'PROBE_dcDirection311');
+    .addItem('🔍 Probe D/C Direction 842/843 (RO)',          'PROBE_dcDirection311')
+    .addItem('⚠️ FIX 311 Housekeeping Restore (WRITES)',    'TEST_transfer311HousekeepingRestore');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')

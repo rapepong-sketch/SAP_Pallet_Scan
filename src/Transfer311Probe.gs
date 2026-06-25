@@ -795,6 +795,139 @@ function PROBE_dcDirection311() {
   SpreadsheetApp.getUi().alert(alert + '\nFull raw items in Executions log.');
 }
 
+// ============================================================================
+// Housekeeping — corrective 311 to restore PW30/PW40 baseline
+// ============================================================================
+
+/**
+ * ⚠️ WRITES TO SAP. Posts a single corrective 311 (2 PC PW40→PW30) to undo
+ * the imbalance left by the T2 proof's failed 312 reverse. Pre-checks that
+ * the imbalance is exactly -2/+2 before posting; aborts on any other state.
+ */
+function TEST_transfer311HousekeepingRestore() {
+  var fn = 'TEST_transfer311HousekeepingRestore';
+  var M = { material: 'STT1001-R0000S3XRX', plant: '1100', batch: '0000095121' };
+  var TARGET = { pw30: 3418, pw40: 8000 };
+  var stockRoot   = CFG.SAP_BASE_URL + MATERIAL_STOCK_SRV_PROBE_;
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+
+  // ==== STEP 1: Pre-check imbalance ====
+  var curPW30 = probeStockQty_(stockRoot, M.material, M.plant, 'PW30', M.batch);
+  var curPW40 = probeStockQty_(stockRoot, M.material, M.plant, 'PW40', M.batch);
+  var delta30 = curPW30 - TARGET.pw30;
+  var delta40 = curPW40 - TARGET.pw40;
+  Logger.log('[STEP 1] PW30=' + curPW30 + ' (delta=' + delta30 +
+    '), PW40=' + curPW40 + ' (delta=' + delta40 + ')');
+
+  if (delta30 === 0 && delta40 === 0) {
+    SpreadsheetApp.getUi().alert(
+      '✅ Already balanced — nothing to do.\n\n' +
+      'PW30=' + curPW30 + ' (target ' + TARGET.pw30 + ')\n' +
+      'PW40=' + curPW40 + ' (target ' + TARGET.pw40 + ')');
+    return;
+  }
+
+  if (!(delta30 === -2 && delta40 === 2)) {
+    SpreadsheetApp.getUi().alert(
+      '⛔ Unexpected imbalance — aborting. Manual review needed.\n\n' +
+      'PW30=' + curPW30 + ' (delta=' + delta30 + ', expected -2)\n' +
+      'PW40=' + curPW40 + ' (delta=' + delta40 + ', expected +2)');
+    return;
+  }
+
+  // ==== STEP 2: Build + POST corrective 311 PW40→PW30, 2 PC ====
+  var fixToken = 'ZZTEST-FIX-' + Utilities.getUuid().replace(/-/g, '').slice(0, 14);
+  Logger.log('[STEP 2] fixToken=' + fixToken + ' len=' + fixToken.length);
+
+  var now = new Date();
+  var bangkokMs = now.getTime() +
+    (now.getTimezoneOffset() * 60000) + (7 * 3600000);
+  var bangkokMidnight = new Date(bangkokMs);
+  bangkokMidnight.setHours(0, 0, 0, 0);
+  var odataDate = '/Date(' + bangkokMidnight.getTime() + ')/';
+
+  var payload = {
+    GoodsMovementCode:          '04',
+    PostingDate:                odataDate,
+    DocumentDate:               odataDate,
+    MaterialDocumentHeaderText: fixToken,
+    to_MaterialDocumentItem: [{
+      Material:                     M.material,
+      Plant:                        M.plant,
+      StorageLocation:              'PW40',
+      IssuingOrReceivingStorageLoc: 'PW30',
+      GoodsMovementType:            '311',
+      QuantityInEntryUnit:          '2',
+      EntryUnit:                    'PC',
+      Batch:                        M.batch
+    }]
+  };
+  Logger.log('[STEP 2] payload:\n' + JSON.stringify(payload, null, 2));
+
+  var session = getCsrfSession_(serviceRoot);
+  var creds   = getSapCredentials_();
+  var postUrl = buildSapUrl_(serviceRoot + 'A_MaterialDocumentHeader');
+
+  Logger.log('FETCH_URL [STEP 2 POST 311 fix] ' + postUrl);
+  var resp = UrlFetchApp.fetch(postUrl, {
+    method: 'post',
+    headers: {
+      'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+      'X-CSRF-Token':  session.token,
+      'Cookie':        session.cookies,
+      'Content-Type':  'application/json',
+      'Accept':        'application/json'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+
+  var code = resp.getResponseCode();
+  var body = resp.getContentText();
+  Logger.log('[STEP 2] HTTP ' + code + ' :: ' + body.slice(0, 800));
+
+  if (code !== 201 && code !== 200) {
+    logEvent(fn, 'POST_311_FIX', 'ERROR', 0, 'HTTP ' + code);
+    SpreadsheetApp.getUi().alert(
+      '❌ Corrective 311 POST failed — HTTP ' + code + '\n\n' +
+      body.slice(0, 800));
+    return;
+  }
+
+  var parsed = JSON.parse(body);
+  var d      = parsed.d || parsed;
+  var fixDoc  = d.MaterialDocument || '';
+  var fixYear = d.MaterialDocumentYear || '';
+  Logger.log('[STEP 2] fixDoc=' + fixDoc + '/' + fixYear);
+  logEvent(fn, 'POST_311_FIX', 'OK', 0, 'doc=' + fixDoc + '/' + fixYear);
+
+  // ==== STEP 3: Settle delay + re-read ====
+  Utilities.sleep(3000);
+
+  var afterPW30 = probeStockQty_(stockRoot, M.material, M.plant, 'PW30', M.batch);
+  var afterPW40 = probeStockQty_(stockRoot, M.material, M.plant, 'PW40', M.batch);
+  var restored = (afterPW30 === TARGET.pw30 && afterPW40 === TARGET.pw40);
+  Logger.log('[STEP 3] afterPW30=' + afterPW30 + ' afterPW40=' + afterPW40 +
+    ' restored=' + restored);
+
+  var result = {
+    deltaBefore: { pw30: delta30, pw40: delta40 },
+    fixDoc:      { doc: fixDoc, year: fixYear, http: code },
+    stockAfter:  { pw30: afterPW30, pw40: afterPW40 },
+    restored:    restored
+  };
+  Logger.log('[RESULT]\n' + JSON.stringify(result, null, 2));
+  logEvent(fn, 'RESULT', restored ? 'PASS' : 'WARN', 0, JSON.stringify(result));
+
+  SpreadsheetApp.getUi().alert(
+    'Housekeeping Restore\n\n' +
+    'Before: PW30=' + curPW30 + ' (Δ' + delta30 + '), PW40=' + curPW40 +
+      ' (Δ' + delta40 + ')\n' +
+    'Fix doc: ' + fixDoc + '/' + fixYear + ' (HTTP ' + code + ')\n' +
+    'After:  PW30=' + afterPW30 + ', PW40=' + afterPW40 + '\n' +
+    'Restored to baseline: ' + restored);
+}
+
 function probeStockQty_(stockRoot, material, plant, sloc, batch) {
   var filterExpr = "Material eq '" + material + "'" +
     " and Plant eq '" + plant + "'" +
