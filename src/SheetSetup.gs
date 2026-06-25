@@ -74,7 +74,9 @@ function onOpen() {
     .addSeparator()
     .addItem('🧪 Phase 4.5: Run all tests',              'TEST_phase45_all_')
     .addSeparator()
-    .addItem('🧪 [Test] Yield/QC Report',                 'TEST_yieldQcReport_');
+    .addItem('🧪 [Test] Yield/QC Report',                 'TEST_yieldQcReport_')
+    .addSeparator()
+    .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
