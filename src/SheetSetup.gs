@@ -84,7 +84,9 @@ function onOpen() {
     .addItem('⚠️ FIX 311 Housekeeping Restore (WRITES)',    'TEST_transfer311HousekeepingRestore')
     .addItem('🔍 Probe MatDoc Cancellation Mechanism (RO)', 'PROBE_materialDocCancellation')
     .addItem('⚠️ TEST 311 Cancel-by-Ref Proof (WRITES)',    'TEST_transfer311CancelProof')
-    .addItem('⚠️ FIX Cancel Dangling Doc (WRITES)',         'TEST_cancelDanglingDoc');
+    .addItem('⚠️ FIX Cancel Dangling Doc (WRITES)',         'TEST_cancelDanglingDoc')
+    .addSeparator()
+    .addItem('🧪 T4: Run 311 Retry/DL Test Suite',          'TEST_t311_runAll');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
