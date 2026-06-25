@@ -1123,9 +1123,12 @@ function reverseMaterialDocByRef_(matDoc, matDocYear) {
   var session = getCsrfSession_(serviceRoot);
   var creds   = getSapCredentials_();
 
+  // OData v2 FunctionImport with Edm.String params requires single-quoted
+  // string literals: MaterialDocument='4900215913', MaterialDocumentYear='2026'.
+  // buildSapUrl_ encodes values, so passing "'val'" produces %27val%27.
   var cancelUrl = buildSapUrl_(serviceRoot + 'Cancel', {
-    'MaterialDocument':     matDoc,
-    'MaterialDocumentYear': matDocYear
+    'MaterialDocument':     "'" + matDoc + "'",
+    'MaterialDocumentYear': "'" + matDocYear + "'"
   });
 
   Logger.log('FETCH_URL [Cancel FunctionImport] ' + cancelUrl);
@@ -1366,6 +1369,181 @@ function TEST_transfer311CancelProof() {
     logEvent(fn, 'EXCEPTION', e.message, 0, JSON.stringify(result));
     SpreadsheetApp.getUi().alert('❌ ' + fn + ' EXCEPTION:\n\n' + e.message +
       '\n\nCheck Executions log. If a 311 was posted, verify/cancel manually.');
+  }
+}
+
+// ============================================================================
+// One-shot corrective — cancel dangling doc 4900215913 (T2 proof leftover)
+// ============================================================================
+
+/**
+ * ⚠️ WRITES TO SAP. Cancels the dangling 311 doc 4900215913/2026 left by the
+ * T2 proof's failed 312 attempt. No new 311 — only Cancel the existing doc.
+ * Pre-checks stock imbalance and cancellation status before writing.
+ */
+function TEST_cancelDanglingDoc() {
+  var fn = 'TEST_cancelDanglingDoc';
+  var DANGLING = { doc: '4900215913', year: '2026' };
+  var M = { material: 'STT1001-R0000S3XRX', plant: '1100', batch: '0000095121' };
+  var TARGET = { pw30: 3418, pw40: 8000 };
+  var stockRoot   = CFG.SAP_BASE_URL + MATERIAL_STOCK_SRV_PROBE_;
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+
+  var result = {
+    stockBefore: {}, cancel: {}, reversalItems: [], stockAfter: {}, netZero: null
+  };
+
+  try {
+    // ==== STEP 0: Guard — check if already balanced ====
+    var pw30Before = probeStockQty_(stockRoot, M.material, M.plant, 'PW30', M.batch);
+    var pw40Before = probeStockQty_(stockRoot, M.material, M.plant, 'PW40', M.batch);
+    result.stockBefore = { pw30: pw30Before, pw40: pw40Before };
+    Logger.log('[STEP 0] PW30=' + pw30Before + ' PW40=' + pw40Before);
+
+    if (pw30Before === TARGET.pw30 && pw40Before === TARGET.pw40) {
+      SpreadsheetApp.getUi().alert(
+        '✅ Already balanced — doc may already be cancelled.\n\n' +
+        'PW30=' + pw30Before + ' (target ' + TARGET.pw30 + ')\n' +
+        'PW40=' + pw40Before + ' (target ' + TARGET.pw40 + ')');
+      return;
+    }
+
+    // ==== STEP 1: Verify target still cancellable ====
+    var docKey = "MaterialDocument='" + DANGLING.doc +
+      "',MaterialDocumentYear='" + DANGLING.year + "'";
+    var checkUrl = buildSapUrl_(
+      serviceRoot + 'A_MaterialDocumentHeader(' + docKey + ')', {
+      '$expand': 'to_MaterialDocumentItem',
+      '$format': 'json'
+    });
+    Logger.log('FETCH_URL [STEP 1 check doc] ' + checkUrl);
+    var checkResp = probeRawGet_(checkUrl);
+    Logger.log('[STEP 1] HTTP ' + checkResp.code + ' :: ' +
+      checkResp.text.slice(0, 800));
+
+    if (checkResp.code >= 200 && checkResp.code < 300) {
+      var checkParsed = JSON.parse(checkResp.text);
+      var checkD = checkParsed.d || checkParsed;
+      var checkItems = (checkD.to_MaterialDocumentItem &&
+                        checkD.to_MaterialDocumentItem.results) || [];
+
+      var alreadyCancelled = false;
+      for (var c = 0; c < checkItems.length; c++) {
+        var ci = checkItems[c];
+        Logger.log('[STEP 1 item ' + (c + 1) + '] GMT=' + ci.GoodsMovementType +
+          ' SLoc=' + ci.StorageLocation +
+          ' IssuingRecv=' + ci.IssuingOrReceivingStorageLoc +
+          ' IsCancelled=' + ci.GoodsMovementIsCancelled +
+          ' ReversedDoc=' + ci.ReversedMaterialDocument);
+        if (ci.GoodsMovementIsCancelled === 'X' ||
+            ci.GoodsMovementIsCancelled === true) {
+          alreadyCancelled = true;
+        }
+      }
+
+      if (alreadyCancelled) {
+        Logger.log('[STEP 1] Doc already cancelled — skipping to stock re-read');
+        SpreadsheetApp.getUi().alert(
+          '⚠ Doc ' + DANGLING.doc + ' already cancelled.\n\n' +
+          'PW30=' + pw30Before + ' PW40=' + pw40Before +
+          '\n(Expected ' + TARGET.pw30 + '/' + TARGET.pw40 + ')');
+        return;
+      }
+    }
+
+    // ==== STEP 2: Cancel via FunctionImport ====
+    var cancelResult = reverseMaterialDocByRef_(DANGLING.doc, DANGLING.year);
+    result.cancel = cancelResult;
+    Logger.log('[STEP 2] cancel result: ' + JSON.stringify(cancelResult));
+
+    if (!cancelResult.ok) {
+      logEvent(fn, 'CANCEL', 'ERROR', 0, 'HTTP ' + cancelResult.http);
+      SpreadsheetApp.getUi().alert(
+        '🚨 CANCEL FAILED — HTTP ' + cancelResult.http + '\n\n' +
+        '⚠️ Doc ' + DANGLING.doc + '/' + DANGLING.year +
+        ' still dangling.\n\n' +
+        'Kor: cancel manually in Fiori/MIGO.\n\n' +
+        (cancelResult.body || ''));
+      Logger.log('[RESULT]\n' + JSON.stringify(result, null, 2));
+      logEvent(fn, 'RESULT', 'CANCEL_FAILED', 0, JSON.stringify(result));
+      return;
+    }
+
+    logEvent(fn, 'CANCEL', 'OK', 0,
+      'reversalDoc=' + cancelResult.reversalDoc + '/' + cancelResult.reversalYear);
+
+    // ==== STEP 3: Verify reversal doc ====
+    var revDocKey = "MaterialDocument='" + cancelResult.reversalDoc +
+      "',MaterialDocumentYear='" + cancelResult.reversalYear + "'";
+    var revUrl = buildSapUrl_(
+      serviceRoot + 'A_MaterialDocumentHeader(' + revDocKey + ')', {
+      '$expand': 'to_MaterialDocumentItem',
+      '$format': 'json'
+    });
+    Logger.log('FETCH_URL [STEP 3 reversal doc] ' + revUrl);
+    var revResp = probeRawGet_(revUrl);
+    Logger.log('[STEP 3] HTTP ' + revResp.code + ' :: ' +
+      revResp.text.slice(0, 800));
+
+    if (revResp.code >= 200 && revResp.code < 300) {
+      var revParsed = JSON.parse(revResp.text);
+      var revD = revParsed.d || revParsed;
+      var revItems = (revD.to_MaterialDocumentItem &&
+                      revD.to_MaterialDocumentItem.results) || [];
+      for (var i = 0; i < revItems.length; i++) {
+        var it = revItems[i];
+        Logger.log('[STEP 3 item ' + (i + 1) + '] ' +
+          'GMT=' + it.GoodsMovementType +
+          ' SLoc=' + it.StorageLocation +
+          ' IssuingRecv=' + it.IssuingOrReceivingStorageLoc +
+          ' D/C=' + it.DebitCreditCode +
+          ' Qty=' + it.QuantityInEntryUnit +
+          ' ReversedDoc=' + it.ReversedMaterialDocument);
+        result.reversalItems.push({
+          gmt:        it.GoodsMovementType,
+          sloc:       it.StorageLocation,
+          recvSloc:   it.IssuingOrReceivingStorageLoc,
+          dc:         it.DebitCreditCode,
+          qty:        it.QuantityInEntryUnit,
+          reversedDoc: it.ReversedMaterialDocument
+        });
+      }
+    }
+
+    // ==== STEP 4: Settle + re-read stock ====
+    Utilities.sleep(3000);
+
+    var pw30After = probeStockQty_(stockRoot, M.material, M.plant, 'PW30', M.batch);
+    var pw40After = probeStockQty_(stockRoot, M.material, M.plant, 'PW40', M.batch);
+    result.stockAfter = { pw30: pw30After, pw40: pw40After };
+    result.netZero = (pw30After === TARGET.pw30 && pw40After === TARGET.pw40);
+    Logger.log('[STEP 4] PW30=' + pw30After + ' PW40=' + pw40After +
+      ' netZero=' + result.netZero);
+
+    Logger.log('[RESULT]\n' + JSON.stringify(result, null, 2));
+    logEvent(fn, 'RESULT', result.netZero ? 'PASS' : 'WARN', 0,
+      JSON.stringify(result));
+
+    var revItemDesc = result.reversalItems.map(function(ri) {
+      return ri.gmt + ' ' + ri.sloc + '→' + ri.recvSloc +
+        ' ' + ri.qty + ' D/C=' + ri.dc + ' ref=' + ri.reversedDoc;
+    }).join('\n  ');
+
+    SpreadsheetApp.getUi().alert(
+      'Cancel Dangling Doc ' + DANGLING.doc + '\n\n' +
+      'Before: PW30=' + pw30Before + ', PW40=' + pw40Before + '\n' +
+      'Cancel: ' + cancelResult.reversalDoc + '/' +
+        cancelResult.reversalYear + ' (HTTP ' + cancelResult.http + ')\n' +
+      'Reversal items:\n  ' + revItemDesc + '\n\n' +
+      'After: PW30=' + pw30After + ', PW40=' + pw40After + '\n' +
+      'Restored to baseline: ' + result.netZero);
+
+  } catch (e) {
+    Logger.log('[' + fn + '] EXCEPTION: ' + e.message + '\n' + e.stack);
+    logEvent(fn, 'EXCEPTION', e.message, 0, JSON.stringify(result));
+    SpreadsheetApp.getUi().alert('❌ ' + fn + ' EXCEPTION:\n\n' + e.message +
+      '\n\nDoc ' + DANGLING.doc + '/' + DANGLING.year +
+      ' may still be dangling. Check manually.');
   }
 }
 
