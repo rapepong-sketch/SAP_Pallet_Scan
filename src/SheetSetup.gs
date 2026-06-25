@@ -76,7 +76,8 @@ function onOpen() {
     .addSeparator()
     .addItem('🧪 [Test] Yield/QC Report',                 'TEST_yieldQcReport_')
     .addSeparator()
-    .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter');
+    .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter')
+    .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
