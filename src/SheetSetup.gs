@@ -79,7 +79,8 @@ function onOpen() {
     .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter')
     .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates')
     .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof')
-    .addItem('🔍 Verify 311 Stock Settle (RO)',              'PROBE_verify311StockSettle');
+    .addItem('🔍 Verify 311 Stock Settle (RO)',              'PROBE_verify311StockSettle')
+    .addItem('🔍 Probe D/C Direction 842/843 (RO)',          'PROBE_dcDirection311');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')

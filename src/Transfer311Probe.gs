@@ -661,6 +661,140 @@ function PROBE_verify311StockSettle() {
   SpreadsheetApp.getUi().alert(alert);
 }
 
+// ============================================================================
+// T2 direction analysis — raw D/C dump + net-per-SLoc for docs 842/843
+// ============================================================================
+
+function PROBE_dcDirection311() {
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+  var docs = ['4900215842', '4900215843'];
+
+  var allDocResults = {};
+  var netBySLoc = {};   // combined across both docs
+
+  docs.forEach(function(doc) {
+    var docKey = "MaterialDocument='" + doc + "',MaterialDocumentYear='2026'";
+    var url = buildSapUrl_(
+      serviceRoot + 'A_MaterialDocumentHeader(' + docKey + ')', {
+      '$expand': 'to_MaterialDocumentItem',
+      '$format': 'json'
+    });
+    Logger.log('FETCH_URL [D/C doc ' + doc + '] ' + url);
+    var r = probeRawGet_(url);
+    Logger.log('[D/C doc ' + doc + '] HTTP ' + r.code + ' :: ' +
+      r.text.slice(0, 300));
+
+    if (r.code >= 400) {
+      allDocResults[doc] = { items: [], error: 'HTTP ' + r.code };
+      return;
+    }
+
+    var parsed = JSON.parse(r.text);
+    var d = parsed.d || parsed;
+    var items = (d.to_MaterialDocumentItem &&
+                 d.to_MaterialDocumentItem.results) || [];
+
+    var docItems = [];
+    var docNet = {};
+
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+
+      // Log every raw field the spec asks for
+      Logger.log('[D/C doc ' + doc + ' item ' + (i + 1) + '] ' +
+        'MaterialDocumentItem=' + it.MaterialDocumentItem +
+        ' GoodsMovementType=' + it.GoodsMovementType +
+        ' Material=' + it.Material +
+        ' Batch=' + it.Batch +
+        ' StorageLocation=' + it.StorageLocation +
+        ' IssuingOrReceivingStorageLoc=' + it.IssuingOrReceivingStorageLoc +
+        ' QuantityInEntryUnit=' + it.QuantityInEntryUnit +
+        ' EntryUnit=' + it.EntryUnit +
+        ' DebitCreditCode=' + it.DebitCreditCode);
+      // Full raw item JSON as fallback
+      Logger.log('[D/C doc ' + doc + ' item ' + (i + 1) + ' RAW] ' +
+        JSON.stringify(it));
+
+      var qty = parseFloat(it.QuantityInEntryUnit) || 0;
+      var sloc = String(it.StorageLocation || '').trim();
+      var dc = String(it.DebitCreditCode || '').trim();
+
+      // S = credit/issue (stock leaves SLoc) → negative
+      // H = debit/receipt (stock enters SLoc) → positive
+      var signed = (dc === 'S') ? -qty : +qty;
+
+      docItems.push({
+        item:   it.MaterialDocumentItem,
+        gmt:    it.GoodsMovementType,
+        sloc:   sloc,
+        recvSloc: it.IssuingOrReceivingStorageLoc,
+        qty:    qty,
+        dc:     dc,
+        signed: signed
+      });
+
+      if (!docNet[sloc]) docNet[sloc] = 0;
+      docNet[sloc] += signed;
+      if (!netBySLoc[sloc]) netBySLoc[sloc] = 0;
+      netBySLoc[sloc] += signed;
+    }
+
+    allDocResults[doc] = {
+      items:   docItems,
+      netPW30: docNet['PW30'] || 0,
+      netPW40: docNet['PW40'] || 0
+    };
+
+    Logger.log('[D/C doc ' + doc + ' net] PW30=' + (docNet['PW30'] || 0) +
+      ' PW40=' + (docNet['PW40'] || 0));
+  });
+
+  var combinedPW30 = netBySLoc['PW30'] || 0;
+  var combinedPW40 = netBySLoc['PW40'] || 0;
+  var reconciles   = (combinedPW30 === -2 && combinedPW40 === 2);
+
+  // If S/H mapping is inverted, note it
+  var invertNote = '';
+  if (!reconciles && combinedPW30 === 2 && combinedPW40 === -2) {
+    invertNote = '\n⚠ S/H→sign mapping appears INVERTED (S=+, H=-).\n';
+  }
+
+  var result = {
+    doc842: allDocResults['4900215842'] || {},
+    doc843: allDocResults['4900215843'] || {},
+    combinedNetPW30: combinedPW30,
+    combinedNetPW40: combinedPW40,
+    reconcilesToFiori: reconciles
+  };
+
+  Logger.log('[D/C RESULT]\n' + JSON.stringify(result, null, 2));
+
+  var r842 = result.doc842;
+  var r843 = result.doc843;
+  var alert =
+    'D/C Direction Analysis (READ-ONLY)\n\n' +
+    'Doc 842 (311): netPW30=' + r842.netPW30 + ', netPW40=' + r842.netPW40 + '\n' +
+    'Doc 843 (312): netPW30=' + r843.netPW30 + ', netPW40=' + r843.netPW40 + '\n\n' +
+    'Combined: PW30=' + combinedPW30 + ', PW40=' + combinedPW40 + '\n' +
+    'Reconciles to Fiori (-2/+2): ' + reconciles +
+    invertNote + '\n\n' +
+    'Items per doc:\n';
+
+  ['4900215842', '4900215843'].forEach(function(doc) {
+    var dr = allDocResults[doc] || {};
+    var its = dr.items || [];
+    alert += 'doc ' + doc + ':\n';
+    for (var j = 0; j < its.length; j++) {
+      var it = its[j];
+      alert += '  item' + it.item + ' GMT=' + it.gmt +
+        ' ' + it.sloc + ' D/C=' + it.dc +
+        ' signed=' + it.signed + '\n';
+    }
+  });
+
+  SpreadsheetApp.getUi().alert(alert + '\nFull raw items in Executions log.');
+}
+
 function probeStockQty_(stockRoot, material, plant, sloc, batch) {
   var filterExpr = "Material eq '" + material + "'" +
     " and Plant eq '" + plant + "'" +
