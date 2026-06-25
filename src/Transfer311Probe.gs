@@ -1573,3 +1573,59 @@ function probeStockQty_(stockRoot, material, plant, sloc, batch) {
   }
   return total;
 }
+
+// ============================================================================
+// DIAG — verify PalletMaster.Batch for first-live (READ-ONLY)
+// ============================================================================
+
+function DIAG_checkBatchForFirstLive() {
+  var sh = getSpreadsheet_().getSheetByName('PalletMaster');
+  if (!sh || sh.getLastRow() < 2) { Logger.log('PalletMaster empty'); return; }
+  var data = sh.getDataRange().getValues();
+  var idx = {};
+  data[0].forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  function col(name) { return (name in idx) ? idx[name] : -1; }
+  function val(row, name) { var c = col(name); return c < 0 ? '<NO_COL>' : String(row[c] || '').trim(); }
+
+  Logger.log('PalletMaster columns: ' + Object.keys(idx).join(', '));
+
+  // 1. Target pallet
+  var found = false;
+  for (var r = 1; r < data.length; r++) {
+    if (val(data[r], 'PalletID') === 'PL-1000036121-L01') {
+      found = true;
+      Logger.log('TARGET PL-1000036121-L01: Batch="' + val(data[r], 'Batch') +
+        '" Material="' + val(data[r], 'Material') +
+        '" MO="' + val(data[r], 'ManufacturingOrder') +
+        '" ScanStatus="' + val(data[r], 'ScanStatus') + '"');
+    }
+  }
+  if (!found) Logger.log('TARGET PL-1000036121-L01 NOT FOUND in PalletMaster');
+
+  // 2. All STT1001 CONFIRMED pallets WITH non-empty batch — cap 15
+  Logger.log('STT1001-R0000S3XRX CONFIRMED pallets with non-empty Batch:');
+  var n = 0;
+  for (var r2 = 1; r2 < data.length && n < 15; r2++) {
+    if (val(data[r2], 'Material') === 'STT1001-R0000S3XRX' &&
+        val(data[r2], 'ScanStatus') === 'CONFIRMED' &&
+        val(data[r2], 'Batch') && val(data[r2], 'Batch') !== '<NO_COL>') {
+      Logger.log('  ' + val(data[r2], 'PalletID') + ' batch=' + val(data[r2], 'Batch') +
+        ' MO=' + val(data[r2], 'ManufacturingOrder'));
+      n++;
+    }
+  }
+  if (n === 0) Logger.log('  NONE — all STT1001 pallets have empty Batch (backfill needed)');
+
+  // 3. Any pallet with batch 0000095121 (T2-proven)?
+  Logger.log('Pallets with batch=0000095121:');
+  var m = 0;
+  for (var r3 = 1; r3 < data.length; r3++) {
+    if (val(data[r3], 'Batch') === '0000095121') {
+      Logger.log('  ' + val(data[r3], 'PalletID') + ' mat=' + val(data[r3], 'Material') +
+        ' status=' + val(data[r3], 'ScanStatus'));
+      m++;
+    }
+  }
+  if (m === 0) Logger.log('  NONE found with batch 0000095121');
+}

@@ -86,7 +86,8 @@ function onOpen() {
     .addItem('⚠️ TEST 311 Cancel-by-Ref Proof (WRITES)',    'TEST_transfer311CancelProof')
     .addItem('⚠️ FIX Cancel Dangling Doc (WRITES)',         'TEST_cancelDanglingDoc')
     .addSeparator()
-    .addItem('🧪 T4: Run 311 Retry/DL Test Suite',          'TEST_t311_runAll');
+    .addItem('🧪 T4: Run 311 Retry/DL Test Suite',          'TEST_t311_runAll')
+    .addItem('🔍 DIAG Batch for First-Live (RO)',            'DIAG_checkBatchForFirstLive');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
