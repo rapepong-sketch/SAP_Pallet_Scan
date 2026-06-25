@@ -1,7 +1,8 @@
 /**
  * Transfer311.gs — Phase 4 Steps 2–3: 311 transfer posting (payload builder + live POST)
  * ========================================================================================
- * buildTransfer311Payload_()    — PURE builder: reads TransferLog + PalletMaster, returns object.
+ * buildTransfer311Payload_()    — builder: reads TransferLog + PalletMaster, tier-3 GR doc batch.
+ * resolveBatchFromGrDoc_()      — shared helper: resolves batch from GR material doc items (GET).
  * postTransfer311_()            — gate-driven POST: CSRF, idempotency, DRY_RUN flag, writeback.
  * reverseMaterialDocByRef_()    — Cancel FunctionImport reversal (auto-312, reference-based).
  *
@@ -21,13 +22,132 @@
 function mapUnitToSap_(unit) { return String(unit || '').trim(); }
 
 // ============================================================================
+// Shared batch-resolution helper (READ-ONLY — GET only, no SAP writes)
+// ============================================================================
+
+/**
+ * Resolve the SAP-assigned batch from a GR material document's items.
+ * Filters to GoodsMovementType 101 (receipt leg) matching the given material.
+ * Returns '' on miss, ambiguity, or error — never guesses.
+ *
+ * @param {string} grDoc - MaterialDocument number (e.g. '4900214455')
+ * @param {string} grYear - MaterialDocumentYear (e.g. '2026')
+ * @param {string} material - Material number to match
+ * @param {Object} [opts] - { qty, sloc, fetchFn } for tighter matching / test injection
+ * @return {string} batch string (leading-zero-preserved) or '' on miss/ambiguous
+ * @private
+ */
+function resolveBatchFromGrDoc_(grDoc, grYear, material, opts) {
+  opts = opts || {};
+  if (!grDoc || !grYear) {
+    logEvent('TRANSFER311', 'BATCH_RESOLVE', 'SKIP — grDoc or grYear empty');
+    return '';
+  }
+
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+  var docKey = "MaterialDocument='" + grDoc +
+    "',MaterialDocumentYear='" + grYear + "'";
+  var url = buildSapUrl_(
+    serviceRoot + 'A_MaterialDocumentHeader(' + docKey + ')', {
+    '$expand': 'to_MaterialDocumentItem',
+    '$select': 'MaterialDocument,MaterialDocumentYear,' +
+      'to_MaterialDocumentItem/Batch,' +
+      'to_MaterialDocumentItem/Material,' +
+      'to_MaterialDocumentItem/Plant,' +
+      'to_MaterialDocumentItem/StorageLocation,' +
+      'to_MaterialDocumentItem/GoodsMovementType,' +
+      'to_MaterialDocumentItem/QuantityInEntryUnit',
+    '$format': 'json'
+  });
+
+  Logger.log('FETCH_URL [resolveBatchFromGrDoc_] ' + url);
+
+  var resp;
+  try {
+    if (opts.fetchFn) {
+      resp = opts.fetchFn(url);
+    } else {
+      var creds = getSapCredentials_();
+      resp = UrlFetchApp.fetch(url, {
+        method: 'get',
+        headers: {
+          'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+          'Accept': 'application/json'
+        },
+        muteHttpExceptions: true
+      });
+    }
+  } catch (e) {
+    logEvent('TRANSFER311', 'BATCH_RESOLVE_ERR', 'fetch exception: ' + e.message);
+    return '';
+  }
+
+  var code = resp.getResponseCode();
+  var body = resp.getContentText();
+
+  if (code < 200 || code >= 300) {
+    logEvent('TRANSFER311', 'BATCH_RESOLVE_ERR',
+      'HTTP ' + code + ' grDoc=' + grDoc + ' ' + body.slice(0, 300));
+    return '';
+  }
+
+  var parsed = JSON.parse(body);
+  var d = parsed.d || parsed;
+  var items = (d.to_MaterialDocumentItem &&
+               d.to_MaterialDocumentItem.results) || [];
+
+  var candidates = items.filter(function(it) {
+    return String(it.Material || '').trim() === material &&
+           String(it.GoodsMovementType || '').trim() === '101';
+  });
+
+  if (candidates.length === 0) {
+    logEvent('TRANSFER311', 'BATCH_RESOLVE', 'NO_MATCH grDoc=' + grDoc +
+      ' material=' + material + ' (0 items with GMT=101)');
+    return '';
+  }
+
+  if (opts.sloc) {
+    var slocMatch = candidates.filter(function(it) {
+      return String(it.StorageLocation || '').trim() === opts.sloc;
+    });
+    if (slocMatch.length > 0) candidates = slocMatch;
+  }
+
+  var distinctBatches = {};
+  candidates.forEach(function(it) {
+    var b = String(it.Batch || '').trim();
+    if (b) distinctBatches[b] = true;
+  });
+  var batchKeys = Object.keys(distinctBatches);
+
+  if (batchKeys.length === 0) {
+    logEvent('TRANSFER311', 'BATCH_RESOLVE', 'EMPTY_BATCH grDoc=' + grDoc +
+      ' material=' + material + ' — items matched but Batch field blank');
+    return '';
+  }
+
+  if (batchKeys.length > 1) {
+    logEvent('TRANSFER311', 'BATCH_RESOLVE_AMBIGUOUS',
+      'grDoc=' + grDoc + ' material=' + material +
+      ' candidates=[' + batchKeys.join(',') + '] — returning empty (no guess)');
+    return '';
+  }
+
+  var resolved = batchKeys[0];
+  logEvent('TRANSFER311', 'BATCH_RESOLVED',
+    'grDoc=' + grDoc + ' material=' + material + ' → batch=' + resolved);
+  return resolved;
+}
+
+// ============================================================================
 // Pure payload builder
 // ============================================================================
 
 /**
  * Build an OData V2 deep-insert payload for a 311 transfer posting.
- * Reads TransferLog row by TxnID and resolves batch from PalletMaster.
- * Pure function — no sheet writes, no SAP calls.
+ * Batch resolution: tier-1 TransferLog.Batch → tier-2 PalletMaster.Batch →
+ * tier-3 resolveBatchFromGrDoc_ (GR doc item batch via SAP GET).
  *
  * @param {string} txnId - TxnID from TransferLog
  * @param {string} destSloc - destination StorageLocation (must be in CFG.DEST_SLOCS)
@@ -79,8 +199,10 @@ function buildTransfer311Payload_(txnId, destSloc) {
   var sourceSLoc = String(txnRow['SourceSLoc'] || '').trim();
   var parentPalletId = String(txnRow['ParentPalletID'] || '').trim();
 
-  // ---- Resolve real SAP Batch: TransferLog first, PalletMaster fallback ----
-  var batch = String(txnRow['Batch'] || '').trim();
+  // ---- Resolve real SAP Batch: tier1 TransferLog, tier2 PalletMaster, tier3 GR doc ----
+  var batch = String(txnRow['Batch'] || '').trim();                    // tier-1
+  var grDoc = '';
+  var grYear = '';
   if (!batch && parentPalletId) {
     var pmSh = ss.getSheetByName(PM_SHEET);
     if (pmSh && pmSh.getLastRow() >= 2) {
@@ -88,15 +210,37 @@ function buildTransfer311Payload_(txnId, destSloc) {
       var pmIdx = tlHeaderIdx_(pmData[0]);
       var pmPidCol = pmIdx['PalletID'];
       var pmBatchCol = pmIdx['Batch'];
-      if (pmPidCol !== undefined && pmBatchCol !== undefined) {
+      var pmGrDocCol = pmIdx['GRMaterialDocument'];
+      var pmGrYearCol = pmIdx['GRMaterialDocumentYear'];
+      if (pmPidCol !== undefined) {
         for (var p = 1; p < pmData.length; p++) {
           if (String(pmData[p][pmPidCol] || '').trim() === parentPalletId) {
-            batch = String(pmData[p][pmBatchCol] || '').trim();
+            if (pmBatchCol !== undefined) {
+              batch = String(pmData[p][pmBatchCol] || '').trim();      // tier-2
+            }
+            if (pmGrDocCol !== undefined) {
+              grDoc = String(pmData[p][pmGrDocCol] || '').trim();
+            }
+            if (pmGrYearCol !== undefined) {
+              grYear = String(pmData[p][pmGrYearCol] || '').trim();
+            }
             break;
           }
         }
       }
     }
+  }
+
+  // tier-3: resolve batch from GR material document items
+  if (!batch && grDoc && grYear) {
+    batch = resolveBatchFromGrDoc_(grDoc, grYear, material, { sloc: sourceSLoc });
+  }
+
+  // loud log when all tiers fail — batch-less 311 will likely fail M7 018
+  if (!batch) {
+    logEvent('TRANSFER311', 'BATCH_UNRESOLVED',
+      'pallet=' + parentPalletId + ' grDoc=' + grDoc +
+      ' — 311 will likely fail M7 018');
   }
 
   // ---- Validate ----
@@ -1674,4 +1818,226 @@ function TEST_transfer311ReadbackStamp() {
 
   logEvent('TEST_T311_RB', 'Transfer311', pass ? 'PASS' : 'FAIL', elapsed,
     results.length + ' assertions');
+}
+
+// ============================================================================
+// Tests — resolveBatchFromGrDoc_ + tier-3 wiring (injectable, no real SAP)
+// ============================================================================
+
+function TEST_resolveBatch_singleItem() {
+  var fn = 'TEST_resolveBatch_singleItem';
+  var fakeFetch = function() {
+    return {
+      getResponseCode: function() { return 200; },
+      getContentText: function() {
+        return JSON.stringify({ d: {
+          to_MaterialDocumentItem: { results: [
+            { Material: 'MAT001', GoodsMovementType: '101', Batch: '0000094815',
+              Plant: '1100', StorageLocation: 'PW30', QuantityInEntryUnit: '10' }
+          ] }
+        } });
+      }
+    };
+  };
+
+  var result = resolveBatchFromGrDoc_('4900214455', '2026', 'MAT001', { fetchFn: fakeFetch });
+  var pass = result === '0000094815';
+  var detail = 'result=' + result + (pass ? ' OK' : ' EXPECTED 0000094815');
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+}
+
+function TEST_resolveBatch_ambiguous() {
+  var fn = 'TEST_resolveBatch_ambiguous';
+  var fakeFetch = function() {
+    return {
+      getResponseCode: function() { return 200; },
+      getContentText: function() {
+        return JSON.stringify({ d: {
+          to_MaterialDocumentItem: { results: [
+            { Material: 'MAT001', GoodsMovementType: '101', Batch: '0000094815',
+              Plant: '1100', StorageLocation: 'PW30', QuantityInEntryUnit: '5' },
+            { Material: 'MAT001', GoodsMovementType: '101', Batch: '0000099999',
+              Plant: '1100', StorageLocation: 'PW30', QuantityInEntryUnit: '5' }
+          ] }
+        } });
+      }
+    };
+  };
+
+  var result = resolveBatchFromGrDoc_('4900214455', '2026', 'MAT001', { fetchFn: fakeFetch });
+  var pass = result === '';
+  var detail = 'result="' + result + '"' + (pass ? ' (empty=OK, no guess)' : ' EXPECTED empty');
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+}
+
+function TEST_resolveBatch_noGrDoc() {
+  var fn = 'TEST_resolveBatch_noGrDoc';
+  var fetchCalled = false;
+  var fakeFetch = function() { fetchCalled = true; return { getResponseCode: function() { return 200; }, getContentText: function() { return '{}'; } }; };
+
+  var result = resolveBatchFromGrDoc_('', '2026', 'MAT001', { fetchFn: fakeFetch });
+  var pass = result === '' && !fetchCalled;
+  var detail = 'result="' + result + '" fetchCalled=' + fetchCalled +
+    (pass ? ' OK' : ' EXPECTED empty+noFetch');
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+}
+
+function TEST_resolveBatch_preservesLeadingZeros() {
+  var fn = 'TEST_resolveBatch_preservesLeadingZeros';
+  var fakeFetch = function() {
+    return {
+      getResponseCode: function() { return 200; },
+      getContentText: function() {
+        return JSON.stringify({ d: {
+          to_MaterialDocumentItem: { results: [
+            { Material: 'MAT001', GoodsMovementType: '101', Batch: '0000094815',
+              Plant: '1100', StorageLocation: 'PW30', QuantityInEntryUnit: '10' }
+          ] }
+        } });
+      }
+    };
+  };
+
+  var result = resolveBatchFromGrDoc_('4900214455', '2026', 'MAT001', { fetchFn: fakeFetch });
+  var pass = result === '0000094815' && typeof result === 'string';
+  var detail = 'result=' + result + ' type=' + typeof result +
+    (pass ? ' (string with leading zeros OK)' : ' EXPECTED string "0000094815"');
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+}
+
+function TEST_buildPayload_tier3() {
+  var fn = 'TEST_buildPayload_tier3';
+  var TEST_TXNID = 'ZZTEST-TIER3-001';
+
+  // Seed a TransferLog row with empty Batch + a ParentPalletID
+  var ss   = getSpreadsheet_();
+  var tlSh = ss.getSheetByName(TL_SHEET);
+  if (!tlSh) throw new Error(fn + ': TransferLog sheet missing');
+  var tlHdr = tlSh.getRange(1, 1, 1, tlSh.getLastColumn()).getValues()[0];
+  var tlIdx = {};
+  tlHdr.forEach(function(h, i) { tlIdx[String(h).trim()] = i; });
+
+  var seedRow = new Array(tlHdr.length).fill('');
+  seedRow[tlIdx['TxnID']]          = TEST_TXNID;
+  seedRow[tlIdx['TxnType']]        = 'SPLIT_ISSUE';
+  seedRow[tlIdx['Status']]         = 'PENDING';
+  seedRow[tlIdx['Material']]       = 'ZZTEST-MAT-T3';
+  seedRow[tlIdx['IssueQty']]       = 1;
+  seedRow[tlIdx['Unit']]           = 'PC';
+  seedRow[tlIdx['SourceSLoc']]     = 'PW30';
+  seedRow[tlIdx['Batch']]          = '';
+  seedRow[tlIdx['ParentPalletID']] = 'ZZTEST-PARENT-T3';
+  seedRow[tlIdx['CreatedAt']]      = new Date().toISOString();
+  seedRow[tlIdx['IdempotencyKey']] = TEST_TXNID;
+  tlSh.appendRow(seedRow);
+
+  // Seed a PalletMaster row with GRMaterialDocument but empty Batch
+  var pmSh = ss.getSheetByName(PM_SHEET);
+  if (!pmSh) throw new Error(fn + ': PalletMaster sheet missing');
+  var pmHdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  pmHdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var pmSeedRow = new Array(pmHdr.length).fill('');
+  pmSeedRow[pmIdx['PalletID']]                 = 'ZZTEST-PARENT-T3';
+  pmSeedRow[pmIdx['Batch']]                    = '';
+  pmSeedRow[pmIdx['GRMaterialDocument']]       = 'FAKE_GR_001';
+  pmSeedRow[pmIdx['GRMaterialDocumentYear']]   = '2026';
+  pmSeedRow[pmIdx['Material']]                 = 'ZZTEST-MAT-T3';
+  pmSh.appendRow(pmSeedRow);
+  SpreadsheetApp.flush();
+
+  // Monkey-patch resolveBatchFromGrDoc_ to return known batch
+  var origResolve = resolveBatchFromGrDoc_;
+  var pass = true;
+  var detail = '';
+
+  try {
+    resolveBatchFromGrDoc_ = function(grDoc, grYear, mat, opts) {
+      if (grDoc === 'FAKE_GR_001' && grYear === '2026' && mat === 'ZZTEST-MAT-T3') {
+        return '0000094815';
+      }
+      return '';
+    };
+
+    var payload = buildTransfer311Payload_(TEST_TXNID, CFG.DEST_SLOCS[0]);
+    var items = payload.to_MaterialDocumentItem || [];
+    var batchInPayload = items.length > 0 ? (items[0].Batch || '') : '';
+
+    if (batchInPayload !== '0000094815') {
+      pass = false;
+      detail += 'Batch=' + batchInPayload + '(expected 0000094815) ';
+    } else {
+      detail += 'tier3 batch=0000094815 in payload OK ';
+    }
+  } catch (e) {
+    pass = false;
+    detail += 'EXCEPTION: ' + e.message;
+  } finally {
+    resolveBatchFromGrDoc_ = origResolve;
+
+    // Cleanup TransferLog
+    try {
+      var cleanTl = tlSh.getDataRange().getValues();
+      for (var d = cleanTl.length - 1; d >= 1; d--) {
+        if (String(cleanTl[d][tlIdx['TxnID']] || '').trim() === TEST_TXNID) {
+          tlSh.deleteRow(d + 1);
+        }
+      }
+    } catch (ce) { Logger.log(fn + ' TL cleanup: ' + ce.message); }
+
+    // Cleanup PalletMaster
+    try {
+      var cleanPm = pmSh.getDataRange().getValues();
+      for (var d2 = cleanPm.length - 1; d2 >= 1; d2--) {
+        if (String(cleanPm[d2][pmIdx['PalletID']] || '').trim() === 'ZZTEST-PARENT-T3') {
+          pmSh.deleteRow(d2 + 1);
+        }
+      }
+    } catch (ce2) { Logger.log(fn + ' PM cleanup: ' + ce2.message); }
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+}
+
+function TEST_resolveBatch_runAll() {
+  var fn = 'TEST_resolveBatch_runAll';
+  var t0 = Date.now();
+  var tests = [
+    { name: 'singleItem',            run: TEST_resolveBatch_singleItem },
+    { name: 'ambiguous',             run: TEST_resolveBatch_ambiguous },
+    { name: 'noGrDoc',               run: TEST_resolveBatch_noGrDoc },
+    { name: 'preservesLeadingZeros', run: TEST_resolveBatch_preservesLeadingZeros },
+    { name: 'buildPayload_tier3',    run: TEST_buildPayload_tier3 }
+  ];
+
+  var results = [];
+  tests.forEach(function(t) {
+    try { t.run(); results.push({ name: t.name, ok: true }); }
+    catch (e) { results.push({ name: t.name, ok: false, error: e.message }); }
+  });
+
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  var allPass = results.every(function(r) { return r.ok; });
+  Logger.log(fn + ': ' + (allPass ? 'ALL PASS' : 'SOME FAILED') +
+    ' (' + (Date.now() - t0) + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name + (r.error ? ' — ' + r.error : ''));
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent(fn, 'Transfer311', allPass ? 'PASS' : 'FAIL', Date.now() - t0,
+    results.length + ' tests');
+
+  SpreadsheetApp.getUi().alert(
+    'Batch Resolution Test Suite: ' + (allPass ? 'ALL PASS ✅' : 'SOME FAILED ❌') + '\n\n' +
+    results.map(function(r) {
+      return (r.ok ? '✅ ' : '❌ ') + r.name + (r.error ? ' — ' + r.error : '');
+    }).join('\n') + '\n\nDetails in Executions log.');
 }

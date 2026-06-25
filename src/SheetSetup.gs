@@ -88,7 +88,9 @@ function onOpen() {
     .addSeparator()
     .addItem('🧪 T4: Run 311 Retry/DL Test Suite',          'TEST_t311_runAll')
     .addItem('🔍 DIAG Batch for First-Live (RO)',            'DIAG_checkBatchForFirstLive')
-    .addItem('🔍 DIAG GR-Doc Batch Proof (RO)',              'DIAG_grDocBatchProof');
+    .addItem('🔍 DIAG GR-Doc Batch Proof (RO)',              'DIAG_grDocBatchProof')
+    .addSeparator()
+    .addItem('🧪 Batch Resolution Test Suite',               'TEST_resolveBatch_runAll');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
