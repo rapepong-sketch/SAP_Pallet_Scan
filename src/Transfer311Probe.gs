@@ -292,3 +292,310 @@ function padRight_(str, len) {
   while (str.length < len) str += ' ';
   return str;
 }
+
+// ============================================================================
+// T2/T3 — Creatability proof: real 311 POST + token readback + 312 reverse
+// ============================================================================
+
+/**
+ * ⚠️ WRITES TO SAP. Posts a real 311 movement (1 PC), reads back to prove
+ * MaterialDocumentHeaderText token persistence, then immediately reverses
+ * with 312 to restore net-zero stock. Must be run manually by Kor via menu.
+ *
+ * Does NOT use TransferLog or PalletMaster — all constants are hard-coded
+ * for this one-time supervised proof.
+ */
+function TEST_transfer311CreatabilityProof() {
+  var fn = 'TEST_transfer311CreatabilityProof';
+
+  // ---- Prerequisite guard ----
+  var flag = PropertiesService.getScriptProperties()
+    .getProperty('FEATURE_TRANSFER311') || 'OFF';
+  if (flag === 'OFF') {
+    SpreadsheetApp.getUi().alert(
+      '⛔ FEATURE_TRANSFER311 = OFF\n\n' +
+      'Set to DRY_RUN or LIVE in Script Properties before running this proof.');
+    return;
+  }
+
+  // ---- Hard-coded test constants ----
+  var M = {
+    material: 'STT1001-R0000S3XRX',
+    plant:    '1100',
+    fromSLoc: 'PW30',
+    toSLoc:   'PW40',
+    batch:    '0000095121',
+    qty:      '1',
+    uom:      'PC'
+  };
+  var txnId = 'ZZTEST-' + Utilities.getUuid().replace(/-/g, '').slice(0, 17);
+  var token = String(txnId).replace(/-/g, '').slice(0, 24);
+  Logger.log('[' + fn + '] txnId=' + txnId + ' token=' + token +
+    ' tokenLen=' + token.length);
+
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+  var stockRoot   = CFG.SAP_BASE_URL + MATERIAL_STOCK_SRV_PROBE_;
+  var result = {
+    txnId: txnId, token: token,
+    post311: {}, readbackFound: null, tokenMatch: null,
+    itemCount: null, tokenLevel: null,
+    reverse312: {}, qtyBefore: null, qtyAfter: null, netZero: null
+  };
+
+  try {
+    // ==== STEP 1: Read baseline stock (PW30) ====
+    result.qtyBefore = probeStockQty_(stockRoot, M.material, M.plant,
+      M.fromSLoc, M.batch);
+    Logger.log('[STEP 1] qtyBefore (PW30) = ' + result.qtyBefore);
+
+    // ==== STEP 2: Build 311 payload ====
+    var now = new Date();
+    var bangkokMs = now.getTime() +
+      (now.getTimezoneOffset() * 60000) + (7 * 3600000);
+    var bangkokMidnight = new Date(bangkokMs);
+    bangkokMidnight.setHours(0, 0, 0, 0);
+    var odataDate = '/Date(' + bangkokMidnight.getTime() + ')/';
+
+    var payload311 = {
+      GoodsMovementCode:          '04',
+      PostingDate:                odataDate,
+      DocumentDate:               odataDate,
+      MaterialDocumentHeaderText: token,
+      to_MaterialDocumentItem: [{
+        Material:                     M.material,
+        Plant:                        M.plant,
+        StorageLocation:              M.fromSLoc,
+        IssuingOrReceivingStorageLoc: M.toSLoc,
+        GoodsMovementType:            '311',
+        QuantityInEntryUnit:          M.qty,
+        EntryUnit:                    M.uom,
+        Batch:                        M.batch
+      }]
+    };
+    Logger.log('[STEP 2] 311 payload:\n' + JSON.stringify(payload311, null, 2));
+
+    // ==== STEP 3: CSRF + POST 311 ====
+    var session = getCsrfSession_(serviceRoot);
+    var creds   = getSapCredentials_();
+    var postUrl = buildSapUrl_(serviceRoot + 'A_MaterialDocumentHeader');
+
+    Logger.log('FETCH_URL [STEP 3 POST 311] ' + postUrl);
+    var resp311 = UrlFetchApp.fetch(postUrl, {
+      method: 'post',
+      headers: {
+        'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+        'X-CSRF-Token':  session.token,
+        'Cookie':        session.cookies,
+        'Content-Type':  'application/json',
+        'Accept':        'application/json'
+      },
+      payload: JSON.stringify(payload311),
+      muteHttpExceptions: true
+    });
+
+    var code311 = resp311.getResponseCode();
+    var body311 = resp311.getContentText();
+    Logger.log('[STEP 3] HTTP ' + code311 + ' :: ' + body311.slice(0, 800));
+
+    result.post311.http = code311;
+    if (code311 !== 201 && code311 !== 200) {
+      result.post311.error = body311.slice(0, 600);
+      logEvent(fn, 'POST_311', 'ERROR', 0, 'HTTP ' + code311);
+      SpreadsheetApp.getUi().alert(
+        '❌ 311 POST FAILED — HTTP ' + code311 + '\n\n' +
+        body311.slice(0, 800) + '\n\nNothing to reverse.');
+      return;
+    }
+
+    var parsed311 = JSON.parse(body311);
+    var d311      = parsed311.d || parsed311;
+    result.post311.doc  = d311.MaterialDocument || '';
+    result.post311.year = d311.MaterialDocumentYear || '';
+    Logger.log('[STEP 3] 311 doc=' + result.post311.doc +
+      ' year=' + result.post311.year);
+    logEvent(fn, 'POST_311', 'OK', 0,
+      'doc=' + result.post311.doc + '/' + result.post311.year);
+
+    // ==== STEP 4: T2 readback — token-only filter ====
+    var rbUrl = buildSapUrl_(serviceRoot + 'A_MaterialDocumentHeader', {
+      '$filter': "MaterialDocumentHeaderText eq '" + token + "'",
+      '$select': 'MaterialDocument,MaterialDocumentYear,MaterialDocumentHeaderText',
+      '$top':    '5',
+      '$format': 'json'
+    });
+    Logger.log('FETCH_URL [STEP 4 readback] ' + rbUrl);
+    var rbResp = probeRawGet_(rbUrl);
+    Logger.log('[STEP 4] HTTP ' + rbResp.code + ' :: ' + rbResp.text.slice(0, 600));
+
+    if (rbResp.code >= 200 && rbResp.code < 300) {
+      var rbParsed  = JSON.parse(rbResp.text);
+      var rbResults = (rbParsed.d && rbParsed.d.results) || [];
+      result.readbackFound = rbResults.length > 0;
+      if (rbResults.length > 0) {
+        var rbText = String(rbResults[0].MaterialDocumentHeaderText || '').trim();
+        result.tokenMatch = (rbText === token);
+        Logger.log('[STEP 4] readback headerText="' + rbText +
+          '" tokenMatch=' + result.tokenMatch);
+      }
+    } else {
+      result.readbackFound = false;
+      Logger.log('[STEP 4] readback failed HTTP ' + rbResp.code);
+    }
+
+    // ==== STEP 5: T3 granularity — expand items ====
+    var docKey = "MaterialDocument='" + result.post311.doc +
+      "',MaterialDocumentYear='" + result.post311.year + "'";
+    var granUrl = buildSapUrl_(
+      serviceRoot + 'A_MaterialDocumentHeader(' + docKey + ')', {
+      '$expand': 'to_MaterialDocumentItem',
+      '$format': 'json'
+    });
+    Logger.log('FETCH_URL [STEP 5 granularity] ' + granUrl);
+    var granResp = probeRawGet_(granUrl);
+    Logger.log('[STEP 5] HTTP ' + granResp.code + ' :: ' +
+      granResp.text.slice(0, 800));
+
+    if (granResp.code >= 200 && granResp.code < 300) {
+      var granParsed = JSON.parse(granResp.text);
+      var granD      = granParsed.d || granParsed;
+      var items      = (granD.to_MaterialDocumentItem &&
+                        granD.to_MaterialDocumentItem.results) || [];
+      result.itemCount  = items.length;
+      result.tokenLevel = 'header-only';
+      Logger.log('[STEP 5] itemCount=' + items.length +
+        ' headerText="' + (granD.MaterialDocumentHeaderText || '') + '"');
+    }
+
+    // ==== STEP 6: 312 reverse ====
+    var payload312 = {
+      GoodsMovementCode:          '04',
+      PostingDate:                odataDate,
+      DocumentDate:               odataDate,
+      MaterialDocumentHeaderText: 'REV-' + token.slice(0, 20),
+      to_MaterialDocumentItem: [{
+        Material:                     M.material,
+        Plant:                        M.plant,
+        StorageLocation:              M.toSLoc,
+        IssuingOrReceivingStorageLoc: M.fromSLoc,
+        GoodsMovementType:            '312',
+        QuantityInEntryUnit:          M.qty,
+        EntryUnit:                    M.uom,
+        Batch:                        M.batch
+      }]
+    };
+    Logger.log('[STEP 6] 312 payload:\n' + JSON.stringify(payload312, null, 2));
+
+    // Fresh CSRF for the reverse POST
+    var session2 = getCsrfSession_(serviceRoot);
+    Logger.log('FETCH_URL [STEP 6 POST 312] ' + postUrl);
+    var resp312 = UrlFetchApp.fetch(postUrl, {
+      method: 'post',
+      headers: {
+        'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+        'X-CSRF-Token':  session2.token,
+        'Cookie':        session2.cookies,
+        'Content-Type':  'application/json',
+        'Accept':        'application/json'
+      },
+      payload: JSON.stringify(payload312),
+      muteHttpExceptions: true
+    });
+
+    var code312 = resp312.getResponseCode();
+    var body312 = resp312.getContentText();
+    Logger.log('[STEP 6] HTTP ' + code312 + ' :: ' + body312.slice(0, 800));
+
+    result.reverse312.http = code312;
+    if (code312 !== 201 && code312 !== 200) {
+      result.reverse312.error = body312.slice(0, 600);
+      logEvent(fn, 'POST_312_REVERSE', 'ERROR', 0, 'HTTP ' + code312);
+      SpreadsheetApp.getUi().alert(
+        '🚨 312 REVERSE FAILED — HTTP ' + code312 + '\n\n' +
+        '⚠️ DANGLING 311 DOCUMENT: ' + result.post311.doc + '/' +
+        result.post311.year + '\n\n' +
+        'Kor: reverse manually in SAP GUI → MIGO → Movement Type 312,\n' +
+        'reference document ' + result.post311.doc + ' year ' +
+        result.post311.year + '.\n\n' +
+        'Response body:\n' + body312.slice(0, 600));
+      Logger.log('[FINAL RESULT]\n' + JSON.stringify(result, null, 2));
+      logEvent(fn, 'RESULT', 'REVERSE_FAILED', 0, JSON.stringify(result));
+      return;
+    }
+
+    var parsed312 = JSON.parse(body312);
+    var d312      = parsed312.d || parsed312;
+    result.reverse312.doc  = d312.MaterialDocument || '';
+    result.reverse312.year = d312.MaterialDocumentYear || '';
+    Logger.log('[STEP 6] 312 doc=' + result.reverse312.doc +
+      ' year=' + result.reverse312.year);
+    logEvent(fn, 'POST_312_REVERSE', 'OK', 0,
+      'doc=' + result.reverse312.doc + '/' + result.reverse312.year);
+
+    // ==== STEP 7: Read stock again (PW30) ====
+    result.qtyAfter = probeStockQty_(stockRoot, M.material, M.plant,
+      M.fromSLoc, M.batch);
+    result.netZero = (result.qtyAfter === result.qtyBefore);
+    Logger.log('[STEP 7] qtyAfter=' + result.qtyAfter +
+      ' netZero=' + result.netZero);
+
+    // ==== STEP 8: Summary ====
+    Logger.log('[FINAL RESULT]\n' + JSON.stringify(result, null, 2));
+    logEvent(fn, 'RESULT', result.netZero ? 'PASS' : 'WARN', 0,
+      JSON.stringify(result));
+
+    var summary =
+      '311 POST: ' + result.post311.doc + '/' + result.post311.year +
+        ' (HTTP ' + result.post311.http + ')\n' +
+      'Token readback: found=' + result.readbackFound +
+        ' match=' + result.tokenMatch + '\n' +
+      'Granularity: ' + result.itemCount + ' item(s), level=' +
+        result.tokenLevel + '\n' +
+      '312 REVERSE: ' + result.reverse312.doc + '/' +
+        result.reverse312.year + ' (HTTP ' + result.reverse312.http + ')\n' +
+      'Stock PW30: before=' + result.qtyBefore +
+        ' after=' + result.qtyAfter +
+        ' netZero=' + result.netZero;
+
+    SpreadsheetApp.getUi().alert(
+      'Transfer311 Creatability Proof\n\n' + summary +
+      '\n\nFull details in Executions log.');
+
+  } catch (e) {
+    Logger.log('[' + fn + '] EXCEPTION: ' + e.message + '\n' + e.stack);
+    logEvent(fn, 'EXCEPTION', e.message, 0, JSON.stringify(result));
+    SpreadsheetApp.getUi().alert('❌ ' + fn + ' EXCEPTION:\n\n' + e.message +
+      '\n\nCheck Executions log. If a 311 was posted, verify stock manually.');
+  }
+}
+
+/**
+ * Read total warehouse stock for a specific Material+Plant+SLoc+Batch.
+ * Returns the sum of MatlWrhsStkQtyInMatlBaseUnit across all StockType rows.
+ * @private
+ */
+function probeStockQty_(stockRoot, material, plant, sloc, batch) {
+  var filterExpr = "Material eq '" + material + "'" +
+    " and Plant eq '" + plant + "'" +
+    " and StorageLocation eq '" + sloc + "'" +
+    " and Batch eq '" + batch + "'";
+  var url = buildSapUrl_(stockRoot + 'A_MatlStkInAcctMod', {
+    '$filter': filterExpr,
+    '$select': 'MatlWrhsStkQtyInMatlBaseUnit,MaterialBaseUnit',
+    '$format': 'json'
+  });
+  Logger.log('FETCH_URL [stock read] ' + url);
+  var r = probeRawGet_(url);
+  Logger.log('[stock read] HTTP ' + r.code + ' :: ' + r.text.slice(0, 400));
+
+  if (r.code >= 400) {
+    Logger.log('[stock read] WARN: HTTP ' + r.code + ' — returning 0');
+    return 0;
+  }
+  var parsed  = JSON.parse(r.text);
+  var results = (parsed.d && parsed.d.results) || [];
+  var total   = 0;
+  for (var i = 0; i < results.length; i++) {
+    total += parseFloat(results[i].MatlWrhsStkQtyInMatlBaseUnit) || 0;
+  }
+  return total;
+}

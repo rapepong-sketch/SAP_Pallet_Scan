@@ -77,7 +77,8 @@ function onOpen() {
     .addItem('🧪 [Test] Yield/QC Report',                 'TEST_yieldQcReport_')
     .addSeparator()
     .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter')
-    .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates');
+    .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates')
+    .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
