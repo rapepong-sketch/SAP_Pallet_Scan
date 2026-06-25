@@ -1,8 +1,13 @@
 /**
  * Transfer311.gs — Phase 4 Steps 2–3: 311 transfer posting (payload builder + live POST)
  * ========================================================================================
- * buildTransfer311Payload_() — PURE builder: reads TransferLog + PalletMaster, returns object.
- * postTransfer311_()         — gate-driven POST: CSRF, idempotency, DRY_RUN flag, writeback.
+ * buildTransfer311Payload_()    — PURE builder: reads TransferLog + PalletMaster, returns object.
+ * postTransfer311_()            — gate-driven POST: CSRF, idempotency, DRY_RUN flag, writeback.
+ * reverseMaterialDocByRef_()    — Cancel FunctionImport reversal (auto-312, reference-based).
+ *
+ * Reversal: hand-built 312 payloads do NOT work on this tenant (movement 312 re-posts the
+ * same direction instead of reversing — proven 2026-06-25 doc 4900215843). Use the Cancel
+ * FunctionImport via reverseMaterialDocByRef_ exclusively.
  *
  * Reuses: CFG (Config.gs), getSpreadsheet_ (SheetSetup.gs),
  *         logEvent (SapClient.gs), TL_SHEET / TL_HEADERS / tlHeaderIdx_ (TransferLog.gs),
