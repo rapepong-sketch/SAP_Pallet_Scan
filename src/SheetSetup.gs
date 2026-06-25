@@ -78,7 +78,8 @@ function onOpen() {
     .addSeparator()
     .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter')
     .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates')
-    .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof');
+    .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof')
+    .addItem('🔍 Verify 311 Stock Settle (RO)',              'PROBE_verify311StockSettle');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')

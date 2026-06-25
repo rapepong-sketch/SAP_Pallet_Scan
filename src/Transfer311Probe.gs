@@ -573,6 +573,94 @@ function TEST_transfer311CreatabilityProof() {
  * Returns the sum of MatlWrhsStkQtyInMatlBaseUnit across all StockType rows.
  * @private
  */
+// ============================================================================
+// T2 post-verify — re-read stock + doc items to confirm net-zero settle
+// ============================================================================
+
+function PROBE_verify311StockSettle() {
+  var M = { material: 'STT1001-R0000S3XRX', plant: '1100', batch: '0000095121' };
+  var docs = ['4900215842', '4900215843'];
+  var slocs = ['PW30', 'PW40'];
+  var stockRoot   = CFG.SAP_BASE_URL + MATERIAL_STOCK_SRV_PROBE_;
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+
+  var stockResults = {};
+  var docSummaries = [];
+
+  // ---- Read stock for both SLocs ----
+  slocs.forEach(function(sloc) {
+    var qty = probeStockQty_(stockRoot, M.material, M.plant, sloc, M.batch);
+    stockResults[sloc] = qty;
+    Logger.log('[settle] ' + sloc + ' qty = ' + qty);
+  });
+
+  // ---- Read both material docs with item expansion ----
+  docs.forEach(function(doc) {
+    var docKey = "MaterialDocument='" + doc + "',MaterialDocumentYear='2026'";
+    var url = buildSapUrl_(
+      serviceRoot + 'A_MaterialDocumentHeader(' + docKey + ')', {
+      '$expand': 'to_MaterialDocumentItem',
+      '$format': 'json'
+    });
+    Logger.log('FETCH_URL [settle doc ' + doc + '] ' + url);
+    var r = probeRawGet_(url);
+    Logger.log('[settle doc ' + doc + '] HTTP ' + r.code + ' :: ' +
+      r.text.slice(0, 1000));
+
+    if (r.code >= 400) {
+      docSummaries.push('doc ' + doc + ': HTTP ' + r.code + ' (fetch failed)');
+      return;
+    }
+
+    var parsed = JSON.parse(r.text);
+    var d = parsed.d || parsed;
+    var items = (d.to_MaterialDocumentItem &&
+                 d.to_MaterialDocumentItem.results) || [];
+
+    var lines = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var line = (it.GoodsMovementType || '?') + ' ' +
+        (it.StorageLocation || '?') + '→' +
+        (it.IssuingOrReceivingStorageLoc || '?') + ' ' +
+        (it.QuantityInEntryUnit || '0') + ' ' +
+        (it.EntryUnit || it.MaterialBaseUnit || '?');
+      if (it.Batch) line += ' batch=' + it.Batch;
+      if (it.DebitCreditCode) line += ' D/C=' + it.DebitCreditCode;
+      lines.push(line);
+      Logger.log('[settle doc ' + doc + ' item ' + (i + 1) + '] ' +
+        'GMT=' + it.GoodsMovementType +
+        ' SLoc=' + it.StorageLocation +
+        ' IssuingRecv=' + it.IssuingOrReceivingStorageLoc +
+        ' Qty=' + it.QuantityInEntryUnit +
+        ' Unit=' + it.EntryUnit +
+        ' Mat=' + it.Material +
+        ' Batch=' + it.Batch +
+        ' DebitCredit=' + (it.DebitCreditCode || 'n/a'));
+    }
+    docSummaries.push('doc ' + doc + ': ' +
+      (lines.length > 0 ? lines.join('; ') : 'no items'));
+  });
+
+  // ---- Summary ----
+  var pw30 = stockResults['PW30'];
+  var pw40 = stockResults['PW40'];
+  var sum  = pw30 + pw40;
+
+  var alert =
+    'Stock Settle Verification (READ-ONLY)\n\n' +
+    'PW30: ' + pw30 + '\n' +
+    'PW40: ' + pw40 + '\n' +
+    'Sum:  ' + sum + '\n\n' +
+    docSummaries.join('\n') + '\n\n' +
+    'Baseline was PW30=3418, PW40=8000, sum=11418.\n' +
+    'Current sum ' + (sum === 11418 ? '=== baseline → balanced ✅' :
+      '!== baseline → check details ⚠️');
+
+  Logger.log('[settle summary]\n' + alert);
+  SpreadsheetApp.getUi().alert(alert);
+}
+
 function probeStockQty_(stockRoot, material, plant, sloc, batch) {
   var filterExpr = "Material eq '" + material + "'" +
     " and Plant eq '" + plant + "'" +
