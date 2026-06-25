@@ -1629,3 +1629,133 @@ function DIAG_checkBatchForFirstLive() {
   }
   if (m === 0) Logger.log('  NONE found with batch 0000095121');
 }
+
+// ============================================================================
+// DIAG — prove batch is recoverable from GRMaterialDocument (READ-ONLY)
+// ============================================================================
+
+/**
+ * For PL-1000036121-L01 (and a few other CONFIRMED STT1001 pallets):
+ *   1. Read GRMaterialDocument + GRMaterialDocumentYear from PalletMaster
+ *   2. GET that material doc from SAP with $expand=to_MaterialDocumentItem
+ *   3. Log the item-level Batch field — proving the batch IS recoverable
+ * READ-ONLY. No writes. No POST.
+ */
+function DIAG_grDocBatchProof() {
+  var sh = getSpreadsheet_().getSheetByName('PalletMaster');
+  if (!sh || sh.getLastRow() < 2) { Logger.log('PalletMaster empty'); return; }
+  var data = sh.getDataRange().getValues();
+  var idx = {};
+  data[0].forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  function col(name) { return (name in idx) ? idx[name] : -1; }
+  function val(row, name) { var c = col(name); return c < 0 ? '<NO_COL>' : String(row[c] || '').trim(); }
+
+  // Collect up to 5 CONFIRMED STT1001 pallets with a GRMaterialDocument
+  var targets = [];
+  // Always include PL-1000036121-L01 even if GRMaterialDocument is empty
+  var foundTarget = false;
+  for (var r = 1; r < data.length; r++) {
+    var pid = val(data[r], 'PalletID');
+    if (pid === 'PL-1000036121-L01') {
+      foundTarget = true;
+      targets.push({
+        palletId: pid,
+        grDoc:    val(data[r], 'GRMaterialDocument'),
+        grYear:   val(data[r], 'GRMaterialDocumentYear'),
+        batch:    val(data[r], 'Batch'),
+        material: val(data[r], 'Material'),
+        mo:       val(data[r], 'ManufacturingOrder'),
+        status:   val(data[r], 'ScanStatus')
+      });
+    }
+  }
+  // Add a few more with GRMaterialDocument populated
+  for (var r2 = 1; r2 < data.length && targets.length < 5; r2++) {
+    var pid2 = val(data[r2], 'PalletID');
+    if (pid2 === 'PL-1000036121-L01') continue;
+    if (val(data[r2], 'Material') === 'STT1001-R0000S3XRX' &&
+        val(data[r2], 'ScanStatus') === 'CONFIRMED' &&
+        val(data[r2], 'GRMaterialDocument') &&
+        val(data[r2], 'GRMaterialDocument') !== '<NO_COL>') {
+      targets.push({
+        palletId: pid2,
+        grDoc:    val(data[r2], 'GRMaterialDocument'),
+        grYear:   val(data[r2], 'GRMaterialDocumentYear'),
+        batch:    val(data[r2], 'Batch'),
+        material: val(data[r2], 'Material'),
+        mo:       val(data[r2], 'ManufacturingOrder'),
+        status:   val(data[r2], 'ScanStatus')
+      });
+    }
+  }
+
+  if (!foundTarget) Logger.log('PL-1000036121-L01 NOT FOUND in PalletMaster');
+  Logger.log('Targets (' + targets.length + '):\n' + JSON.stringify(targets, null, 2));
+
+  // For each target with a GRMaterialDocument, read the doc from SAP
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+  var alertLines = ['GR Doc Batch Proof (READ-ONLY)\n'];
+
+  targets.forEach(function(t) {
+    Logger.log('---- ' + t.palletId + ' ----');
+    Logger.log('  PalletMaster.Batch="' + t.batch + '" GRDoc="' + t.grDoc +
+      '" GRYear="' + t.grYear + '"');
+
+    alertLines.push(t.palletId + ':');
+    alertLines.push('  PM.Batch="' + t.batch + '" GRDoc=' + t.grDoc + '/' + t.grYear);
+
+    if (!t.grDoc || t.grDoc === '<NO_COL>') {
+      Logger.log('  GRMaterialDocument empty — cannot resolve batch from GR doc');
+      alertLines.push('  → GRDoc EMPTY (no SAP call)');
+      return;
+    }
+
+    var docKey = "MaterialDocument='" + t.grDoc +
+      "',MaterialDocumentYear='" + t.grYear + "'";
+    var url = buildSapUrl_(
+      serviceRoot + 'A_MaterialDocumentHeader(' + docKey + ')', {
+      '$expand': 'to_MaterialDocumentItem',
+      '$select': 'MaterialDocument,MaterialDocumentYear,' +
+        'to_MaterialDocumentItem/Batch,' +
+        'to_MaterialDocumentItem/Material,' +
+        'to_MaterialDocumentItem/Plant,' +
+        'to_MaterialDocumentItem/StorageLocation,' +
+        'to_MaterialDocumentItem/GoodsMovementType,' +
+        'to_MaterialDocumentItem/QuantityInEntryUnit',
+      '$format': 'json'
+    });
+
+    Logger.log('FETCH_URL [GR doc ' + t.grDoc + '] ' + url);
+    var r = probeRawGet_(url);
+    Logger.log('[GR doc ' + t.grDoc + '] HTTP ' + r.code + ' :: ' +
+      r.text.slice(0, 600));
+
+    if (r.code >= 400) {
+      alertLines.push('  → SAP HTTP ' + r.code + ' (fetch failed)');
+      return;
+    }
+
+    var parsed = JSON.parse(r.text);
+    var d = parsed.d || parsed;
+    var items = (d.to_MaterialDocumentItem &&
+                 d.to_MaterialDocumentItem.results) || [];
+
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      Logger.log('  item' + (i + 1) + ': GMT=' + it.GoodsMovementType +
+        ' Mat=' + it.Material + ' Batch=' + it.Batch +
+        ' SLoc=' + it.StorageLocation + ' Qty=' + it.QuantityInEntryUnit);
+      alertLines.push('  item' + (i + 1) + ': GMT=' + it.GoodsMovementType +
+        ' Batch=' + (it.Batch || 'EMPTY') +
+        ' SLoc=' + it.StorageLocation + ' Qty=' + it.QuantityInEntryUnit);
+    }
+
+    if (items.length === 0) {
+      alertLines.push('  → no items');
+    }
+  });
+
+  Logger.log('\n' + alertLines.join('\n'));
+  SpreadsheetApp.getUi().alert(alertLines.join('\n'));
+}
