@@ -1101,6 +1101,274 @@ function PROBE_materialDocCancellation() {
   SpreadsheetApp.getUi().alert(alertLines.join('\n'));
 }
 
+// ============================================================================
+// Reusable helper — reverse a material document via Cancel FunctionImport
+// ============================================================================
+
+/**
+ * Reverse a material document by calling the Cancel FunctionImport on
+ * API_MATERIAL_DOCUMENT_SRV. SAP creates the reversal document automatically
+ * (correct direction, ReversedMaterialDocument stamped on items).
+ *
+ * Designed for promotion into Transfer311.gs at T4 cutover.
+ *
+ * @param {string} matDoc  - MaterialDocument number (e.g. '4900215842')
+ * @param {string} matDocYear - MaterialDocumentYear (e.g. '2026')
+ * @return {{ok:boolean, http:number, reversalDoc?:string, reversalYear?:string,
+ *           raw?:string, body?:string}}
+ */
+function reverseMaterialDocByRef_(matDoc, matDocYear) {
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+
+  var session = getCsrfSession_(serviceRoot);
+  var creds   = getSapCredentials_();
+
+  var cancelUrl = buildSapUrl_(serviceRoot + 'Cancel', {
+    'MaterialDocument':     matDoc,
+    'MaterialDocumentYear': matDocYear
+  });
+
+  Logger.log('FETCH_URL [Cancel FunctionImport] ' + cancelUrl);
+  var resp = UrlFetchApp.fetch(cancelUrl, {
+    method: 'post',
+    headers: {
+      'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+      'X-CSRF-Token':  session.token,
+      'Cookie':        session.cookies,
+      'Content-Type':  'application/json',
+      'Accept':        'application/json'
+    },
+    payload: '',
+    muteHttpExceptions: true
+  });
+
+  var code = resp.getResponseCode();
+  var body = resp.getContentText();
+  Logger.log('[Cancel] HTTP ' + code + ' :: ' + body.slice(0, 800));
+
+  if (code !== 200 && code !== 201) {
+    return { ok: false, http: code, body: body.slice(0, 800) };
+  }
+
+  var parsed = JSON.parse(body);
+  var d = parsed.d || parsed;
+  return {
+    ok:           true,
+    http:         code,
+    reversalDoc:  d.MaterialDocument || '',
+    reversalYear: d.MaterialDocumentYear || '',
+    raw:          body.slice(0, 500)
+  };
+}
+
+// ============================================================================
+// T2/T3 redo — Cancel-by-reference proof (replaces broken hand-built 312)
+// ============================================================================
+
+/**
+ * ⚠️ WRITES TO SAP. Posts a fresh 311 (1 PC PW30→PW40), then cancels it via
+ * the Cancel FunctionImport (reverse-by-reference). Validates that SAP creates
+ * the correct reversal and stock returns to baseline. Must be run manually.
+ */
+function TEST_transfer311CancelProof() {
+  var fn = 'TEST_transfer311CancelProof';
+  var M = {
+    material: 'STT1001-R0000S3XRX',
+    plant:    '1100',
+    fromSLoc: 'PW30',
+    toSLoc:   'PW40',
+    batch:    '0000095121',
+    qty:      '1',
+    uom:      'PC'
+  };
+  var stockRoot   = CFG.SAP_BASE_URL + MATERIAL_STOCK_SRV_PROBE_;
+  var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.MATERIAL_DOCUMENT;
+
+  var result = {
+    baseline: {}, orig311: {}, cancel: {},
+    reversalItems: [], stockAfter: {}, netZero: null
+  };
+
+  try {
+    // ==== STEP 1: Baseline stock ====
+    var pw30Before = probeStockQty_(stockRoot, M.material, M.plant, 'PW30', M.batch);
+    var pw40Before = probeStockQty_(stockRoot, M.material, M.plant, 'PW40', M.batch);
+    result.baseline = { pw30: pw30Before, pw40: pw40Before };
+    Logger.log('[STEP 1] baseline PW30=' + pw30Before + ' PW40=' + pw40Before);
+
+    // ==== STEP 2: Post fresh 311 (1 PC PW30→PW40) ====
+    var txnId = 'ZZTEST-CXL-' + Utilities.getUuid().replace(/-/g, '').slice(0, 13);
+    var token = txnId.replace(/-/g, '').slice(0, 24);
+    Logger.log('[STEP 2] txnId=' + txnId + ' token=' + token);
+
+    var now = new Date();
+    var bangkokMs = now.getTime() +
+      (now.getTimezoneOffset() * 60000) + (7 * 3600000);
+    var bangkokMidnight = new Date(bangkokMs);
+    bangkokMidnight.setHours(0, 0, 0, 0);
+    var odataDate = '/Date(' + bangkokMidnight.getTime() + ')/';
+
+    var payload311 = {
+      GoodsMovementCode:          '04',
+      PostingDate:                odataDate,
+      DocumentDate:               odataDate,
+      MaterialDocumentHeaderText: token,
+      to_MaterialDocumentItem: [{
+        Material:                     M.material,
+        Plant:                        M.plant,
+        StorageLocation:              M.fromSLoc,
+        IssuingOrReceivingStorageLoc: M.toSLoc,
+        GoodsMovementType:            '311',
+        QuantityInEntryUnit:          M.qty,
+        EntryUnit:                    M.uom,
+        Batch:                        M.batch
+      }]
+    };
+    Logger.log('[STEP 2] payload:\n' + JSON.stringify(payload311, null, 2));
+
+    var session = getCsrfSession_(serviceRoot);
+    var creds   = getSapCredentials_();
+    var postUrl = buildSapUrl_(serviceRoot + 'A_MaterialDocumentHeader');
+
+    Logger.log('FETCH_URL [STEP 2 POST 311] ' + postUrl);
+    var resp311 = UrlFetchApp.fetch(postUrl, {
+      method: 'post',
+      headers: {
+        'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+        'X-CSRF-Token':  session.token,
+        'Cookie':        session.cookies,
+        'Content-Type':  'application/json',
+        'Accept':        'application/json'
+      },
+      payload: JSON.stringify(payload311),
+      muteHttpExceptions: true
+    });
+
+    var code311 = resp311.getResponseCode();
+    var body311 = resp311.getContentText();
+    Logger.log('[STEP 2] HTTP ' + code311 + ' :: ' + body311.slice(0, 800));
+
+    if (code311 !== 201 && code311 !== 200) {
+      result.orig311 = { http: code311, error: body311.slice(0, 600) };
+      SpreadsheetApp.getUi().alert(
+        '❌ 311 POST failed — HTTP ' + code311 + '\n\n' +
+        body311.slice(0, 800) + '\n\nNothing to cancel.');
+      return;
+    }
+
+    var parsed311 = JSON.parse(body311);
+    var d311 = parsed311.d || parsed311;
+    result.orig311 = {
+      doc:  d311.MaterialDocument || '',
+      year: d311.MaterialDocumentYear || '',
+      http: code311
+    };
+    Logger.log('[STEP 2] origDoc=' + result.orig311.doc +
+      '/' + result.orig311.year);
+    logEvent(fn, 'POST_311', 'OK', 0,
+      'doc=' + result.orig311.doc + '/' + result.orig311.year);
+
+    // ==== STEP 3: Cancel via FunctionImport ====
+    var cancelResult = reverseMaterialDocByRef_(
+      result.orig311.doc, result.orig311.year);
+    result.cancel = cancelResult;
+    Logger.log('[STEP 3] cancel result: ' + JSON.stringify(cancelResult));
+
+    if (!cancelResult.ok) {
+      logEvent(fn, 'CANCEL', 'ERROR', 0, 'HTTP ' + cancelResult.http);
+      SpreadsheetApp.getUi().alert(
+        '🚨 CANCEL FAILED — HTTP ' + cancelResult.http + '\n\n' +
+        '⚠️ DANGLING 311: ' + result.orig311.doc + '/' +
+        result.orig311.year + '\n\n' +
+        'Kor: cancel manually in Fiori/MIGO → reference doc ' +
+        result.orig311.doc + ' year ' + result.orig311.year + '.\n\n' +
+        (cancelResult.body || ''));
+      Logger.log('[RESULT]\n' + JSON.stringify(result, null, 2));
+      logEvent(fn, 'RESULT', 'CANCEL_FAILED', 0, JSON.stringify(result));
+      return;
+    }
+
+    logEvent(fn, 'CANCEL', 'OK', 0,
+      'reversalDoc=' + cancelResult.reversalDoc + '/' + cancelResult.reversalYear);
+
+    // ==== STEP 4: Verify reversal doc items ====
+    var revDocKey = "MaterialDocument='" + cancelResult.reversalDoc +
+      "',MaterialDocumentYear='" + cancelResult.reversalYear + "'";
+    var revUrl = buildSapUrl_(
+      serviceRoot + 'A_MaterialDocumentHeader(' + revDocKey + ')', {
+      '$expand': 'to_MaterialDocumentItem',
+      '$format': 'json'
+    });
+    Logger.log('FETCH_URL [STEP 4 reversal doc] ' + revUrl);
+    var revResp = probeRawGet_(revUrl);
+    Logger.log('[STEP 4] HTTP ' + revResp.code + ' :: ' +
+      revResp.text.slice(0, 800));
+
+    if (revResp.code >= 200 && revResp.code < 300) {
+      var revParsed = JSON.parse(revResp.text);
+      var revD = revParsed.d || revParsed;
+      var revItems = (revD.to_MaterialDocumentItem &&
+                      revD.to_MaterialDocumentItem.results) || [];
+      for (var i = 0; i < revItems.length; i++) {
+        var it = revItems[i];
+        Logger.log('[STEP 4 item ' + (i + 1) + '] ' +
+          'GMT=' + it.GoodsMovementType +
+          ' SLoc=' + it.StorageLocation +
+          ' IssuingRecv=' + it.IssuingOrReceivingStorageLoc +
+          ' D/C=' + it.DebitCreditCode +
+          ' Qty=' + it.QuantityInEntryUnit +
+          ' ReversedMatDoc=' + it.ReversedMaterialDocument);
+        result.reversalItems.push({
+          gmt:        it.GoodsMovementType,
+          sloc:       it.StorageLocation,
+          recvSloc:   it.IssuingOrReceivingStorageLoc,
+          dc:         it.DebitCreditCode,
+          qty:        it.QuantityInEntryUnit,
+          reversedDoc: it.ReversedMaterialDocument
+        });
+      }
+    }
+
+    // ==== STEP 5: Settle + re-read stock ====
+    Utilities.sleep(3000);
+
+    var pw30After = probeStockQty_(stockRoot, M.material, M.plant, 'PW30', M.batch);
+    var pw40After = probeStockQty_(stockRoot, M.material, M.plant, 'PW40', M.batch);
+    result.stockAfter = { pw30: pw30After, pw40: pw40After };
+    result.netZero = (pw30After === pw30Before && pw40After === pw40Before);
+    Logger.log('[STEP 5] PW30=' + pw30After + ' PW40=' + pw40After +
+      ' netZero=' + result.netZero);
+
+    Logger.log('[RESULT]\n' + JSON.stringify(result, null, 2));
+    logEvent(fn, 'RESULT', result.netZero ? 'PASS' : 'WARN', 0,
+      JSON.stringify(result));
+
+    // ==== Summary ====
+    var revItemDesc = result.reversalItems.map(function(ri) {
+      return ri.gmt + ' ' + ri.sloc + '→' + ri.recvSloc +
+        ' ' + ri.qty + ' D/C=' + ri.dc +
+        ' ref=' + ri.reversedDoc;
+    }).join('\n  ');
+
+    SpreadsheetApp.getUi().alert(
+      'Cancel-by-Ref Proof\n\n' +
+      'Baseline: PW30=' + pw30Before + ', PW40=' + pw40Before + '\n' +
+      '311 POST: ' + result.orig311.doc + '/' + result.orig311.year +
+        ' (HTTP ' + result.orig311.http + ')\n' +
+      'Cancel:   ' + cancelResult.reversalDoc + '/' +
+        cancelResult.reversalYear + ' (HTTP ' + cancelResult.http + ')\n' +
+      'Reversal items:\n  ' + revItemDesc + '\n\n' +
+      'After: PW30=' + pw30After + ', PW40=' + pw40After + '\n' +
+      'Net zero: ' + result.netZero);
+
+  } catch (e) {
+    Logger.log('[' + fn + '] EXCEPTION: ' + e.message + '\n' + e.stack);
+    logEvent(fn, 'EXCEPTION', e.message, 0, JSON.stringify(result));
+    SpreadsheetApp.getUi().alert('❌ ' + fn + ' EXCEPTION:\n\n' + e.message +
+      '\n\nCheck Executions log. If a 311 was posted, verify/cancel manually.');
+  }
+}
+
 function probeStockQty_(stockRoot, material, plant, sloc, batch) {
   var filterExpr = "Material eq '" + material + "'" +
     " and Plant eq '" + plant + "'" +
