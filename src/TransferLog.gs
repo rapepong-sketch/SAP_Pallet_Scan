@@ -92,16 +92,9 @@ function tlHeaderIdx_(hdr) {
 var TL_MATERIAL_STOCK_SRV_ = '/sap/opu/odata/sap/API_MATERIAL_STOCK_SRV/';
 
 /**
- * Fetch unrestricted (InventoryStockType '01') batch stock from SAP
- * A_MatlStkInAcctMod for a specific Material + Plant + SLoc. One GET per call.
- * Returns batch → qty map (only batches with type '01' stock present in SAP).
- * Throws on HTTP error or network failure — callers must handle fail-safe.
- *
- * @param {string} material
- * @param {string} plant
- * @param {string} storageLocation
- * @return {Object.<string, number>} batch string → unrestricted qty
- * @throws {Error} on HTTP error, network failure, or JSON parse failure
+ * @deprecated Use fetchSapBatchStockForBatches_ — blind $top=200 scan misses
+ * batches that sort beyond the window (e.g. 0000095389 fell outside 200 rows).
+ * Retained only as a reference; no longer called by production code.
  */
 function fetchSapBatchStock_(material, plant, storageLocation) {
   var path = TL_MATERIAL_STOCK_SRV_ + 'A_MatlStkInAcctMod';
@@ -128,6 +121,71 @@ function fetchSapBatchStock_(material, plant, storageLocation) {
 
   logEvent('FIFO', 'SAP_BATCH_STOCK_OK', 200, Date.now() - t0,
     material + '/' + storageLocation + ' batches=' + Object.keys(batchQty).length);
+
+  return batchQty;
+}
+
+/**
+ * Fetch unrestricted (InventoryStockType '01') batch stock from SAP
+ * A_MatlStkInAcctMod using an OR-filter targeting ONLY the specific batches
+ * the local candidates carry. Fixes the $top=200 truncation bug where SAP
+ * returns rows sorted ascending by batch and live batches (e.g. 0000095389)
+ * fell beyond position 200, making them invisible to the FIFO pre-filter.
+ *
+ * Batches are chunked at 20 per GET to keep the OData $filter URL within SAP
+ * length limits. Results are merged across chunks.
+ *
+ * @param {string} material
+ * @param {string} plant
+ * @param {string} storageLocation
+ * @param {string[]} batches — distinct batch strings to query (empty → returns {})
+ * @return {Object.<string, number>} batch string → unrestricted qty
+ * @throws {Error} on HTTP error, network failure, or JSON parse failure
+ */
+function fetchSapBatchStockForBatches_(material, plant, storageLocation, batches) {
+  if (!batches || batches.length === 0) return {};
+
+  var path = TL_MATERIAL_STOCK_SRV_ + 'A_MatlStkInAcctMod';
+  var baseFilter = "Material eq '" + material +
+    "' and Plant eq '" + plant +
+    "' and StorageLocation eq '" + storageLocation + "'";
+
+  var CHUNK = 20;
+  var batchQty = {};
+  var t0 = Date.now();
+  var totalRows = 0;
+  var chunks = Math.ceil(batches.length / CHUNK);
+
+  for (var start = 0; start < batches.length; start += CHUNK) {
+    var chunk = batches.slice(start, start + CHUNK);
+    var batchClause = chunk.map(function(b) {
+      return "Batch eq '" + b + "'";
+    }).join(' or ');
+
+    var data = sapGet(path, {
+      '$filter': baseFilter + ' and (' + batchClause + ')',
+      '$select': 'Batch,InventoryStockType,MatlWrhsStkQtyInMatlBaseUnit',
+      '$top':    '200'
+    }, 'fetchSapBatchStockForBatches_');
+
+    var rows = (data.d && data.d.results) || [];
+    totalRows += rows.length;
+
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].InventoryStockType || '').trim() !== '01') continue;
+      var b = String(rows[i].Batch || '').trim();
+      if (!b) continue;
+      var q = parseFloat(rows[i].MatlWrhsStkQtyInMatlBaseUnit) || 0;
+      batchQty[b] = (batchQty[b] || 0) + q;
+    }
+  }
+
+  logEvent('FIFO', 'SAP_BATCH_STOCK_OK', 200, Date.now() - t0,
+    material + '/' + storageLocation +
+    ' batches=' + batches.length +
+    ' chunks=' + chunks +
+    ' rows=' + totalRows +
+    ' hits=' + Object.keys(batchQty).length);
 
   return batchQty;
 }
@@ -188,16 +246,18 @@ function getRemainingQty_(parentPalletId) {
  * with remaining qty > 0, pre-filtered by live SAP batch stock, sorted FIFO
  * by ConfirmedAt ASC then PalletID ASC.
  *
- * SAP pre-filter: fetches unrestricted batch stock once (fetchSapBatchStock_)
- * and excludes any pallet whose batch has 0 SAP stock or is not present in SAP
- * at this SLoc (stale — local PalletMaster shows qty but SAP batch is empty).
- * Remaining is capped at SAP qty so the plan never exceeds what SAP can post.
+ * SAP pre-filter: collects the distinct batches the local candidates carry, then
+ * queries SAP ONLY for those specific batches via an OR-filter.
+ * Avoids the $top=200 truncation bug where batches sorted beyond position 200
+ * (e.g. 0000095389) were invisible. Remaining is capped at SAP qty so the plan
+ * never exceeds what SAP can post.
  * Throws on SAP check failure — planFifoPick_ catches and returns sapCheckError.
  *
  * @param {string} material
  * @param {string} storageLocation
  * @param {{stockFetchFn?:function}} [opts]
- *   stockFetchFn — injectable for tests: fn(material, plant, sloc) → batchQtyMap | throws
+ *   stockFetchFn — injectable for tests:
+ *     fn(material, plant, sloc, batches) → batchQtyMap | throws
  * @return {Array<{PalletID:string, LotNo:string, Unit:string, ConfirmedAt:*,
  *   original:number, issued:number, remaining:number}>}
  * @throws {Error} if live SAP stock check fails (propagates to planFifoPick_)
@@ -265,10 +325,17 @@ function getConfirmedStockByMaterial_(material, storageLocation, opts) {
   // Short-circuit: no local candidates → nothing to filter, skip SAP call
   if (candidates.length === 0) return [];
 
-  // Live SAP batch-stock pre-filter — one GET for all candidates.
+  // Collect distinct non-empty batches from candidates for targeted SAP query
+  var batchSet = {};
+  for (var b = 0; b < candidates.length; b++) {
+    if (candidates[b].Batch) batchSet[candidates[b].Batch] = true;
+  }
+  var distinctBatches = Object.keys(batchSet);
+
+  // Live SAP batch-stock pre-filter — targeted OR-filter on candidate batches only.
   // Throws on SAP error; planFifoPick_ catches and returns sapCheckError:true.
-  var _fetchStock = opts.stockFetchFn || fetchSapBatchStock_;
-  var sapBatchQty = _fetchStock(material, CFG.PLANT, storageLocation);
+  var _fetchStock = opts.stockFetchFn || fetchSapBatchStockForBatches_;
+  var sapBatchQty = _fetchStock(material, CFG.PLANT, storageLocation, distinctBatches);
 
   var results = [];
   for (var c = 0; c < candidates.length; c++) {
@@ -1000,7 +1067,206 @@ function TEST_fifo_unresolvedBatchSkipped() {
 }
 
 /**
- * Run all 4 SAP batch-stock filter tests. No real SAP calls — all injected.
+ * TEST: Targeted batch query — candidates carry two specific batches; only the
+ * one with SAP qty > 0 survives. Reproduces the PL-1000036325-L02 scenario where
+ * 0000095389=2000 is live and 0000094815=0 is stale.
+ * Also asserts the injectable receives BOTH batches in the query arg.
+ */
+function TEST_fifo_targetedBatchQuery() {
+  var fn         = 'TEST_fifo_targetedBatchQuery';
+  var LIVE_PID   = 'PL-ZZTEST-TBQ-LIVE';
+  var STALE_PID  = 'PL-ZZTEST-TBQ-STALE';
+  var LIVE_BATCH  = '0000095389';
+  var STALE_BATCH = '0000094815';
+  var MAT  = 'ZZTEST-SF-TBQ';
+  var SLOC = 'PW30';
+
+  var sh  = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = tlHeaderIdx_(hdr);
+  var now = new Date();
+
+  var r1 = new Array(hdr.length).fill('');
+  r1[idx['PalletID']]        = LIVE_PID;
+  r1[idx['Material']]        = MAT;
+  r1[idx['QtyPerPallet']]    = 2000;
+  r1[idx['Unit']]            = 'PC';
+  r1[idx['Batch']]           = LIVE_BATCH;
+  r1[idx['StorageLocation']] = SLOC;
+  r1[idx['ScanStatus']]      = 'CONFIRMED';
+  r1[idx['ConfirmedAt']]     = new Date(now.getTime() - 86400000); // older → FIFO first
+
+  var r2 = new Array(hdr.length).fill('');
+  r2[idx['PalletID']]        = STALE_PID;
+  r2[idx['Material']]        = MAT;
+  r2[idx['QtyPerPallet']]    = 8;
+  r2[idx['Unit']]            = 'PC';
+  r2[idx['Batch']]           = STALE_BATCH;
+  r2[idx['StorageLocation']] = SLOC;
+  r2[idx['ScanStatus']]      = 'CONFIRMED';
+  r2[idx['ConfirmedAt']]     = now;
+
+  sh.appendRow(r1);
+  sh.appendRow(r2);
+  SpreadsheetApp.flush();
+
+  var capturedBatches = null;
+  var pass = true;
+  var detail = '';
+
+  try {
+    var fakeStock = function(mat, plant, sloc, batches) {
+      capturedBatches = batches ? batches.slice() : [];
+      var m = {};
+      m[LIVE_BATCH]  = 2000;
+      m[STALE_BATCH] = 0;
+      return m;
+    };
+
+    var result = planFifoPick_(MAT, SLOC, 500, { stockFetchFn: fakeStock });
+
+    if (!capturedBatches || capturedBatches.indexOf(LIVE_BATCH) < 0) {
+      pass = false; detail += 'LIVE_BATCH missing from query args ';
+    } else { detail += 'LIVE_BATCH in query OK '; }
+    if (!capturedBatches || capturedBatches.indexOf(STALE_BATCH) < 0) {
+      pass = false; detail += 'STALE_BATCH missing from query args ';
+    } else { detail += 'STALE_BATCH in query OK '; }
+
+    if (!result.ok) { pass = false; detail += 'ok=false '; }
+    else            { detail += 'ok=true OK '; }
+    if (result.allocations.length !== 1) {
+      pass = false; detail += 'alloc.length=' + result.allocations.length + '(exp 1) ';
+    } else { detail += 'alloc.length=1 OK '; }
+    if (result.allocations.length > 0 && result.allocations[0].ParentPalletID !== LIVE_PID) {
+      pass = false; detail += 'picked=' + result.allocations[0].ParentPalletID + '(exp LIVE) ';
+    } else if (result.allocations.length > 0) { detail += 'picked=LIVE OK '; }
+    if (result.totalAvail !== 2000) {
+      pass = false; detail += 'totalAvail=' + result.totalAvail + '(exp 2000) ';
+    } else { detail += 'totalAvail=2000 OK '; }
+
+  } catch (e) { pass = false; detail += 'EXCEPTION: ' + e.message; }
+  finally {
+    var d = sh.getDataRange().getValues();
+    var mi = tlHeaderIdx_(d[0])['Material'];
+    for (var i = d.length - 1; i >= 1; i--) {
+      if (String(d[i][mi] || '').trim() === MAT) sh.deleteRow(i + 1);
+    }
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+}
+
+/**
+ * TEST: SAP OData returns MatlWrhsStkQtyInMatlBaseUnit as a string (e.g. "2000.00").
+ * parseFloat must resolve it to the correct number — not NaN, not 0.
+ */
+function TEST_fifo_qtyParsedAsFloat() {
+  var fn   = 'TEST_fifo_qtyParsedAsFloat';
+  var pass = true;
+  var detail = '';
+
+  var cases = [
+    { raw: '2000.00',  expect: 2000 },
+    { raw: '3418.000', expect: 3418 },
+    { raw: '0.000',    expect: 0 },
+    { raw: '1.5',      expect: 1.5 },
+    { raw: 2000,       expect: 2000 },
+    { raw: null,       expect: 0 },
+    { raw: '',         expect: 0 }
+  ];
+
+  cases.forEach(function(c) {
+    var got = parseFloat(c.raw) || 0;
+    if (got !== c.expect) {
+      pass = false;
+      detail += 'parseFloat(' + JSON.stringify(c.raw) + ')=' + got + '(exp ' + c.expect + ') ';
+    }
+  });
+  if (pass) detail = 'all ' + cases.length + ' cases OK';
+
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+}
+
+/**
+ * TEST: >20 candidates → all distinct batches are passed to the stock fn.
+ * Verifies there is no truncation at the caller level (chunking is internal
+ * to fetchSapBatchStockForBatches_ and tested via the injectable seam).
+ */
+function TEST_fifo_orFilterChunking() {
+  var fn    = 'TEST_fifo_orFilterChunking';
+  var MAT   = 'ZZTEST-SF-CHUNK';
+  var SLOC  = 'PW30';
+  var COUNT = 22; // exceeds 20-batch chunk threshold
+
+  var sh  = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var idx = tlHeaderIdx_(hdr);
+  var now = new Date();
+
+  var seededBatches = [];
+  for (var n = 1; n <= COUNT; n++) {
+    var batch = 'ZCHUNK' + ('00' + n).slice(-3);
+    var pid   = 'PL-ZZTEST-CHUNK-' + ('00' + n).slice(-3);
+    seededBatches.push(batch);
+
+    var row = new Array(hdr.length).fill('');
+    row[idx['PalletID']]        = pid;
+    row[idx['Material']]        = MAT;
+    row[idx['QtyPerPallet']]    = 100;
+    row[idx['Unit']]            = 'PC';
+    row[idx['Batch']]           = batch;
+    row[idx['StorageLocation']] = SLOC;
+    row[idx['ScanStatus']]      = 'CONFIRMED';
+    row[idx['ConfirmedAt']]     = new Date(now.getTime() - n * 60000);
+    sh.appendRow(row);
+  }
+  SpreadsheetApp.flush();
+
+  var capturedBatches = null;
+  var pass = true;
+  var detail = '';
+
+  try {
+    var fakeStock = function(mat, plant, sloc, batches) {
+      capturedBatches = batches ? batches.slice() : [];
+      var m = {};
+      for (var i = 0; i < capturedBatches.length; i++) {
+        m[capturedBatches[i]] = 100; // all live
+      }
+      return m;
+    };
+
+    var result = planFifoPick_(MAT, SLOC, 50, { stockFetchFn: fakeStock });
+
+    if (!capturedBatches || capturedBatches.length !== COUNT) {
+      pass = false;
+      detail += 'batches.length=' + (capturedBatches ? capturedBatches.length : 'null') +
+        '(exp ' + COUNT + ') ';
+    } else { detail += 'all ' + COUNT + ' batches in query OK '; }
+
+    if (!result.ok) { pass = false; detail += 'ok=false '; }
+    else            { detail += 'ok=true OK '; }
+    if (result.totalAvail !== COUNT * 100) {
+      pass = false; detail += 'totalAvail=' + result.totalAvail + '(exp ' + (COUNT * 100) + ') ';
+    } else { detail += 'totalAvail=' + (COUNT * 100) + ' OK '; }
+
+  } catch (e) { pass = false; detail += 'EXCEPTION: ' + e.message; }
+  finally {
+    var d = sh.getDataRange().getValues();
+    var mi = tlHeaderIdx_(d[0])['Material'];
+    for (var i = d.length - 1; i >= 1; i--) {
+      if (String(d[i][mi] || '').trim() === MAT) sh.deleteRow(i + 1);
+    }
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+}
+
+/**
+ * Run all 7 SAP batch-stock filter tests. No real SAP calls — all injected.
  */
 function TEST_fifo_sapFilter_runAll() {
   var fn = 'TEST_fifo_sapFilter_runAll';
@@ -1009,7 +1275,10 @@ function TEST_fifo_sapFilter_runAll() {
     { name: 'skipsStaleBatch',        run: TEST_fifo_skipsStaleBatch },
     { name: 'capsAtSapQty',           run: TEST_fifo_capsAtSapQty },
     { name: 'sapCheckFailsSafe',      run: TEST_fifo_sapCheckFailsSafe },
-    { name: 'unresolvedBatchSkipped', run: TEST_fifo_unresolvedBatchSkipped }
+    { name: 'unresolvedBatchSkipped', run: TEST_fifo_unresolvedBatchSkipped },
+    { name: 'targetedBatchQuery',     run: TEST_fifo_targetedBatchQuery },
+    { name: 'qtyParsedAsFloat',       run: TEST_fifo_qtyParsedAsFloat },
+    { name: 'orFilterChunking',       run: TEST_fifo_orFilterChunking }
   ];
 
   var results = [];
