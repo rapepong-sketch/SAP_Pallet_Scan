@@ -1575,6 +1575,25 @@ function probeStockQty_(stockRoot, material, plant, sloc, batch) {
 }
 
 // ============================================================================
+// DIAG — tier-3 batch resolution integration check (READ-ONLY)
+// ============================================================================
+
+function DIAG_tier3BatchResolve() {
+  var cases = [
+    { pid:'PL-1000036121-L01', grDoc:'4900214455', grYear:'2026', expect:'0000094815' },
+    { pid:'PL-1000036325-L02', grDoc:'4900215829', grYear:'2026', expect:'0000095389' }
+  ];
+  var out = [];
+  cases.forEach(function(c) {
+    var b = resolveBatchFromGrDoc_(c.grDoc, c.grYear, 'STT1001-R0000S3XRX', { sloc: 'PW30' });
+    var pass = (b === c.expect);
+    out.push(c.pid + ': got="' + b + '" expect="' + c.expect + '" ' + (pass ? 'PASS' : 'FAIL'));
+  });
+  Logger.log(out.join('\n'));
+  SpreadsheetApp.getUi().alert('Tier-3 Batch Resolve (RO)\n\n' + out.join('\n'));
+}
+
+// ============================================================================
 // DIAG — verify PalletMaster.Batch for first-live (READ-ONLY)
 // ============================================================================
 
@@ -1757,5 +1776,337 @@ function DIAG_grDocBatchProof() {
   });
 
   Logger.log('\n' + alertLines.join('\n'));
+  SpreadsheetApp.getUi().alert(alertLines.join('\n'));
+}
+
+// ============================================================================
+// Backfill PalletMaster.Batch from GR material document (SHEET WRITE ONLY)
+// ============================================================================
+
+/**
+ * For every CONFIRMED pallet with empty Batch but non-empty GRMaterialDocument,
+ * resolves the batch via resolveBatchFromGrDoc_ (SAP GET only) and writes it
+ * back to PalletMaster.Batch. No SAP POST — sheet write only.
+ *
+ * @param {{dryRun:boolean}} opts  dryRun defaults TRUE
+ * @return {{planned:number, written:number, skipped:number, ambiguous:number}}
+ */
+function BACKFILL_palletMasterBatch(opts) {
+  var dryRun = !opts || opts.dryRun !== false;
+  var fn = 'BACKFILL_palletMasterBatch';
+
+  var sh = getSpreadsheet_().getSheetByName('PalletMaster');
+  if (!sh || sh.getLastRow() < 2) {
+    SpreadsheetApp.getUi().alert('PalletMaster sheet empty or missing.');
+    return;
+  }
+  var data = sh.getDataRange().getValues();
+  var idx = {};
+  data[0].forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var required = ['PalletID', 'Material', 'Batch', 'ScanStatus',
+                  'GRMaterialDocument', 'GRMaterialDocumentYear'];
+  var missing = required.filter(function(c) { return !(c in idx); });
+  if (missing.length) {
+    SpreadsheetApp.getUi().alert('Missing required columns: ' + missing.join(', '));
+    return;
+  }
+
+  var hasSloc = 'StorageLocation' in idx;
+
+  var planned = [], skipped = [], ambiguous = [], errors = [];
+  var candidates = 0;
+
+  for (var r = 1; r < data.length; r++) {
+    var row    = data[r];
+    var pid    = String(row[idx['PalletID']] || '').trim();
+    var batch  = String(row[idx['Batch']] || '').trim();
+    var status = String(row[idx['ScanStatus']] || '').trim();
+    var grDoc  = String(row[idx['GRMaterialDocument']] || '').trim();
+    var grYear = String(row[idx['GRMaterialDocumentYear']] || '').trim();
+    var mat    = String(row[idx['Material']] || '').trim();
+    var sloc   = hasSloc ? String(row[idx['StorageLocation']] || '').trim() : '';
+
+    if (status !== 'CONFIRMED') continue;
+    var batchCorrupt = batch && /^\d+$/.test(batch) && batch.length < 10;
+    if (batch && !batchCorrupt) { skipped.push(pid + ' (already has ' + batch + ')'); continue; }
+    if (!grDoc || !grYear) { skipped.push(pid + ' (no GR doc)'); continue; }
+
+    candidates++;
+    if (candidates > 200) {
+      Logger.log('[' + fn + '] >200 candidates — stopping scan. Run in batches.');
+      break;
+    }
+
+    if (candidates % 25 === 0) {
+      Logger.log('[' + fn + '] progress: scanned ' + candidates + ' candidates so far...');
+    }
+
+    try {
+      var resolved = resolveBatchFromGrDoc_(grDoc, grYear, mat, { sloc: sloc });
+    } catch (e) {
+      errors.push(pid + ' grDoc=' + grDoc + ' error=' + e.message);
+      continue;
+    }
+
+    if (!resolved) {
+      ambiguous.push(pid + ' grDoc=' + grDoc + ' (unresolved/ambiguous)');
+      continue;
+    }
+
+    planned.push({ rowNum: r + 1, pid: pid, batch: resolved });
+  }
+
+  var written = 0;
+  if (!dryRun) {
+    planned.forEach(function(p) {
+      var cell = sh.getRange(p.rowNum, idx['Batch'] + 1);
+      cell.setNumberFormat('@');
+      cell.setValue(String(p.batch));
+      written++;
+    });
+    logEvent(fn, 'APPLY', 'OK', 0, 'wrote ' + written + ' batches');
+  }
+
+  var summary = (dryRun ? '[DRY RUN] ' : '[APPLIED] ') +
+    'planned=' + planned.length + ' written=' + written +
+    ' skipped=' + skipped.length + ' ambiguous=' + ambiguous.length +
+    ' errors=' + errors.length;
+  Logger.log(summary);
+  Logger.log('PLANNED:\n' + planned.map(function(p) {
+    return '  ' + p.pid + ' → ' + p.batch;
+  }).join('\n'));
+  if (ambiguous.length) {
+    Logger.log('AMBIGUOUS (need manual review):\n  ' + ambiguous.join('\n  '));
+  }
+  if (errors.length) {
+    Logger.log('ERRORS:\n  ' + errors.join('\n  '));
+  }
+  if (candidates > 200) {
+    Logger.log('⚠ >200 candidates — scan stopped early. Re-run after applying to continue.');
+  }
+
+  SpreadsheetApp.getUi().alert(
+    'Backfill PalletMaster.Batch\n\n' + summary +
+    '\n\nPlanned: ' + planned.length + ' | Ambiguous: ' + ambiguous.length +
+    (errors.length ? ' | Errors: ' + errors.length : '') +
+    '\n\nDetails in Executions log.' +
+    (dryRun ? '\n\n⚠️ DRY RUN — no writes. Re-run with APPLY to commit.' : '') +
+    (candidates > 200 ? '\n\n⚠ >200 candidates — stopped early. Run again after applying.' : ''));
+
+  return { planned: planned.length, written: written,
+    skipped: skipped.length, ambiguous: ambiguous.length };
+}
+
+function BACKFILL_palletMasterBatch_dryRun()  { BACKFILL_palletMasterBatch({ dryRun: true }); }
+function BACKFILL_palletMasterBatch_apply()   { BACKFILL_palletMasterBatch({ dryRun: false }); }
+
+// ============================================================================
+// DIAG — verify Batch leading zeros in PalletMaster (READ-ONLY)
+// ============================================================================
+
+function DIAG_verifyBatchLeadingZeros() {
+  var sh = getSpreadsheet_().getSheetByName('PalletMaster');
+  if (!sh || sh.getLastRow() < 2) {
+    SpreadsheetApp.getUi().alert('PalletMaster empty.');
+    return;
+  }
+  var data = sh.getDataRange().getValues();
+  var idx = {};
+  data[0].forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var ok = [], corrupt = [];
+  for (var r = 1; r < data.length; r++) {
+    var pid   = String(data[r][idx['PalletID']] || '').trim();
+    var batch = String(data[r][idx['Batch']] || '').trim();
+    if (!batch) continue;
+
+    var isCorrupt = /^\d+$/.test(batch) && batch.length < 10;
+    var entry = pid + ' batch="' + batch + '" len=' + batch.length;
+    if (isCorrupt) {
+      corrupt.push(entry);
+      Logger.log('CORRUPT: ' + entry);
+    } else {
+      ok.push(entry);
+      Logger.log('OK: ' + entry);
+    }
+  }
+
+  var summary = 'Batch Leading Zeros Check (READ-ONLY)\n\n' +
+    'OK: ' + ok.length + ' | Corrupt (numeric <10 chars): ' + corrupt.length;
+  if (corrupt.length) {
+    summary += '\n\nCorrupt rows:\n' + corrupt.join('\n');
+  }
+  summary += '\n\nDetails in Executions log.';
+
+  Logger.log(summary);
+  SpreadsheetApp.getUi().alert(summary);
+}
+
+// ============================================================================
+// PROBE — pallet → batch → PW30 stock (READ-ONLY, for first-live selection)
+// ============================================================================
+
+/**
+ * For every CONFIRMED STT1001-R0000S3XRX pallet in PalletMaster, reads its Batch
+ * and queries A_MatlStkInAcctMod for the actual unrestricted PW30 stock.
+ * Deduplicates by batch (one SAP call per distinct batch).
+ * Also explicitly checks batch 0000095121 (T2-proven 3418 PC) regardless of
+ * whether any pallet carries it yet.
+ *
+ * Output: sorted table PalletID | Batch | PW30_qty. Best candidate highlighted.
+ * READ-ONLY — GET only, no writes.
+ */
+function PROBE_palletBatchStock() {
+  var MATERIAL     = 'STT1001-R0000S3XRX';
+  var PLANT        = '1100';
+  var SLOC         = 'PW30';
+  var TARGET_BATCH = '0000095121'; // T2-proven: 3418 PC in PW30
+
+  var sh = getSpreadsheet_().getSheetByName('PalletMaster');
+  if (!sh || sh.getLastRow() < 2) {
+    SpreadsheetApp.getUi().alert('PalletMaster sheet empty or missing.');
+    return;
+  }
+  var data = sh.getDataRange().getValues();
+  var pmIdx = {};
+  data[0].forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  function pmVal(row, name) {
+    var c = pmIdx[name];
+    return (c !== undefined) ? String(row[c] || '').trim() : '';
+  }
+
+  // Collect all CONFIRMED STT1001 pallets
+  var pallets = [];
+  for (var r = 1; r < data.length; r++) {
+    if (pmVal(data[r], 'Material') !== MATERIAL) continue;
+    if (pmVal(data[r], 'ScanStatus') !== 'CONFIRMED') continue;
+    pallets.push({
+      palletId: pmVal(data[r], 'PalletID'),
+      batch:    pmVal(data[r], 'Batch'),
+      grDoc:    pmVal(data[r], 'GRMaterialDocument')
+    });
+  }
+
+  Logger.log('[PROBE_palletBatchStock] CONFIRMED ' + MATERIAL +
+    ' pallets in PalletMaster: ' + pallets.length);
+
+  if (pallets.length === 0) {
+    SpreadsheetApp.getUi().alert(
+      'PROBE Pallet Batch Stock\n\nNo CONFIRMED ' + MATERIAL +
+      ' pallets found in PalletMaster.');
+    return;
+  }
+
+  // Collect distinct non-empty batches
+  var stockRoot = CFG.SAP_BASE_URL + MATERIAL_STOCK_SRV_PROBE_;
+  var batchQty = {};
+  var distinctBatches = [];
+  pallets.forEach(function(p) {
+    if (p.batch && distinctBatches.indexOf(p.batch) < 0) {
+      distinctBatches.push(p.batch);
+    }
+  });
+
+  Logger.log('[PROBE_palletBatchStock] Distinct batches: ' +
+    distinctBatches.length + ' → ' + distinctBatches.join(', '));
+
+  // SAP stock read — one call per distinct batch
+  distinctBatches.forEach(function(b) {
+    var qty = probeStockQty_(stockRoot, MATERIAL, PLANT, SLOC, b);
+    batchQty[b] = qty;
+    Logger.log('[stock] batch=' + b + ' PW30=' + qty);
+  });
+
+  // Always check T2 target batch, even if no pallet carries it yet
+  if (!(TARGET_BATCH in batchQty)) {
+    var tq = probeStockQty_(stockRoot, MATERIAL, PLANT, SLOC, TARGET_BATCH);
+    batchQty[TARGET_BATCH] = tq;
+    Logger.log('[stock] TARGET batch=' + TARGET_BATCH +
+      ' PW30=' + tq + ' (not yet in any pallet)');
+  }
+
+  // Build result rows
+  var rows = pallets.map(function(p) {
+    var qty = p.batch ? (batchQty[p.batch] || 0) : null;
+    return {
+      palletId: p.palletId,
+      batch:    p.batch || '(empty)',
+      pw30:     (qty !== null) ? qty : '—',
+      usable:   (qty !== null) && qty >= 1,
+      sortKey:  (qty !== null) ? qty : -1,
+      note:     !p.batch
+        ? 'Batch empty — run BACKFILL first'
+        : qty >= 1 ? '✅ usable' : '❌ no stock'
+    };
+  });
+
+  rows.sort(function(a, b) { return b.sortKey - a.sortKey; });
+
+  // Log full table
+  var SEP = new Array(68).join('-');
+  Logger.log('[PROBE_palletBatchStock] Full table:\n' + SEP);
+  Logger.log(padRight_('PalletID', 26) + ' | ' +
+             padRight_('Batch', 12) + ' | ' +
+             padRight_('PW30', 8) + ' | Note');
+  Logger.log(SEP);
+  rows.forEach(function(r) {
+    Logger.log(padRight_(r.palletId, 26) + ' | ' +
+               padRight_(r.batch, 12) + ' | ' +
+               padRight_(String(r.pw30), 8) + ' | ' + r.note);
+  });
+  Logger.log(SEP);
+
+  // Build UI alert
+  var usable = rows.filter(function(r) { return r.usable; });
+  var best   = usable.length > 0 ? usable[0] : null;
+
+  var targetQty    = batchQty[TARGET_BATCH];
+  var targetPallets = pallets.filter(function(p) { return p.batch === TARGET_BATCH; });
+
+  var alertLines = [
+    'Pallet → Batch → PW30 Stock (READ-ONLY)',
+    'Material: ' + MATERIAL + '  |  SLoc: PW30  |  Plant: ' + PLANT,
+    ''
+  ];
+
+  // Table header
+  alertLines.push(padRight_('PalletID', 24) + ' | ' +
+                  padRight_('Batch', 12) + ' | PW30');
+  alertLines.push(new Array(48).join('-'));
+  rows.slice(0, 12).forEach(function(r) {
+    alertLines.push(padRight_(r.palletId, 24) + ' | ' +
+                    padRight_(r.batch, 12) + ' | ' + r.pw30);
+  });
+  if (rows.length > 12) {
+    alertLines.push('... (' + (rows.length - 12) + ' more in Executions log)');
+  }
+
+  // T2-proven target batch
+  alertLines.push('');
+  alertLines.push('── Target batch ' + TARGET_BATCH + ' (T2-proven) ──');
+  alertLines.push('PW30 stock: ' + targetQty + ' PC');
+  if (targetPallets.length > 0) {
+    alertLines.push('PalletMaster match: ' +
+      targetPallets.map(function(p) { return p.palletId; }).join(', '));
+  } else {
+    alertLines.push('No pallet carries this batch yet → run BACKFILL_palletMasterBatch_apply first');
+  }
+
+  // Best candidate
+  alertLines.push('');
+  if (best) {
+    alertLines.push('✅ Best candidate: ' + best.palletId +
+      '  batch=' + best.batch + '  PW30=' + best.pw30 + ' PC');
+  } else {
+    alertLines.push('❌ No usable candidate (all batches have 0 PW30 stock)');
+    alertLines.push('→ Run BACKFILL_palletMasterBatch_apply to populate Batch, then re-probe.');
+  }
+
+  alertLines.push('');
+  alertLines.push('Full table (' + rows.length + ' pallets) in Executions log.');
+
+  Logger.log('[PROBE_palletBatchStock] DONE');
   SpreadsheetApp.getUi().alert(alertLines.join('\n'));
 }

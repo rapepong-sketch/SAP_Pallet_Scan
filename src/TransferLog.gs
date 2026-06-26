@@ -412,7 +412,7 @@ function commitFifoPick_(material, storageLocation, wantQty, opts) {
       ParentPalletID:  alloc.ParentPalletID,
       ChildSlipID:     alloc.ParentPalletID + '-S' + pad2,
       Material:        material,
-      LotNo:           alloc.LotNo,
+      LotNo:           String(alloc.LotNo || ''),
       Unit:            alloc.Unit,
       IssueQty:        alloc.takeQty,
       SourceSLoc:      storageLocation,
@@ -429,7 +429,14 @@ function commitFifoPick_(material, storageLocation, wantQty, opts) {
     appendRows.push(sheetRow);
   }
 
-  sh.getRange(sh.getLastRow() + 1, 1, appendRows.length, sheetHdr.length)
+  var firstNewRow = sh.getLastRow() + 1;
+  ['LotNo', 'Batch'].forEach(function(colName) {
+    var ci = sheetHdr.indexOf(colName);
+    if (ci >= 0) {
+      sh.getRange(firstNewRow, ci + 1, appendRows.length, 1).setNumberFormat('@');
+    }
+  });
+  sh.getRange(firstNewRow, 1, appendRows.length, sheetHdr.length)
     .setValues(appendRows);
 
   // Log consumed pallets (remaining now 0) — derived, not stored

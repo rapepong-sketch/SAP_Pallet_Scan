@@ -89,6 +89,13 @@ function onOpen() {
     .addItem('🧪 T4: Run 311 Retry/DL Test Suite',          'TEST_t311_runAll')
     .addItem('🔍 DIAG Batch for First-Live (RO)',            'DIAG_checkBatchForFirstLive')
     .addItem('🔍 DIAG GR-Doc Batch Proof (RO)',              'DIAG_grDocBatchProof')
+    .addItem('🔍 DIAG Tier-3 Batch Resolve (RO)',            'DIAG_tier3BatchResolve')
+    .addItem('🔍 DIAG Verify Batch Leading Zeros (RO)',     'DIAG_verifyBatchLeadingZeros')
+    .addSeparator()
+    .addItem('🔍 PROBE Pallet Batch Stock (RO)',            'PROBE_palletBatchStock')
+    .addSeparator()
+    .addItem('🔍 Backfill PM.Batch (DRY RUN)',              'BACKFILL_palletMasterBatch_dryRun')
+    .addItem('⚠️ Backfill PM.Batch (APPLY)',                'BACKFILL_palletMasterBatch_apply')
     .addSeparator()
     .addItem('🧪 Batch Resolution Test Suite',               'TEST_resolveBatch_runAll');
 
