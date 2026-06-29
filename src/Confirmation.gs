@@ -585,8 +585,22 @@ function confirmPallet(palletId) {
         result.confirmationGroup, result.confirmationCount, result.session
       );
 
+      // ---- Best-effort batch capture from GR doc ----
+      var grBatch = '';
+      try {
+        grBatch = resolveBatchFromGrDoc_(
+          matDoc.materialDocument, matDoc.materialDocumentYear,
+          pallet.Material, { sloc: pallet.StorageLocation });
+      } catch (batchErr) {
+        logEvent('CONFIRM', 'BATCH_RESOLVE_ERR', palletId + ' ' + batchErr.message);
+      }
+      if (!grBatch) {
+        logEvent('CONFIRM', 'BATCH_UNRESOLVED',
+          palletId + ' grDoc=' + matDoc.materialDocument);
+      }
+
       // ---- Writeback to PalletMaster ----
-      updatePalletScanFields_(palletId, {
+      var writebackFields = {
         ConfirmationGroup:      result.confirmationGroup,
         ConfirmationCount:      result.confirmationCount,
         GRMaterialDocument:     matDoc.materialDocument,
@@ -594,9 +608,14 @@ function confirmPallet(palletId) {
         ConfirmedAt:            new Date(),
         ConfirmedBy:            getActiveUserSafe_(),
         ScanStatus:             'CONFIRMED'
-      });
+      };
+      if (grBatch) {
+        writebackFields.Batch = String(grBatch);
+      }
+      updatePalletScanFields_(palletId, writebackFields);
 
-      logEvent('CONFIRM', 'CONFIRMED', palletId + ' matDoc=' + matDoc.materialDocument);
+      logEvent('CONFIRM', 'CONFIRMED', palletId + ' matDoc=' + matDoc.materialDocument +
+        (grBatch ? ' batch=' + grBatch : ' batch=UNRESOLVED'));
 
       return {
         ok: true,
