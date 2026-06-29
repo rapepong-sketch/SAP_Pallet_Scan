@@ -65,7 +65,8 @@ function _readPmRow_(palletId) {
  * @param {Object} [opts] - { stockFn } for test injection
  * @return {{ok:boolean, error?:string, palletId?:string, mo?:string,
  *   material?:string, batch?:string, qty?:number, unit?:string,
- *   workCenter?:string, sourceSLoc?:string, sapStock?:number}}
+ *   workCenter?:string, sourceSLoc?:string, sapStock?:number,
+ *   destSLocOptions?:string[]}}
  */
 function scanTransferLookup(palletId, opts) {
   try {
@@ -124,22 +125,41 @@ function scanTransferLookup(palletId, opts) {
       ' sapStock=' + sapStock + ' qty=' + qty);
 
     return JSON.parse(JSON.stringify({
-      ok:         true,
-      palletId:   palletId,
-      mo:         mo,
-      material:   material,
-      batch:      batch,
-      qty:        qty,
-      unit:       unit,
-      workCenter: workCenter,
-      sourceSLoc: sourceSLoc,
-      sapStock:   sapStock
+      ok:              true,
+      palletId:        palletId,
+      mo:              mo,
+      material:        material,
+      batch:           batch,
+      qty:             qty,
+      unit:            unit,
+      workCenter:      workCenter,
+      sourceSLoc:      sourceSLoc,
+      sapStock:        sapStock,
+      destSLocOptions: CFG.DEST_SLOCS
     }));
 
   } catch (e) {
     logError('scanTransferLookup', 'SCAN_TRANSFER', e.message, palletId);
     return JSON.parse(JSON.stringify({ ok: false, error: e.message }));
   }
+}
+
+// ============================================================================
+// getScanTransferDestOptions — READ-ONLY, no gate needed
+// ============================================================================
+
+/**
+ * Return the allowed destination SLoc whitelist and current dry-run flag.
+ * Called by the xfer-mode setup dropdown before any pallet scan occurs.
+ * @return {{destSLocOptions:string[], dryRun:boolean}}
+ */
+function getScanTransferDestOptions() {
+  var flag = PropertiesService.getScriptProperties()
+    .getProperty('FEATURE_SCAN_TRANSFER') || 'OFF';
+  return JSON.parse(JSON.stringify({
+    destSLocOptions: CFG.DEST_SLOCS,
+    dryRun:          flag !== 'LIVE'
+  }));
 }
 
 // ============================================================================

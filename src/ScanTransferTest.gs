@@ -240,6 +240,15 @@ function TEST_scanTransfer_lookupOk() {
     if (r.sourceSLoc !== 'PW30')
       { pass = false; Logger.log('T3: sourceSLoc "' + r.sourceSLoc + '" !== "PW30"'); }
 
+    if (!Array.isArray(r.destSLocOptions))
+      { pass = false; Logger.log('T3: destSLocOptions must be an array'); }
+    else {
+      var cfgStr = JSON.stringify(CFG.DEST_SLOCS);
+      var gotStr = JSON.stringify(r.destSLocOptions);
+      if (gotStr !== cfgStr)
+        { pass = false; Logger.log('T3: destSLocOptions ' + gotStr + ' !== CFG.DEST_SLOCS ' + cfgStr); }
+    }
+
     return pass;
   } finally {
     PropertiesService.getScriptProperties()
@@ -484,11 +493,39 @@ function TEST_scanTransfer_doubleTapReuse() {
 }
 
 // ============================================================================
+// T8 — getScanTransferDestOptions returns CFG.DEST_SLOCS whitelist
+// ============================================================================
+
+/**
+ * getScanTransferDestOptions must return destSLocOptions deep-equal to
+ * CFG.DEST_SLOCS and a dryRun boolean.
+ * @return {boolean}
+ */
+function TEST_scanTransfer_destOptions() {
+  var r    = getScanTransferDestOptions();
+  var pass = true;
+
+  if (!Array.isArray(r.destSLocOptions))
+    { pass = false; Logger.log('T8: destSLocOptions must be an array'); }
+  else {
+    var cfgStr = JSON.stringify(CFG.DEST_SLOCS);
+    var gotStr = JSON.stringify(r.destSLocOptions);
+    if (gotStr !== cfgStr)
+      { pass = false; Logger.log('T8: destSLocOptions ' + gotStr + ' !== CFG.DEST_SLOCS ' + cfgStr); }
+  }
+
+  if (typeof r.dryRun !== 'boolean')
+    { pass = false; Logger.log('T8: dryRun must be boolean, got ' + typeof r.dryRun); }
+
+  return pass;
+}
+
+// ============================================================================
 // Runner — TEST_scanTransfer_runAll
 // ============================================================================
 
 /**
- * Run all 7 ScanTransfer tests. Logs a summary, shows an alert in the Sheet UI,
+ * Run all 8 ScanTransfer tests. Logs a summary, shows an alert in the Sheet UI,
  * and logs to EventLog. Returns true if all pass.
  * @return {boolean}
  */
@@ -500,7 +537,8 @@ function TEST_scanTransfer_runAll() {
     { name: 'T4_stockZeroBlocks', fn: TEST_scanTransfer_stockZeroBlocks },
     { name: 'T5_dryRunRowMirror', fn: TEST_scanTransfer_dryRunRowMirror },
     { name: 'T6_orphanCleanup',   fn: TEST_scanTransfer_orphanCleanupOnBuildFail },
-    { name: 'T7_doubleTapReuse',  fn: TEST_scanTransfer_doubleTapReuse }
+    { name: 'T7_doubleTapReuse',  fn: TEST_scanTransfer_doubleTapReuse },
+    { name: 'T8_destOptions',     fn: TEST_scanTransfer_destOptions }
   ];
 
   var allPass = true;

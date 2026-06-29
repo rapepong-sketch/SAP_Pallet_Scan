@@ -304,6 +304,7 @@
   <button class="mode-btn active" id="mode-btn-scan" onclick="switchMode('scan')">📷 สแกนยืนยัน</button>
   <button class="mode-btn" id="mode-btn-count" onclick="switchMode('count')">📋 นับสต๊อก</button>
   <button class="mode-btn" id="mode-btn-qc" onclick="switchMode('qc')">🔍 ตรวจงาน/QC</button>
+  <button class="mode-btn" id="mode-btn-xfer" onclick="switchMode('xfer')">🔀 สแกนโอนย้าย</button>
 </div>
 
 <!-- Global message banner -->
@@ -657,6 +658,54 @@
   <button class="btn btn-success hidden" id="qcm-qc-btn-submit" onclick="qcmSubmitQcResult()">
     💾 บันทึกผล QC
   </button>
+</div>
+
+<!-- ═══════════════════════ XFER MODE SECTIONS ════════════════════════════ -->
+
+<!-- Xfer: dest SLoc selector + guarded camera button -->
+<div class="section hidden" id="xfer-setup-section">
+  <div class="section-title">🔀 โอนย้ายพาเลท — เลือกปลายทาง</div>
+  <p style="font-size:13px; color:#e67e22; margin-bottom:10px;">⚠️ เลือกปลายทางก่อนสแกน</p>
+  <div class="form-group">
+    <label>ปลายทาง (DestSLoc) *</label>
+    <select id="x-dest-sloc" onchange="xferDestChange()">
+      <option value="">-- เลือกปลายทาง --</option>
+    </select>
+  </div>
+  <div id="xfer-dest-banner" class="hidden"
+       style="background:#ebf5fb; border:1px solid #3498db; border-radius:8px;
+              padding:8px 12px; margin-bottom:10px; font-size:14px;
+              color:#2874a6; font-weight:bold;"></div>
+  <input type="file" id="xfer-qr-input" accept="image/*" capture="environment" style="display:none">
+  <button id="x-cam-btn" class="btn btn-primary" disabled
+          onclick="document.getElementById('xfer-qr-input').click()"
+          style="opacity:0.5;">
+    📷 สแกน QR พาเลท
+  </button>
+</div>
+
+<!-- Xfer: review + confirm -->
+<div class="section hidden" id="xfer-review-section">
+  <div class="section-title">📦 ตรวจสอบก่อนโอนย้าย</div>
+  <div id="xfer-review-badge" style="margin-bottom:10px;"></div>
+  <div id="xfer-info" class="info-grid"></div>
+  <button class="btn btn-success" id="btn-xfer-confirm" onclick="submitScanTransfer()"
+          style="margin-top:14px;">
+    🔀 ยืนยันโอนย้าย
+  </button>
+</div>
+
+<!-- Xfer: result -->
+<div class="section hidden" id="xfer-result-section">
+  <div id="xfer-result-icon" class="result-icon"></div>
+  <div id="xfer-result-title" class="result-title"></div>
+  <div id="xfer-result-detail" class="result-detail"></div>
+  <div class="rescan-row" style="margin-top:12px;">
+    <button class="btn btn-outline" onclick="xferRescan()"
+            style="padding:8px 20px; font-size:14px;">
+      🔄 สแกนใหม่
+    </button>
+  </div>
 </div>
 
 <div class="bottom-pad"></div>
@@ -1554,7 +1603,7 @@ function showTransferResult(type, title, detail) {
 // ============================================================
 // Count mode — stock count session
 // ============================================================
-var currentMode       = 'scan'; // 'scan' | 'count' | 'qc'
+var currentMode       = 'scan'; // 'scan' | 'count' | 'qc' | 'xfer'
 var countSessionId    = null;
 var countSloc         = null;
 var countScanTotal    = 0;
@@ -1573,6 +1622,11 @@ var qcmConfirmedOps        = [];
 var qcmPdResults           = {};
 var qcmQrListenerAttached  = false;
 
+// Scan-transfer mode (xfer) — own state, parallel to qcm
+var currentScanTransferInfo = null;
+var xferQrListenerAttached  = false;
+var _xferDestOptions        = null;
+
 function countRpcTimeout(label) {
   return setTimeout(function () {
     countRpcTimer = null;
@@ -1590,6 +1644,7 @@ function switchMode(mode) {
   document.getElementById('mode-btn-scan').className  = 'mode-btn' + (mode === 'scan'  ? ' active' : '');
   document.getElementById('mode-btn-count').className = 'mode-btn' + (mode === 'count' ? ' active' : '');
   document.getElementById('mode-btn-qc').className    = 'mode-btn' + (mode === 'qc'    ? ' active' : '');
+  document.getElementById('mode-btn-xfer').className  = 'mode-btn' + (mode === 'xfer'  ? ' active' : '');
 
   if (mode === 'scan') {
     hide('count-setup-section');
@@ -1599,6 +1654,9 @@ function switchMode(mode) {
     hide('qcm-pallet-section');
     hide('qcm-pd-section');
     hide('qcm-qc-section');
+    hide('xfer-setup-section');
+    hide('xfer-review-section');
+    hide('xfer-result-section');
     show('scan-section');
   } else if (mode === 'count') {
     resetScanner();
@@ -1615,6 +1673,9 @@ function switchMode(mode) {
     hide('qcm-pallet-section');
     hide('qcm-pd-section');
     hide('qcm-qc-section');
+    hide('xfer-setup-section');
+    hide('xfer-review-section');
+    hide('xfer-result-section');
 
     if (countSessionId) {
       show('count-scan-section');
@@ -1637,9 +1698,34 @@ function switchMode(mode) {
     hide('count-setup-section');
     hide('count-scan-section');
     hide('count-result-section');
+    hide('xfer-setup-section');
+    hide('xfer-review-section');
+    hide('xfer-result-section');
     qcmReset();
     initQcmQrScanner();
     show('qcm-scan-section');
+  } else if (mode === 'xfer') {
+    resetScanner();
+    hide('scan-section');
+    hide('pallet-section');
+    hide('timeline-section');
+    hide('form-section');
+    hide('result-section');
+    hide('next-scan-section');
+    hide('transfer-section');
+    hide('transfer-result-section');
+    hide('transfer-rescan-section');
+    hide('count-setup-section');
+    hide('count-scan-section');
+    hide('count-result-section');
+    hide('qcm-scan-section');
+    hide('qcm-pallet-section');
+    hide('qcm-pd-section');
+    hide('qcm-qc-section');
+    xferReset();
+    initXferQrScanner();
+    populateXferDest();
+    show('xfer-setup-section');
   }
 }
 
@@ -2239,6 +2325,203 @@ function qcmReset() {
   hide('qcm-pd-section');
   hide('qcm-qc-section');
   clearMsg();
+}
+
+// ============================================================
+// Xfer mode (scan-to-transfer) — own state, own sections,
+// own file input, own handler, own guard. Parallel to qcm.
+// ============================================================
+
+function xferReset() {
+  currentScanTransferInfo = null;
+  hide('xfer-review-section');
+  hide('xfer-result-section');
+  document.getElementById('x-dest-sloc').value          = '';
+  document.getElementById('x-cam-btn').disabled         = true;
+  document.getElementById('x-cam-btn').style.opacity    = '0.5';
+  var banner = document.getElementById('xfer-dest-banner');
+  banner.textContent = '';
+  banner.classList.add('hidden');
+  clearMsg();
+}
+
+function xferDestChange() {
+  var val    = document.getElementById('x-dest-sloc').value;
+  var btn    = document.getElementById('x-cam-btn');
+  var banner = document.getElementById('xfer-dest-banner');
+  if (val) {
+    btn.disabled      = false;
+    btn.style.opacity = '1';
+    banner.textContent = 'โหมดโอนย้าย → ปลายทาง ' + val;
+    banner.classList.remove('hidden');
+  } else {
+    btn.disabled      = true;
+    btn.style.opacity = '0.5';
+    banner.textContent = '';
+    banner.classList.add('hidden');
+  }
+}
+
+function populateXferDest() {
+  google.script.run
+    .withSuccessHandler(function (res) {
+      _xferDestOptions = res;
+      var sel = document.getElementById('x-dest-sloc');
+      sel.innerHTML = '<option value="">-- เลือกปลายทาง --</option>';
+      (res.destSLocOptions || []).forEach(function (s) {
+        var opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        sel.appendChild(opt);
+      });
+    })
+    .withFailureHandler(function (err) {
+      showMsg('error', '❌ โหลดปลายทางไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .getScanTransferDestOptions();
+}
+
+function initXferQrScanner() {
+  if (xferQrListenerAttached) return;
+  xferQrListenerAttached = true;
+
+  document.getElementById('xfer-qr-input').addEventListener('change', function (e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    showMsg('info', '⏳ กำลังอ่าน QR Code...');
+    html5QrCode.scanFile(file, true).then(function (decoded) {
+      if (navigator.vibrate) navigator.vibrate(200);
+      clearMsg();
+      var palletId = parseQrPayload(decoded);
+      if (!palletId) {
+        showMsg('error', 'QR code ไม่ถูกต้อง — ต้องเป็น PALLET|... format');
+        return;
+      }
+      doScanTransferLookup(palletId);
+    }).catch(function () {
+      showMsg('error', '❌ ไม่พบ QR Code ในรูป — ลองถ่ายใหม่');
+    });
+    e.target.value = '';
+  });
+}
+
+function doScanTransferLookup(palletId) {
+  clearMsg();
+  hide('xfer-review-section');
+  hide('xfer-result-section');
+  showMsg('info', '⏳ กำลังค้นหาพาเลท ' + palletId + ' …');
+
+  google.script.run
+    .withSuccessHandler(onScanTransferLookupResult)
+    .withFailureHandler(function (err) {
+      clearMsg();
+      showMsg('error', '❌ เกิดข้อผิดพลาด: ' + (err.message || String(err)));
+    })
+    .scanTransferLookup(palletId);
+}
+
+function onScanTransferLookupResult(res) {
+  clearMsg();
+  if (!res.ok) {
+    showMsg('error', '❌ ' + (res.error || 'เกิดข้อผิดพลาด'));
+    return;
+  }
+  currentScanTransferInfo = res;
+  renderScanTransferReview(res);
+}
+
+function renderScanTransferReview(res) {
+  var dryRun = _xferDestOptions && _xferDestOptions.dryRun;
+  document.getElementById('xfer-review-badge').innerHTML = dryRun
+    ? '<span class="badge badge-dry">🧪 DRY_RUN</span>'
+    : '<span class="badge badge-on">🟢 LIVE</span>';
+
+  var rows = [
+    ['PalletID',       esc(res.palletId)],
+    ['ใบสั่งผลิต',    esc(res.mo)],
+    ['วัสดุ',          esc(res.material)],
+    ['แบตช์',          esc(res.batch || '—')],
+    ['จำนวน',          esc(String(res.qty)) + ' ' + esc(res.unit)],
+    ['Work Center',    esc(res.workCenter || '—')],
+    ['ต้นทาง (SLoc)', esc(res.sourceSLoc)],
+    ['SAP Stock',      esc(String(res.sapStock))]
+  ];
+  var html = rows.map(function (r) {
+    var isHtml = r[1].indexOf('<') !== -1;
+    return '<div class="info-label">' + r[0] + '</div>' +
+           '<div class="info-value' + (isHtml ? '' : ' normal') + '">' + r[1] + '</div>';
+  }).join('');
+  document.getElementById('xfer-info').innerHTML = html;
+
+  var btn = document.getElementById('btn-xfer-confirm');
+  btn.disabled    = false;
+  btn.textContent = '🔀 ยืนยันโอนย้าย';
+
+  show('xfer-review-section');
+  document.getElementById('xfer-review-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function submitScanTransfer() {
+  if (!currentScanTransferInfo) { showMsg('error', 'ไม่มีข้อมูลพาเลท'); return; }
+  var destSloc = document.getElementById('x-dest-sloc').value;
+  if (!destSloc) { showMsg('error', 'กรุณาเลือกปลายทาง'); return; }
+  if (destSloc === currentScanTransferInfo.sourceSLoc) {
+    showMsg('error', 'ปลายทางตรงกับต้นทาง (' + destSloc + ')');
+    return;
+  }
+  var btn = document.getElementById('btn-xfer-confirm');
+  btn.disabled    = true;
+  btn.textContent = '⏳ กำลังโอนย้าย...';
+  clearMsg();
+
+  google.script.run
+    .withSuccessHandler(onScanTransferResult)
+    .withFailureHandler(function (err) {
+      btn.disabled    = false;
+      btn.textContent = '🔀 ยืนยันโอนย้าย';
+      clearMsg();
+      showMsg('error', '❌ โอนย้ายไม่สำเร็จ: ' + (err.message || String(err)));
+    })
+    .scanTransferConfirm(currentScanTransferInfo.palletId, destSloc);
+}
+
+function onScanTransferResult(r) {
+  clearMsg();
+  hide('xfer-review-section');
+
+  var iconEl   = document.getElementById('xfer-result-icon');
+  var titleEl  = document.getElementById('xfer-result-title');
+  var detailEl = document.getElementById('xfer-result-detail');
+
+  if (r.ok) {
+    iconEl.textContent  = r.dryRun ? '🧪' : '✅';
+    titleEl.textContent = r.dryRun ? 'DRY_RUN — จำลองสำเร็จ' : 'โอนย้ายสำเร็จ';
+    titleEl.style.color = r.dryRun ? '#e67e22' : '#1e8449';
+    detailEl.textContent = 'เอกสาร: ' + (r.dryRun ? 'DRY_RUN' : (r.materialDocument || '-'));
+    // ONE-SHOT DISARM: operator must re-pick dest before next scan
+    document.getElementById('x-dest-sloc').value          = '';
+    document.getElementById('x-cam-btn').disabled         = true;
+    document.getElementById('x-cam-btn').style.opacity    = '0.5';
+    var banner = document.getElementById('xfer-dest-banner');
+    banner.textContent = '';
+    banner.classList.add('hidden');
+  } else {
+    iconEl.textContent  = '❌';
+    titleEl.textContent = 'โอนย้ายไม่สำเร็จ';
+    titleEl.style.color = '#c0392b';
+    detailEl.textContent = r.error || 'เกิดข้อผิดพลาด';
+  }
+
+  show('xfer-result-section');
+  document.getElementById('xfer-result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function xferRescan() {
+  hide('xfer-result-section');
+  hide('xfer-review-section');
+  currentScanTransferInfo = null;
+  xferReset();                 // re-disarms dest + cam, clears banner
+  show('xfer-setup-section');  // return operator to dest-pick + scan
 }
 </script>
 </body>
