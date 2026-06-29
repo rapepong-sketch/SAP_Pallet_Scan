@@ -528,7 +528,11 @@ function updatePalletScanFields_(palletId, fields) {
   Object.keys(fields).forEach(function(colName) {
     const col = colByName[colName];
     if (!col) return; // column absent — skip
-    sh.getRange(rowNum, col).setValue(fields[colName]);
+    var cell = sh.getRange(rowNum, col);
+    if (colName === 'Batch') {
+      cell.setNumberFormat('@');
+    }
+    cell.setValue(fields[colName]);
   });
 
   if (colByName['UpdatedAt']) {
