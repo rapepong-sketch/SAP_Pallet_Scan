@@ -62,11 +62,12 @@ function _readPmRow_(palletId) {
  * inside buildTransfer311Payload_ at confirm time — not duplicated here.
  *
  * @param {string} palletId
+ * @param {Object} [opts] - { stockFn } for test injection
  * @return {{ok:boolean, error?:string, palletId?:string, mo?:string,
  *   material?:string, batch?:string, qty?:number, unit?:string,
  *   workCenter?:string, sourceSLoc?:string, sapStock?:number}}
  */
-function scanTransferLookup(palletId) {
+function scanTransferLookup(palletId, opts) {
   try {
     palletId = String(palletId || '').trim();
     if (!palletId) {
@@ -99,9 +100,11 @@ function scanTransferLookup(palletId) {
     var sourceSLoc = String(pm['StorageLocation']     || '').trim();
     var mo         = String(pm['ManufacturingOrder']  || '').trim();
 
+    var _fetchStock = (opts && opts.stockFn) || fetchSapBatchStockForBatches_;
+
     var sapStock = 0;
     if (batch) {
-      var stockMap = fetchSapBatchStockForBatches_(
+      var stockMap = _fetchStock(
         material, CFG.PLANT, sourceSLoc, [batch]);
       sapStock = stockMap[batch] || 0;
       if (sapStock <= 0) {
@@ -154,17 +157,17 @@ function scanTransferLookup(palletId) {
  *
  * DRY_RUN self-cleans its seeded row so the sheet stays tidy during testing.
  *
- * NOTE: buildTransfer311Payload_ currently rejects TxnType != 'SPLIT_ISSUE'.
- * DRY_RUN surfaces this as buildErr. A follow-up commit must relax that guard
- * before LIVE is viable. Flag stays OFF until then.
+ * NOTE: buildTransfer311Payload_ accepts SCAN_ISSUE (relaxed in 67f1921). LIVE
+ * delegates to confirmTransfer311 → postTransfer311WithRetry_ (hardened path).
  *
  * @param {string} palletId
  * @param {string} destSloc
+ * @param {Object} [opts] - { stockFn } for test injection
  * @return {{ok:boolean, dryRun?:boolean, materialDocument?:string,
  *           materialDocumentYear?:string, txnId?:string,
  *           payloadPreview?:Object, error?:string}}
  */
-function scanTransferConfirm(palletId, destSloc) {
+function scanTransferConfirm(palletId, destSloc, opts) {
   try {
     palletId = String(palletId || '').trim();
     destSloc = String(destSloc || '').trim();
@@ -209,6 +212,8 @@ function scanTransferConfirm(palletId, destSloc) {
     // LotNo mirrors getConfirmedStockByMaterial_: batch if known, else palletId
     var lotNo      = batch ? batch : palletId;
 
+    var _fetchStock = (opts && opts.stockFn) || fetchSapBatchStockForBatches_;
+
     if (destSloc === sourceSLoc) {
       return JSON.parse(JSON.stringify({
         ok: false, error: 'ปลายทางตรงกับต้นทาง (' + destSloc + ')'
@@ -217,7 +222,7 @@ function scanTransferConfirm(palletId, destSloc) {
 
     // Stock re-check — guard against stale lookup result
     if (batch) {
-      var stockMap = fetchSapBatchStockForBatches_(
+      var stockMap = _fetchStock(
         material, CFG.PLANT, sourceSLoc, [batch]);
       var sapStock = stockMap[batch] || 0;
       if (sapStock <= 0) {

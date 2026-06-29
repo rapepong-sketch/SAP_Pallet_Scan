@@ -98,7 +98,8 @@ function onOpen() {
     .addItem('🔍 Backfill PM.Batch (DRY RUN)',              'BACKFILL_palletMasterBatch_dryRun')
     .addItem('⚠️ Backfill PM.Batch (APPLY)',                'BACKFILL_palletMasterBatch_apply')
     .addSeparator()
-    .addItem('🧪 Batch Resolution Test Suite',               'TEST_resolveBatch_runAll');
+    .addItem('🧪 Batch Resolution Test Suite',               'TEST_resolveBatch_runAll')
+    .addItem('🧪 [Test] Scan-Transfer (run all)',            'TEST_scanTransfer_runAll');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
