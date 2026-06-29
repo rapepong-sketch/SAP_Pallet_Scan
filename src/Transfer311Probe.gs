@@ -2110,3 +2110,243 @@ function PROBE_palletBatchStock() {
   Logger.log('[PROBE_palletBatchStock] DONE');
   SpreadsheetApp.getUi().alert(alertLines.join('\n'));
 }
+
+// ============================================================================
+// DIAG — FIFO SAP-stock pre-filter format mismatch (READ-ONLY)
+// ============================================================================
+
+/**
+ * Mirrors the PRODUCTION stock-fetch path (getConfirmedStockByMaterial_ →
+ * fetchSapBatchStockForBatches_): reads PalletMaster first to collect candidate
+ * batches, then issues an OR-filter SAP query targeting only those batches.
+ * Replaces the old $top=200 blind scan (fetchSapBatchStock_, now deprecated).
+ *
+ * READ-ONLY — GET only, no POST, no CSRF, no sheet writes.
+ */
+function DIAG_fifoStockFilter() {
+  var material     = 'STT1001-R0000S3XRX';
+  var sloc         = 'PW30';
+  var plant        = CFG.PLANT;
+  var TARGET_PID   = 'PL-1000036325-L02';
+  var TARGET_BATCH = '0000095389';
+
+  Logger.log('══════════════════════════════════════════════════════');
+  Logger.log('DIAG_fifoStockFilter — READ-ONLY (OR-filter, mirrors fetchSapBatchStockForBatches_)');
+  Logger.log('Material: ' + material + '  SLoc: ' + sloc + '  Plant: ' + plant);
+  Logger.log('══════════════════════════════════════════════════════');
+
+  // ── STEP 1: PalletMaster — collect CONFIRMED candidate batches ───────────
+  // Must come first: production also reads PM before calling SAP so it knows
+  // which specific batches to query (getConfirmedStockByMaterial_ lines 298-333).
+  Logger.log('');
+  Logger.log('── STEP 1: PalletMaster — CONFIRMED ' + material + ' at ' + sloc + ' ──');
+
+  var pmSh = getSpreadsheet_().getSheetByName('PalletMaster');
+  if (!pmSh || pmSh.getLastRow() < 2) {
+    Logger.log('PalletMaster empty');
+    SpreadsheetApp.getUi().alert('DIAG_fifoStockFilter\n\nPalletMaster sheet empty.');
+    return;
+  }
+
+  var pmData = pmSh.getDataRange().getValues();
+  var pmIdx = {};
+  pmData[0].forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var confirmedPallets = [];
+  for (var r = 1; r < pmData.length; r++) {
+    var row = pmData[r];
+    var pStatus = String(row[pmIdx['ScanStatus']] || '').trim();
+    var pMat    = String(row[pmIdx['Material']]   || '').trim();
+    var pSloc   = String(row[pmIdx['StorageLocation']] || '').trim();
+    if (pStatus !== 'CONFIRMED') continue;
+    if (pMat    !== material)    continue;
+    if (pSloc   !== sloc)        continue;
+
+    var pid   = String(row[pmIdx['PalletID']]     || '').trim();
+    var batch = String(row[pmIdx['Batch']]         || '').trim();
+    var qty   = Number(row[pmIdx['QtyPerPallet']]) || 0;
+    confirmedPallets.push({ pid: pid, batch: batch, qty: qty });
+    Logger.log('pallet ' + pid + '  batch="' + batch + '" (len=' + batch.length + ')  qty=' + qty);
+  }
+  Logger.log('[PalletMaster] CONFIRMED ' + material + '@' + sloc + ': ' +
+    confirmedPallets.length + ' pallets found');
+
+  // Distinct non-empty batches — same logic as getConfirmedStockByMaterial_ lines 329-333
+  var batchSet = {};
+  confirmedPallets.forEach(function(p) { if (p.batch) batchSet[p.batch] = true; });
+  var distinctBatches = Object.keys(batchSet);
+  Logger.log('[PalletMaster] distinct batches for SAP query: ' + JSON.stringify(distinctBatches));
+
+  if (distinctBatches.length === 0) {
+    Logger.log('No candidate batches — all CONFIRMED pallets have empty batch field');
+    SpreadsheetApp.getUi().alert('DIAG_fifoStockFilter\n\nNo candidate batches found in PalletMaster.');
+    return;
+  }
+
+  // ── STEP 2: SAP fetch — OR-filter (mirrors fetchSapBatchStockForBatches_) ─
+  Logger.log('');
+  Logger.log('── STEP 2: SAP A_MatlStkInAcctMod OR-filter (same as fetchSapBatchStockForBatches_) ──');
+
+  var stockSvcRoot = CFG.SAP_BASE_URL + MATERIAL_STOCK_SRV_PROBE_;
+  var baseFilter   = "Material eq '" + material +
+    "' and Plant eq '" + plant +
+    "' and StorageLocation eq '" + sloc + "'";
+
+  var CHUNK       = 20;
+  var sapBatchQty = {};
+  var stockRows   = [];
+  var totalChunks = Math.ceil(distinctBatches.length / CHUNK);
+
+  for (var start = 0; start < distinctBatches.length; start += CHUNK) {
+    var chunk       = distinctBatches.slice(start, start + CHUNK);
+    var batchClause = chunk.map(function(b) { return "Batch eq '" + b + "'"; }).join(' or ');
+    var filterStr   = baseFilter + ' and (' + batchClause + ')';
+
+    var stockUrl = buildSapUrl_(stockSvcRoot + 'A_MatlStkInAcctMod', {
+      '$filter': filterStr,
+      '$select': 'Batch,InventoryStockType,MatlWrhsStkQtyInMatlBaseUnit',
+      '$top':    '200',
+      '$format': 'json'
+    });
+
+    Logger.log('FETCH_URL [chunk ' + (Math.floor(start / CHUNK) + 1) + '/' + totalChunks + '] ' + stockUrl);
+    var stockResp = probeRawGet_(stockUrl);
+    Logger.log('[stock] HTTP ' + stockResp.code);
+    Logger.log('[stock] RAW RESPONSE (first 2000 chars):\n' + stockResp.text.slice(0, 2000));
+
+    if (stockResp.code >= 400) {
+      var errMsg = 'SAP stock fetch failed HTTP ' + stockResp.code;
+      Logger.log('ABORT: ' + errMsg);
+      SpreadsheetApp.getUi().alert('DIAG_fifoStockFilter\n\n❌ ' + errMsg + '\n\nSee Executions log.');
+      return;
+    }
+
+    var stockParsed = JSON.parse(stockResp.text);
+    var chunkRows   = (stockParsed.d && stockParsed.d.results) || [];
+    stockRows       = stockRows.concat(chunkRows);
+
+    Logger.log('[stock] chunk rows: ' + chunkRows.length);
+    for (var i = 0; i < chunkRows.length; i++) {
+      var sr = chunkRows[i];
+      Logger.log('  row[' + i + ']: Batch=' + JSON.stringify(sr.Batch) +
+        ' type=' + JSON.stringify(sr.InventoryStockType) +
+        ' qty=' + JSON.stringify(sr.MatlWrhsStkQtyInMatlBaseUnit) +
+        ' (typeof qty=' + typeof sr.MatlWrhsStkQtyInMatlBaseUnit + ')');
+      if (String(sr.InventoryStockType || '').trim() !== '01') continue;
+      var b = String(sr.Batch || '').trim();
+      if (!b) continue;
+      var q = parseFloat(sr.MatlWrhsStkQtyInMatlBaseUnit) || 0;
+      sapBatchQty[b] = (sapBatchQty[b] || 0) + q;
+    }
+  }
+
+  Logger.log('[stock] Total rows across all chunks: ' + stockRows.length);
+  Logger.log('[stock] sapBatchQty keys (type=01 only): ' + JSON.stringify(Object.keys(sapBatchQty)));
+  Logger.log('[stock] full map: ' + JSON.stringify(sapBatchQty));
+
+  // Per-pallet SAP lookup (mirrors what getConfirmedStockByMaterial_ checks at line 351)
+  Logger.log('');
+  Logger.log('[pallet SAP lookup]');
+  for (var p2 = 0; p2 < confirmedPallets.length; p2++) {
+    var cp = confirmedPallets[p2];
+    var sapQtyForBatch = sapBatchQty[cp.batch];
+    Logger.log('pallet ' + cp.pid +
+      ' lookup batch="' + cp.batch + '" (len=' + cp.batch.length + ')' +
+      ' → sapBatchQty[batch]=' + sapQtyForBatch +
+      ' (type=' + typeof sapQtyForBatch + ')');
+  }
+
+  // ── STEP 3: Key diagnosis — compare formats side by side ────────────────
+  Logger.log('');
+  Logger.log('── STEP 3: Key match test ──');
+  Logger.log('TARGET_BATCH constant (expected): "' + TARGET_BATCH + '" (len=' + TARGET_BATCH.length + ')');
+  Logger.log('SAP map keys:    ' + JSON.stringify(Object.keys(sapBatchQty)));
+
+  // Check target pallet specifically
+  var targetPallet = null;
+  for (var t = 0; t < confirmedPallets.length; t++) {
+    if (confirmedPallets[t].pid === TARGET_PID) {
+      targetPallet = confirmedPallets[t];
+      break;
+    }
+  }
+
+  if (targetPallet) {
+    var pmBatch    = targetPallet.batch;
+    var sapQtyHit  = sapBatchQty[pmBatch];
+    var exactMatch = (pmBatch in sapBatchQty);
+    Logger.log(TARGET_PID + ':');
+    Logger.log('  PM batch = "' + pmBatch + '" (len=' + pmBatch.length + ')');
+    Logger.log('  SAP keys = ' + JSON.stringify(Object.keys(sapBatchQty)));
+    Logger.log('  exact match (pmBatch in sapBatchQty)? ' + exactMatch);
+    Logger.log('  sapBatchQty[pmBatch] = ' + sapQtyHit);
+  } else {
+    Logger.log(TARGET_PID + ' NOT FOUND in PalletMaster (may have different status or SLoc)');
+  }
+
+  // Check TARGET_BATCH itself in the map regardless of which pallet carries it
+  var directHit = sapBatchQty[TARGET_BATCH];
+  Logger.log('');
+  Logger.log('Direct key test:');
+  Logger.log('  sapBatchQty["' + TARGET_BATCH + '"] = ' + directHit +
+    ' (undefined means key absent; 0 means key present but qty=0)');
+  Logger.log('  "' + TARGET_BATCH + '" in sapBatchQty? ' + (TARGET_BATCH in sapBatchQty));
+
+  // ── STEP 4: Qty field sanity ─────────────────────────────────────────────
+  Logger.log('');
+  Logger.log('── STEP 4: qty field type check ──');
+  var type01Rows = stockRows.filter(function(sr) {
+    return String(sr.InventoryStockType || '').trim() === '01';
+  });
+  Logger.log('Rows with InventoryStockType=01: ' + type01Rows.length);
+  if (type01Rows.length > 0) {
+    var sample = type01Rows[0];
+    Logger.log('  Sample row: Batch=' + JSON.stringify(sample.Batch) +
+      ' MatlWrhsStkQtyInMatlBaseUnit=' + JSON.stringify(sample.MatlWrhsStkQtyInMatlBaseUnit) +
+      ' (typeof=' + typeof sample.MatlWrhsStkQtyInMatlBaseUnit + ')' +
+      ' parseFloat=' + parseFloat(sample.MatlWrhsStkQtyInMatlBaseUnit));
+  }
+  // Check if the 2000-PC batch row exists at all (any type)
+  var batchAnyType = stockRows.filter(function(sr) {
+    return String(sr.Batch || '').trim() === TARGET_BATCH;
+  });
+  Logger.log('  Rows with Batch="' + TARGET_BATCH + '" (ANY StockType): ' + batchAnyType.length);
+  batchAnyType.forEach(function(sr, idx2) {
+    Logger.log('  [' + idx2 + ']: type=' + sr.InventoryStockType +
+      ' qty=' + sr.MatlWrhsStkQtyInMatlBaseUnit);
+  });
+  // Also check unpadded variant
+  var unpadded = '95389';
+  var batchUnpadded = stockRows.filter(function(sr) {
+    return String(sr.Batch || '').trim() === unpadded;
+  });
+  Logger.log('  Rows with Batch="' + unpadded + '" (unpadded, ANY StockType): ' + batchUnpadded.length);
+
+  // ── Summary alert ────────────────────────────────────────────────────────
+  var sapKeys   = Object.keys(sapBatchQty);
+  var pmBatchStr = targetPallet ? '"' + targetPallet.batch + '" (len=' + targetPallet.batch.length + ')' : 'PL-1000036325-L02 not found in PM@PW30';
+  var matchResult = targetPallet ? ((targetPallet.batch in sapBatchQty) ? '✅ MATCH' : '❌ NO MATCH') : '⚠ pallet not found';
+
+  var alertLines = [
+    'DIAG FIFO Stock Filter — OR-filter (READ-ONLY)\n',
+    'PM candidate batches (' + distinctBatches.length + '): ' + JSON.stringify(distinctBatches),
+    'SAP map keys (' + sapKeys.length + '): ' + JSON.stringify(sapKeys),
+    'SAP full map: ' + JSON.stringify(sapBatchQty),
+    '',
+    'PM batch for ' + TARGET_PID + ': ' + pmBatchStr,
+    'Match result: ' + matchResult,
+    '',
+    'direct sapBatchQty["' + TARGET_BATCH + '"] = ' + directHit,
+    '  ("' + TARGET_BATCH + '" in map? ' + (TARGET_BATCH in sapBatchQty) + ')',
+    '',
+    'type=01 rows from SAP: ' + type01Rows.length,
+    'Rows for "' + TARGET_BATCH + '" (any type): ' + batchAnyType.length,
+    'Rows for "' + unpadded + '" (unpadded): ' + batchUnpadded.length,
+    '',
+    'Full detail in Executions log.'
+  ];
+
+  Logger.log('');
+  Logger.log('DIAG COMPLETE');
+  SpreadsheetApp.getUi().alert(alertLines.join('\n'));
+}
