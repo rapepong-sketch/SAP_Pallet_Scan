@@ -870,6 +870,7 @@ function TEST_fifo_skipsStaleBatch() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 /**
@@ -936,6 +937,7 @@ function TEST_fifo_capsAtSapQty() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 /**
@@ -995,6 +997,7 @@ function TEST_fifo_sapCheckFailsSafe() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 /**
@@ -1064,6 +1067,7 @@ function TEST_fifo_unresolvedBatchSkipped() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 /**
@@ -1106,9 +1110,30 @@ function TEST_fifo_targetedBatchQuery() {
   r2[idx['ScanStatus']]      = 'CONFIRMED';
   r2[idx['ConfirmedAt']]     = now;
 
+  // appendRow() coerces all-digit strings to numbers regardless of pre-set column
+  // format ('0000095389' → 95389). Fix: appendRow with batch as '' placeholder,
+  // then overwrite the batch cell with setNumberFormat('@') + setValue(string).
+  // This is the proven pattern used in updatePalletScanFields_/BACKFILL.
+  var batchCol = idx['Batch'] + 1; // 1-based
+
+  r1[idx['Batch']] = '';
   sh.appendRow(r1);
+  var row1Num = sh.getLastRow();
+
+  r2[idx['Batch']] = '';
   sh.appendRow(r2);
+  var row2Num = sh.getLastRow();
+
+  // Overwrite batch cells as forced-text strings
+  sh.getRange(row1Num, batchCol).setNumberFormat('@').setValue(LIVE_BATCH);
+  sh.getRange(row2Num, batchCol).setNumberFormat('@').setValue(STALE_BATCH);
   SpreadsheetApp.flush();
+
+  // Verify round-trip before running test logic
+  var rb1 = sh.getRange(row1Num, batchCol).getValue();
+  var rb2 = sh.getRange(row2Num, batchCol).getValue();
+  Logger.log('fixture batch readback: row1=' + rb1 + ' (len=' + String(rb1).length +
+    ') row2=' + rb2 + ' (len=' + String(rb2).length + ')');
 
   var capturedBatches = null;
   var pass = true;
@@ -1155,6 +1180,7 @@ function TEST_fifo_targetedBatchQuery() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 /**
@@ -1187,6 +1213,7 @@ function TEST_fifo_qtyParsedAsFloat() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 /**
@@ -1263,6 +1290,7 @@ function TEST_fifo_orFilterChunking() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'FIFO', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 /**
@@ -1283,19 +1311,27 @@ function TEST_fifo_sapFilter_runAll() {
 
   var results = [];
   tests.forEach(function(t) {
-    try { t.run(); results.push({ name: t.name, ok: true }); }
+    try {
+      var verdict = t.run();
+      results.push({ name: t.name, ok: verdict !== false });
+    }
     catch (e) { results.push({ name: t.name, ok: false, error: e.message }); }
   });
 
   Logger.log('');
   Logger.log('──────────────────────────────────────────');
   var allPass = results.every(function(r) { return r.ok; });
-  Logger.log(fn + ': ' + (allPass ? 'ALL PASS' : 'SOME FAILED') +
-    ' (' + (Date.now() - t0) + 'ms)');
+  var elapsed = Date.now() - t0;
+  Logger.log(fn + ': ' + (allPass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
   results.forEach(function(r) {
     Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name + (r.error ? ' — ' + r.error : ''));
   });
   Logger.log('──────────────────────────────────────────');
-  logEvent(fn, 'FIFO', allPass ? 'PASS' : 'FAIL', Date.now() - t0,
-    results.length + ' tests');
+  logEvent(fn, 'FIFO', allPass ? 'PASS' : 'FAIL', elapsed, results.length + ' tests');
+
+  SpreadsheetApp.getUi().alert(
+    'FIFO SAP Filter Test Suite: ' + (allPass ? 'ALL PASS ✅' : 'SOME FAILED ❌') + '\n\n' +
+    results.map(function(r) {
+      return (r.ok ? '✅ ' : '❌ ') + r.name + (r.error ? ' — ' + r.error : '');
+    }).join('\n') + '\n\nDetails in Executions log.');
 }

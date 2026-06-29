@@ -2419,3 +2419,298 @@ function TEST_finalOpPopulateOnMiss() {
   Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
   logEvent(fn, TEST_MO, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
 }
+
+// ============================================================================
+// Tests — batch capture at confirmation writeback (injectable, no real SAP)
+// ============================================================================
+
+function TEST_confirm_capturesBatch() {
+  var fn = 'TEST_confirm_capturesBatch';
+  var t0 = Date.now();
+  var pass = true;
+  var detail = '';
+  var TEST_PID = 'ZZTEST-BATCHCAP-L01';
+  var TEST_MO  = 'ZZTEST-BATCHCAP';
+  var EXPECT_BATCH = '0000094815';
+
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var hdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  hdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var origBuild    = buildConfirmationPayload_;
+  var origPost     = postConfirmationWithRetry_;
+  var origReadMat  = readMaterialDocument_;
+  var origResolve  = resolveBatchFromGrDoc_;
+
+  try {
+    // Insert test pallet row
+    var newRow = [];
+    for (var i = 0; i < hdr.length; i++) newRow.push('');
+    newRow[pmIdx['PalletID']]             = TEST_PID;
+    newRow[pmIdx['ManufacturingOrder']]    = TEST_MO;
+    newRow[pmIdx['Material']]             = 'STT1001-R0000S3XRX';
+    newRow[pmIdx['StorageLocation']]      = 'PW30';
+    newRow[pmIdx['ScanStatus']]           = 'QC_COMPLETE';
+    newRow[pmIdx['QtyPerPallet']]         = 100;
+    newRow[pmIdx['Unit']]                 = 'PC';
+    if (pmIdx['Batch'] !== undefined) newRow[pmIdx['Batch']] = '';
+    pmSh.appendRow(newRow);
+    SpreadsheetApp.flush();
+
+    // Monkeypatch — skip SAP, return canned results
+    buildConfirmationPayload_ = function() { return { orderConfirmation: 'fake' }; };
+    postConfirmationWithRetry_ = function() {
+      return { ok: true, confirmationGroup: 'ZZ999', confirmationCount: '1',
+               session: {} };
+    };
+    readMaterialDocument_ = function() {
+      return { materialDocument: '4900299999', materialDocumentYear: '2026' };
+    };
+    resolveBatchFromGrDoc_ = function() { return EXPECT_BATCH; };
+
+    var res = confirmPallet(TEST_PID);
+
+    if (!res || !res.ok) {
+      pass = false;
+      detail += 'confirmPallet did not return ok. ';
+    } else {
+      detail += 'confirm:ok. ';
+    }
+
+    // Re-read the pallet row to check Batch
+    SpreadsheetApp.flush();
+    var pmData = pmSh.getDataRange().getValues();
+    var found = false;
+    for (var r = 1; r < pmData.length; r++) {
+      if (String(pmData[r][pmIdx['PalletID']] || '').trim() === TEST_PID) {
+        found = true;
+        var writtenBatch = String(pmData[r][pmIdx['Batch']] || '').trim();
+        if (writtenBatch === EXPECT_BATCH) {
+          detail += 'batch="' + writtenBatch + '" MATCH. ';
+        } else {
+          pass = false;
+          detail += 'batch="' + writtenBatch + '" expected "' + EXPECT_BATCH + '" MISMATCH. ';
+        }
+        var writtenStatus = String(pmData[r][pmIdx['ScanStatus']] || '').trim();
+        if (writtenStatus === 'CONFIRMED') {
+          detail += 'status=CONFIRMED. ';
+        } else {
+          pass = false;
+          detail += 'status="' + writtenStatus + '" expected CONFIRMED. ';
+        }
+        break;
+      }
+    }
+    if (!found) { pass = false; detail += 'test row not found after confirm. '; }
+
+  } catch (ex) {
+    pass = false;
+    detail += 'EXCEPTION: ' + ex.message;
+  } finally {
+    buildConfirmationPayload_  = origBuild;
+    postConfirmationWithRetry_ = origPost;
+    readMaterialDocument_      = origReadMat;
+    resolveBatchFromGrDoc_     = origResolve;
+
+    var cleanup = pmSh.getDataRange().getValues();
+    for (var d = cleanup.length - 1; d >= 1; d--) {
+      if (String(cleanup[d][pmIdx['PalletID']] || '').trim() === TEST_PID) {
+        pmSh.deleteRow(d + 1);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
+  logEvent(fn, TEST_PID, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
+}
+
+function TEST_confirm_batchFailDoesNotBlock() {
+  var fn = 'TEST_confirm_batchFailDoesNotBlock';
+  var t0 = Date.now();
+  var pass = true;
+  var detail = '';
+  var TEST_PID = 'ZZTEST-BATCHFAIL-L01';
+  var TEST_MO  = 'ZZTEST-BATCHFAIL';
+
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var hdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  hdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var origBuild    = buildConfirmationPayload_;
+  var origPost     = postConfirmationWithRetry_;
+  var origReadMat  = readMaterialDocument_;
+  var origResolve  = resolveBatchFromGrDoc_;
+
+  try {
+    var newRow = [];
+    for (var i = 0; i < hdr.length; i++) newRow.push('');
+    newRow[pmIdx['PalletID']]             = TEST_PID;
+    newRow[pmIdx['ManufacturingOrder']]    = TEST_MO;
+    newRow[pmIdx['Material']]             = 'STT1001-R0000S3XRX';
+    newRow[pmIdx['StorageLocation']]      = 'PW30';
+    newRow[pmIdx['ScanStatus']]           = 'QC_COMPLETE';
+    newRow[pmIdx['QtyPerPallet']]         = 100;
+    newRow[pmIdx['Unit']]                 = 'PC';
+    if (pmIdx['Batch'] !== undefined) newRow[pmIdx['Batch']] = '';
+    pmSh.appendRow(newRow);
+    SpreadsheetApp.flush();
+
+    buildConfirmationPayload_ = function() { return { orderConfirmation: 'fake' }; };
+    postConfirmationWithRetry_ = function() {
+      return { ok: true, confirmationGroup: 'ZZ888', confirmationCount: '1',
+               session: {} };
+    };
+    readMaterialDocument_ = function() {
+      return { materialDocument: '4900288888', materialDocumentYear: '2026' };
+    };
+    resolveBatchFromGrDoc_ = function() { throw new Error('SIMULATED_BATCH_FAILURE'); };
+
+    var res = confirmPallet(TEST_PID);
+
+    if (!res || !res.ok) {
+      pass = false;
+      detail += 'confirmPallet did not return ok (should succeed despite batch error). ';
+    } else {
+      detail += 'confirm:ok despite batch throw. ';
+    }
+
+    SpreadsheetApp.flush();
+    var pmData = pmSh.getDataRange().getValues();
+    for (var r = 1; r < pmData.length; r++) {
+      if (String(pmData[r][pmIdx['PalletID']] || '').trim() === TEST_PID) {
+        var writtenBatch = String(pmData[r][pmIdx['Batch']] || '').trim();
+        if (writtenBatch === '') {
+          detail += 'batch="" (unchanged, correct). ';
+        } else {
+          pass = false;
+          detail += 'batch="' + writtenBatch + '" should be empty after resolver throw. ';
+        }
+        var writtenDoc = String(pmData[r][pmIdx['GRMaterialDocument']] || '').trim();
+        if (writtenDoc === '4900288888') {
+          detail += 'GRDoc=4900288888 (written). ';
+        } else {
+          pass = false;
+          detail += 'GRDoc="' + writtenDoc + '" expected 4900288888. ';
+        }
+        var writtenStatus = String(pmData[r][pmIdx['ScanStatus']] || '').trim();
+        if (writtenStatus === 'CONFIRMED') {
+          detail += 'status=CONFIRMED. ';
+        } else {
+          pass = false;
+          detail += 'status="' + writtenStatus + '" expected CONFIRMED. ';
+        }
+        break;
+      }
+    }
+
+  } catch (ex) {
+    pass = false;
+    detail += 'EXCEPTION propagated (should not): ' + ex.message;
+  } finally {
+    buildConfirmationPayload_  = origBuild;
+    postConfirmationWithRetry_ = origPost;
+    readMaterialDocument_      = origReadMat;
+    resolveBatchFromGrDoc_     = origResolve;
+
+    var cleanup = pmSh.getDataRange().getValues();
+    for (var d = cleanup.length - 1; d >= 1; d--) {
+      if (String(cleanup[d][pmIdx['PalletID']] || '').trim() === TEST_PID) {
+        pmSh.deleteRow(d + 1);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
+  logEvent(fn, TEST_PID, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
+}
+
+function TEST_batchWriteLeadingZeros() {
+  var fn = 'TEST_batchWriteLeadingZeros';
+  var t0 = Date.now();
+  var pass = true;
+  var detail = '';
+  var TEST_PID = 'ZZTEST-LEADZERO-L01';
+  var EXPECT   = '0000094815';
+
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var hdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  hdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var origBuild   = buildConfirmationPayload_;
+  var origPost    = postConfirmationWithRetry_;
+  var origReadMat = readMaterialDocument_;
+  var origResolve = resolveBatchFromGrDoc_;
+
+  try {
+    var newRow = [];
+    for (var i = 0; i < hdr.length; i++) newRow.push('');
+    newRow[pmIdx['PalletID']]          = TEST_PID;
+    newRow[pmIdx['ManufacturingOrder']]= 'ZZTEST-LEADZERO';
+    newRow[pmIdx['Material']]          = 'STT1001-R0000S3XRX';
+    newRow[pmIdx['StorageLocation']]   = 'PW30';
+    newRow[pmIdx['ScanStatus']]        = 'QC_COMPLETE';
+    newRow[pmIdx['QtyPerPallet']]      = 100;
+    newRow[pmIdx['Unit']]              = 'PC';
+    if (pmIdx['Batch'] !== undefined) newRow[pmIdx['Batch']] = '';
+    pmSh.appendRow(newRow);
+    SpreadsheetApp.flush();
+
+    buildConfirmationPayload_ = function() { return { orderConfirmation: 'fake' }; };
+    postConfirmationWithRetry_ = function() {
+      return { ok: true, confirmationGroup: 'ZZ777', confirmationCount: '1', session: {} };
+    };
+    readMaterialDocument_ = function() {
+      return { materialDocument: '4900277777', materialDocumentYear: '2026' };
+    };
+    resolveBatchFromGrDoc_ = function() { return EXPECT; };
+
+    confirmPallet(TEST_PID);
+    SpreadsheetApp.flush();
+
+    var pmData = pmSh.getDataRange().getValues();
+    for (var r = 1; r < pmData.length; r++) {
+      if (String(pmData[r][pmIdx['PalletID']] || '').trim() === TEST_PID) {
+        var rawVal  = pmData[r][pmIdx['Batch']];
+        var strVal  = String(rawVal || '').trim();
+        var isStr   = (typeof rawVal === 'string');
+
+        if (strVal === EXPECT) {
+          detail += 'batch="' + strVal + '" len=' + strVal.length + ' MATCH. ';
+        } else {
+          pass = false;
+          detail += 'batch="' + strVal + '" (raw type=' + typeof rawVal +
+            ') expected "' + EXPECT + '" MISMATCH. ';
+        }
+        if (!isStr) {
+          detail += 'WARNING: raw type=' + typeof rawVal + ' (expected string). ';
+        }
+        break;
+      }
+    }
+
+  } catch (ex) {
+    pass = false;
+    detail += 'EXCEPTION: ' + ex.message;
+  } finally {
+    buildConfirmationPayload_  = origBuild;
+    postConfirmationWithRetry_ = origPost;
+    readMaterialDocument_      = origReadMat;
+    resolveBatchFromGrDoc_     = origResolve;
+
+    var cleanup = pmSh.getDataRange().getValues();
+    for (var d = cleanup.length - 1; d >= 1; d--) {
+      if (String(cleanup[d][pmIdx['PalletID']] || '').trim() === TEST_PID) {
+        pmSh.deleteRow(d + 1);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
+  logEvent(fn, TEST_PID, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
+}
