@@ -183,8 +183,8 @@ function buildTransfer311Payload_(txnId, destSloc) {
 
   // ---- Verify TxnType and Status ----
   var txnType = String(txnRow['TxnType'] || '').trim();
-  if (txnType !== 'SPLIT_ISSUE') {
-    throw new Error('TxnType must be SPLIT_ISSUE, got: ' + txnType);
+  if (txnType !== 'SPLIT_ISSUE' && txnType !== 'SCAN_ISSUE') {
+    throw new Error('TxnType must be SPLIT_ISSUE or SCAN_ISSUE, got: ' + txnType);
   }
 
   var status = String(txnRow['Status'] || '').trim();
@@ -942,6 +942,7 @@ function TEST_t311_stableTokenAcrossRetries() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_t311_readbackFirstPreventsDoublePost() {
@@ -971,6 +972,7 @@ function TEST_t311_readbackFirstPreventsDoublePost() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_t311_ambiguousTimeoutReadsBackBeforeRetry() {
@@ -1012,6 +1014,7 @@ function TEST_t311_ambiguousTimeoutReadsBackBeforeRetry() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_t311_unknownStateNeverReposts() {
@@ -1045,6 +1048,7 @@ function TEST_t311_unknownStateNeverReposts() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_t311_deadLetterRowShape() {
@@ -1128,6 +1132,7 @@ function TEST_t311_deadLetterRowShape() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_t311_doubleCancelGuard() {
@@ -1157,6 +1162,7 @@ function TEST_t311_doubleCancelGuard() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_t311_runAll() {
@@ -1173,7 +1179,10 @@ function TEST_t311_runAll() {
 
   var results = [];
   tests.forEach(function(t) {
-    try { t.run(); results.push({ name: t.name, ok: true }); }
+    try {
+      var verdict = t.run();
+      results.push({ name: t.name, ok: verdict !== false });
+    }
     catch (e) { results.push({ name: t.name, ok: false, error: e.message }); }
   });
 
@@ -1845,6 +1854,7 @@ function TEST_resolveBatch_singleItem() {
   var detail = 'result=' + result + (pass ? ' OK' : ' EXPECTED 0000094815');
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_resolveBatch_ambiguous() {
@@ -1870,6 +1880,7 @@ function TEST_resolveBatch_ambiguous() {
   var detail = 'result="' + result + '"' + (pass ? ' (empty=OK, no guess)' : ' EXPECTED empty');
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_resolveBatch_noGrDoc() {
@@ -1883,6 +1894,7 @@ function TEST_resolveBatch_noGrDoc() {
     (pass ? ' OK' : ' EXPECTED empty+noFetch');
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_resolveBatch_preservesLeadingZeros() {
@@ -1907,6 +1919,7 @@ function TEST_resolveBatch_preservesLeadingZeros() {
     (pass ? ' (string with leading zeros OK)' : ' EXPECTED string "0000094815"');
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_buildPayload_tier3() {
@@ -2003,6 +2016,7 @@ function TEST_buildPayload_tier3() {
 
   Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
   logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
 }
 
 function TEST_resolveBatch_runAll() {
@@ -2018,7 +2032,10 @@ function TEST_resolveBatch_runAll() {
 
   var results = [];
   tests.forEach(function(t) {
-    try { t.run(); results.push({ name: t.name, ok: true }); }
+    try {
+      var verdict = t.run();
+      results.push({ name: t.name, ok: verdict !== false });
+    }
     catch (e) { results.push({ name: t.name, ok: false, error: e.message }); }
   });
 
@@ -2040,4 +2057,57 @@ function TEST_resolveBatch_runAll() {
     results.map(function(r) {
       return (r.ok ? '✅ ' : '❌ ') + r.name + (r.error ? ' — ' + r.error : '');
     }).join('\n') + '\n\nDetails in Executions log.');
+}
+
+// ============================================================================
+// Manual Reversal — editor wrapper (Part 1) + menu entry (Part 2)
+// ============================================================================
+
+/**
+ * One-shot editor wrapper: reverse the specific dangling first-live transfer doc
+ * 4900216057/2026. Hardcoded — run once from the menu or editor, then retire.
+ * WRITES to SAP (Cancel FunctionImport). Guard inside reverseTransfer311Manual_
+ * prevents double-cancel.
+ */
+function REVERSE_firstLiveDoc() {
+  var matDoc = '4900216057';
+  var matDocYear = '2026';
+  var result = reverseTransfer311Manual_(matDoc, matDocYear);
+  Logger.log('REVERSE result: ' + JSON.stringify(result));
+  SpreadsheetApp.getUi().alert(
+    'Reverse 4900216057/2026\n\n' +
+    'status: ' + result.status + '\n' +
+    (result.reversalDoc ? 'reversal doc: ' + result.reversalDoc + '\n' : '') +
+    'message: ' + result.message);
+  return result;
+}
+
+/**
+ * Menu-driven manual reversal — prompts for MaterialDocument + Year, confirms,
+ * then calls reverseTransfer311Manual_. WRITES to SAP (Cancel FunctionImport).
+ */
+function MENU_reverseTransfer311() {
+  var ui = SpreadsheetApp.getUi();
+  var r1 = ui.prompt('Reverse Transfer 311', 'MaterialDocument number:',
+    ui.ButtonSet.OK_CANCEL);
+  if (r1.getSelectedButton() !== ui.Button.OK) return;
+  var matDoc = r1.getResponseText().trim();
+
+  var r2 = ui.prompt('Reverse Transfer 311', 'MaterialDocumentYear:',
+    ui.ButtonSet.OK_CANCEL);
+  if (r2.getSelectedButton() !== ui.Button.OK) return;
+  var matDocYear = r2.getResponseText().trim();
+
+  if (!matDoc || !matDocYear) { ui.alert('Missing doc/year'); return; }
+
+  var confirm = ui.alert('Confirm Reverse',
+    'Cancel material doc ' + matDoc + '/' + matDocYear + '? This posts a reversal in SAP.',
+    ui.ButtonSet.YES_NO);
+  if (confirm !== ui.Button.YES) return;
+
+  var result = reverseTransfer311Manual_(matDoc, matDocYear);
+  ui.alert('Reverse result',
+    'status: ' + result.status + '\n' +
+    (result.reversalDoc ? 'reversal doc: ' + result.reversalDoc + '\n' : '') +
+    result.message, ui.ButtonSet.OK);
 }
