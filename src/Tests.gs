@@ -53,6 +53,17 @@
  *
  * REPRINT:
  *   TEST_reprintFlow()              — seed+reprint+assert render-only (self-cleaning)
+ *
+ * PHASE 6.2 UI TEST FIXTURE (persistent — NOT self-cleaning):
+ *   insertPhase62TestFixture()      — insert PL-MANUALTEST-001 + MO 0000000000 (run ONCE)
+ *   verifyPhase62TestFixture()      — call lookupPallet + log shape (read-only verify)
+ *   cleanupPhase62TestFixture()     — remove fixture rows when testing complete
+ *
+ * PHASE 6.2c UI TEST FIXTURE — ActualMachine dropdown (persistent — NOT self-cleaning):
+ *   insertPhase62cTestFixture()     — probe MachineMaster, insert PL-MANUALTEST-002 +
+ *                                     MO 0000000001 with TWO distinct real WorkCenters (run ONCE)
+ *   verifyPhase62cTestFixture()     — call lookupPallet + getMachinesForWorkCenter per WC
+ *   cleanupPhase62cTestFixture()    — remove fixture rows when testing complete
  * ──────────────────────────────────────────────────────────────
  */
 
@@ -1827,4 +1838,659 @@ function TEST_autoCacheFinalOp() {
     SpreadsheetApp.flush();
     Logger.log(fn + ': restored FinalOperation=' + originalFinalOp + ' for ' + testMo);
   }
+}
+
+// ============================================================================
+// Phase 6.2 UI Test Fixture — persistent test pallet for Desktop manual testing
+// TODO: call cleanupPhase62TestFixture() after Phase 6.2 testing is complete.
+// ============================================================================
+
+/**
+ * ONE-TIME: Insert PL-MANUALTEST-001 into PalletMaster + ProductionOrders.
+ * Idempotent — aborts if either row already exists.
+ * Does NOT call confirmScan. Does NOT write to SAP.
+ * TODO: Remove both rows after Phase 6.2 Desktop testing is complete.
+ */
+function insertPhase62TestFixture() {
+  var TEST_PALLET_ID = 'PL-MANUALTEST-001';
+  var TEST_MO        = '0000000000';
+  var ss             = getSpreadsheet_();
+  var today          = new Date();
+
+  // ── 1. ProductionOrders: stub row so getOpsForMo_ returns data and avoids SAP fallback GET ──
+  var poSh = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  if (!poSh) throw new Error('ProductionOrders sheet not found');
+  var poData = poSh.getDataRange().getValues();
+  var poHdr  = poData[0];
+  var moIdx  = poHdr.indexOf('ManufacturingOrder');
+  var poExists = false;
+  for (var i = 1; i < poData.length; i++) {
+    if (String(poData[i][moIdx]).trim() === TEST_MO) { poExists = true; break; }
+  }
+  if (poExists) {
+    Logger.log('ProductionOrders: MO ' + TEST_MO + ' already exists — skip');
+  } else {
+    // 2 ops: tests sequential gate (0010 must be confirmed before 0020 is actionable)
+    var fakeOpsJson = JSON.stringify([
+      { opNo: '0010', opText: 'Manual Test Op 1',              workCenter: '0000-00' },
+      { opNo: '0020', opText: 'Manual Test Op 2 — Final Step', workCenter: '0000-00' }
+    ]);
+    var poRow = poHdr.map(function (h) {
+      var vals = {
+        ManufacturingOrder:     TEST_MO,
+        Material:               'ZZMANUALTEST',
+        ManufacturingOrderType: 'ZZ',
+        TotalQuantity:          10,
+        ProductionUnit:         'PC',
+        Plant:                  '1100',
+        StorageLocation:        'PW30',
+        OperationsJSON:         fakeOpsJson,
+        FinalOperation:         '0020',
+        LastSyncAt:             today
+      };
+      return vals.hasOwnProperty(h) ? vals[h] : '';
+    });
+    poSh.getRange(poSh.getLastRow() + 1, 1, 1, poRow.length).setValues([poRow]);
+    Logger.log('ProductionOrders: inserted stub MO ' + TEST_MO);
+  }
+
+  // ── 2. PalletMaster: insert test pallet ──
+  var pmSh = ss.getSheetByName(CFG.SHEETS.PALLET_MASTER);
+  if (!pmSh) throw new Error('PalletMaster sheet not found');
+  var pmData = pmSh.getDataRange().getValues();
+  var pmHdr  = pmData[0];
+  var pidIdx = pmHdr.indexOf('PalletID');
+  for (var j = 1; j < pmData.length; j++) {
+    if (String(pmData[j][pidIdx]).trim() === TEST_PALLET_ID) {
+      Logger.log('PalletMaster: ' + TEST_PALLET_ID + ' already exists at row ' + (j + 1) + ' — abort');
+      return;
+    }
+  }
+
+  var pmRow = buildPalletRow_({
+    PalletID:           TEST_PALLET_ID,
+    ManufacturingOrder: TEST_MO,
+    Material:           'ZZMANUALTEST',
+    MaterialName:       'Manual Test - DO NOT CONFIRM TO SAP',
+    Batch:              '',
+    QtyPerPallet:       10,
+    Unit:               'PC',
+    PalletSeq:          1,
+    TotalPallets:       1,
+    WorkCenter:         '0000-00',
+    ProductionDate:     today,
+    TotalQuantity:      10,
+    Plant:              '1100',
+    StorageLocation:    'PW30',
+    QRPayload:          'PALLET|PL-MANUALTEST-001|0000000000|ZZMANUALTEST||10',
+    Status:             'PRINTED',
+    CreatedAt:          today,
+    PrintedAt:          today,
+    ScanStatus:         'CREATED',
+    QCStatus:           ''
+  });
+
+  var newPmRow = pmSh.getLastRow() + 1;
+  pmSh.getRange(newPmRow, 1, 1, pmRow.length).setValues([pmRow]);
+
+  // Set Batch cell format to '@' per leading-zero convention (even though it's blank)
+  var batchCol = PM_HEADERS.indexOf('Batch') + 1;
+  pmSh.getRange(newPmRow, batchCol).setNumberFormat('@');
+  SpreadsheetApp.flush();
+
+  Logger.log('PalletMaster: inserted ' + TEST_PALLET_ID + ' at row ' + newPmRow);
+  Logger.log('PM row: ' + JSON.stringify(pmRow));
+
+  // ── 3. Tracking note in EventLog ──
+  logEvent('FIXTURE_TODO', 'Phase62TestFixture', 'CLEANUP_NEEDED', 0,
+    'PL-MANUALTEST-001 manual UI test fixture inserted. ' +
+    'TODO: Delete after Phase 6.2 testing — PalletMaster row ' + newPmRow +
+    ', ProductionOrders MO 0000000000.');
+
+  Logger.log('insertPhase62TestFixture: DONE — PL-MANUALTEST-001 ready for ?app=desktop search');
+}
+
+/**
+ * Verify the Phase 6.2 fixture by calling lookupPallet and logging the shape.
+ * Read-only — safe to run any time.
+ */
+function verifyPhase62TestFixture() {
+  var result = lookupPallet('PL-MANUALTEST-001');
+  Logger.log('lookupPallet result:');
+  Logger.log('  found:           ' + result.found);
+  Logger.log('  error:           ' + result.error);
+  Logger.log('  allOpsConfirmed: ' + result.allOpsConfirmed);
+  Logger.log('  qcDone:          ' + result.qcDone);
+  if (result.pallet) {
+    var p = result.pallet;
+    Logger.log('  pallet.PalletID:            ' + p.PalletID);
+    Logger.log('  pallet.ManufacturingOrder:  ' + p.ManufacturingOrder);
+    Logger.log('  pallet.Material:            ' + p.Material);
+    Logger.log('  pallet.MaterialName:        ' + p.MaterialName);
+    Logger.log('  pallet.QtyPerPallet:        ' + p.QtyPerPallet);
+    Logger.log('  pallet.ScanStatus:          ' + p.ScanStatus);
+    Logger.log('  pallet.Status:              ' + p.Status);
+    Logger.log('  pallet.StorageLocation:     ' + p.StorageLocation);
+  }
+  Logger.log('  operations (' + result.operations.length + '):');
+  result.operations.forEach(function (op, i) {
+    Logger.log('    [' + i + '] opNo=' + op.opNo + ' opText=' + op.opText +
+               ' workCenter=' + op.workCenter + ' isFinal=' + op.isFinal);
+  });
+  Logger.log('  operationLogs (' + result.operationLogs.length + '): ' +
+             (result.operationLogs.length ? JSON.stringify(result.operationLogs) : '(none — expected)'));
+}
+
+/**
+ * Cleanup: remove the Phase 6.2 test fixture rows.
+ * Run from editor after Phase 6.2 testing is complete.
+ * Removes: PalletMaster row PL-MANUALTEST-001, ProductionOrders row MO 0000000000.
+ */
+function cleanupPhase62TestFixture() {
+  var TEST_PALLET_ID = 'PL-MANUALTEST-001';
+  var TEST_MO        = '0000000000';
+  var ss             = getSpreadsheet_();
+  var removed        = [];
+
+  // PalletMaster
+  var pmSh = ss.getSheetByName(CFG.SHEETS.PALLET_MASTER);
+  if (pmSh) {
+    var pmData = pmSh.getDataRange().getValues();
+    var pidIdx = pmData[0].indexOf('PalletID');
+    for (var i = pmData.length - 1; i >= 1; i--) {
+      if (String(pmData[i][pidIdx]).trim() === TEST_PALLET_ID) {
+        pmSh.deleteRow(i + 1);
+        removed.push('PalletMaster row ' + (i + 1) + ' (' + TEST_PALLET_ID + ')');
+      }
+    }
+  }
+
+  // ProductionOrders
+  var poSh = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  if (poSh) {
+    var poData = poSh.getDataRange().getValues();
+    var moIdx  = poData[0].indexOf('ManufacturingOrder');
+    for (var j = poData.length - 1; j >= 1; j--) {
+      if (String(poData[j][moIdx]).trim() === TEST_MO) {
+        poSh.deleteRow(j + 1);
+        removed.push('ProductionOrders row ' + (j + 1) + ' (MO ' + TEST_MO + ')');
+      }
+    }
+  }
+
+  SpreadsheetApp.flush();
+  Logger.log('cleanupPhase62TestFixture: removed ' + removed.length + ' row(s): ' + removed.join(', '));
+  logEvent('FIXTURE_CLEANUP', 'Phase62TestFixture', 'OK', 0,
+    'Removed: ' + removed.join(', '));
+}
+
+/**
+ * FIX for Phase 6.2 fixture: '0000000000' was stored as number 0 (falsy) by
+ * Google Sheets, so String(0 || '') = '' and getOperationsForOrder returned []
+ * immediately. This function:
+ *   1. Re-writes PalletMaster ManufacturingOrder cell as text '@' = '0000000000'
+ *   2. Ensures ProductionOrders has a row for '0000000000' with OperationsJSON
+ *   3. Also sets the PO ManufacturingOrder cell to '@' format
+ *   4. Calls lookupPallet to verify operations now return correctly
+ */
+function fixPhase62TestFixtureMO() {
+  var TEST_PALLET_ID = 'PL-MANUALTEST-001';
+  var TEST_MO        = '0000000000';
+  var ss             = getSpreadsheet_();
+
+  // ── 1. Fix PalletMaster: re-write MO cell as text ──────────────────────────
+  var pmSh   = ss.getSheetByName(CFG.SHEETS.PALLET_MASTER);
+  if (!pmSh) throw new Error('PalletMaster sheet not found');
+  var pmData = pmSh.getDataRange().getValues();
+  var pmHdr  = pmData[0];
+  var pidIdx = pmHdr.indexOf('PalletID');
+  var moIdx  = pmHdr.indexOf('ManufacturingOrder');
+
+  var pmFixRow = -1;
+  for (var r = 1; r < pmData.length; r++) {
+    if (String(pmData[r][pidIdx]).trim() === TEST_PALLET_ID) { pmFixRow = r; break; }
+  }
+  if (pmFixRow === -1) throw new Error('PL-MANUALTEST-001 not found in PalletMaster — run insertPhase62TestFixture first');
+
+  var moCell = pmSh.getRange(pmFixRow + 1, moIdx + 1);
+  Logger.log('PalletMaster MO cell raw value before fix: ' + JSON.stringify(moCell.getValue()));
+  moCell.setNumberFormat('@').setValue(TEST_MO);
+  Logger.log('PalletMaster MO cell set to text "' + TEST_MO + '"');
+
+  // ── 2. Ensure ProductionOrders row with OperationsJSON ──────────────────────
+  var poSh   = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  if (!poSh) throw new Error('ProductionOrders sheet not found');
+  var poData = poSh.getDataRange().getValues();
+  var poHdr  = poData[0];
+  var poMoIdx  = poHdr.indexOf('ManufacturingOrder');
+  var poOpsIdx = poHdr.indexOf('OperationsJSON');
+  var poFoIdx  = poHdr.indexOf('FinalOperation');
+
+  Logger.log('ProductionOrders: ManufacturingOrder col=' + poMoIdx +
+             ', OperationsJSON col=' + poOpsIdx + ', FinalOperation col=' + poFoIdx);
+
+  // ONE operation: simpler for UI test (0010 → ยืนยัน button visible, isFinal=true)
+  var fakeOps = JSON.stringify([
+    { opNo: '0010', opText: 'Manual Test Step - DO NOT CONFIRM TO SAP',
+      workCenter: '0000-00', workCenterDesc: '' }
+  ]);
+
+  // Scan for existing row — check both string '0000000000' and number 0
+  var poFixRow = -1;
+  for (var i = 1; i < poData.length; i++) {
+    var cellRaw = poData[i][poMoIdx];
+    var cellStr = String(cellRaw == null ? '' : cellRaw).trim();
+    Logger.log('PO row ' + (i + 1) + ': MO raw=' + JSON.stringify(cellRaw) + ' str=' + cellStr);
+    if (cellStr === TEST_MO || cellRaw === 0 || cellStr === '0') {
+      poFixRow = i;
+      Logger.log('  → matched. OperationsJSON=' + String(poData[i][poOpsIdx] || '').substring(0, 80));
+      break;
+    }
+  }
+
+  if (poFixRow === -1) {
+    // Insert new row
+    var today  = new Date();
+    var newPORow = poHdr.map(function (h) {
+      var vals = {
+        ManufacturingOrder:     TEST_MO,
+        Material:               'ZZMANUALTEST',
+        ManufacturingOrderType: 'ZZ',
+        TotalQuantity:          10,
+        ProductionUnit:         'PC',
+        Plant:                  '1100',
+        StorageLocation:        'PW30',
+        OperationsJSON:         fakeOps,
+        FinalOperation:         '0010',
+        LastSyncAt:             today
+      };
+      return vals.hasOwnProperty(h) ? vals[h] : '';
+    });
+    var insertAt = poSh.getLastRow() + 1;
+    poSh.getRange(insertAt, 1, 1, newPORow.length).setValues([newPORow]);
+    // Force MO cell to text so '0000000000' survives as string
+    poSh.getRange(insertAt, poMoIdx + 1).setNumberFormat('@').setValue(TEST_MO);
+    Logger.log('ProductionOrders: inserted row ' + insertAt + ' for MO ' + TEST_MO);
+  } else {
+    // Row exists — fix MO cell format + update OperationsJSON if empty
+    var poMoCell  = poSh.getRange(poFixRow + 1, poMoIdx + 1);
+    poMoCell.setNumberFormat('@').setValue(TEST_MO);
+    Logger.log('ProductionOrders: row ' + (poFixRow + 1) + ' MO cell fixed to text');
+
+    var existingOps = String(poData[poFixRow][poOpsIdx] || '').trim();
+    if (!existingOps && poOpsIdx >= 0) {
+      poSh.getRange(poFixRow + 1, poOpsIdx + 1).setValue(fakeOps);
+      Logger.log('ProductionOrders: updated OperationsJSON (was empty)');
+    } else {
+      Logger.log('ProductionOrders: OperationsJSON already set: ' + existingOps.substring(0, 100));
+    }
+    if (poFoIdx >= 0) {
+      var existingFO = String(poData[poFixRow][poFoIdx] || '').trim();
+      if (!existingFO) poSh.getRange(poFixRow + 1, poFoIdx + 1).setValue('0010');
+    }
+  }
+
+  SpreadsheetApp.flush();
+
+  // ── 3. Verify via lookupPallet ──────────────────────────────────────────────
+  Logger.log('');
+  Logger.log('=== verifying via lookupPallet("PL-MANUALTEST-001") ===');
+  var result = lookupPallet(TEST_PALLET_ID);
+  Logger.log('found:           ' + result.found);
+  Logger.log('error:           ' + result.error);
+  Logger.log('allOpsConfirmed: ' + result.allOpsConfirmed);
+  if (result.pallet) {
+    Logger.log('pallet.ManufacturingOrder: ' + JSON.stringify(result.pallet.ManufacturingOrder));
+    Logger.log('pallet.ScanStatus:         ' + result.pallet.ScanStatus);
+    Logger.log('pallet.QtyPerPallet:       ' + result.pallet.QtyPerPallet);
+  }
+  Logger.log('operations.length: ' + result.operations.length);
+  result.operations.forEach(function (op, i) {
+    Logger.log('  op[' + i + ']: opNo=' + op.opNo + ' opText=' + op.opText +
+               ' workCenter=' + op.workCenter + ' isFinal=' + op.isFinal);
+  });
+  Logger.log('operationLogs.length: ' + result.operationLogs.length + ' (expected 0)');
+
+  if (result.found && result.operations.length > 0 && !result.allOpsConfirmed) {
+    Logger.log('');
+    Logger.log('✅ FIXTURE READY — search PL-MANUALTEST-001 in ?app=desktop');
+  } else {
+    Logger.log('');
+    Logger.log('❌ FIXTURE NOT READY — check logs above');
+  }
+}
+
+// ============================================================================
+// Phase 6.2c — PL-MANUALTEST-002 fixture (ActualMachine dropdown)
+// ============================================================================
+
+/**
+ * ONE-TIME: Insert PL-MANUALTEST-002 into PalletMaster + ProductionOrders.
+ * Step 1 (probe): reads MachineMaster to find 2 distinct SAPWorkCenters that each
+ *   have at least one Active=TRUE machine — logs which WCs and machine codes were
+ *   chosen so Kor knows what to expect when testing the dropdown in the browser.
+ * Step 2 (insert): writes a stub ProductionOrders row for MO '0000000001' with
+ *   OperationsJSON containing op 0010 → WC1 and op 0020 → WC2 (different WCs),
+ *   then writes the PalletMaster row for PL-MANUALTEST-002.
+ * Idempotent — aborts if either row already exists.
+ * SAP safety: MO '0000000001' does not exist in SAP — confirmScan would fail
+ *   cleanly at the SAP call if ever reached (material/order not found).
+ * TODO: Run cleanupPhase62cTestFixture() after Phase 6.2c browser testing is done.
+ */
+function insertPhase62cTestFixture() {
+  var TEST_PALLET_ID = 'PL-MANUALTEST-002';
+  var TEST_MO        = '0000000001';
+  var ss             = getSpreadsheet_();
+  var today          = new Date();
+
+  // ── Step 1: Probe MachineMaster — find 2 distinct WCs with Active=TRUE machines ──
+  _machineMasterCache_ = null;
+  var machMap = getMachineMaster_();
+  var wcToMachines = {};
+  Object.keys(machMap).forEach(function(code) {
+    var wc = machMap[code].sapWorkCenter;
+    if (!wc) return;
+    var parts = wc.split(';').map(function(p) { return p.trim(); }).filter(Boolean);
+    parts.forEach(function(w) {
+      if (!wcToMachines[w]) wcToMachines[w] = [];
+      wcToMachines[w].push({ code: code, name: machMap[code].name });
+    });
+  });
+
+  var usableWcs = Object.keys(wcToMachines).sort().filter(function(w) {
+    return wcToMachines[w].length > 0;
+  });
+  if (usableWcs.length < 2) {
+    throw new Error(
+      'insertPhase62cTestFixture: MachineMaster has fewer than 2 distinct ' +
+      'SAPWorkCenters with Active machines — cannot build 2-op fixture. ' +
+      'Found: [' + usableWcs.join(', ') + ']'
+    );
+  }
+
+  var WC1 = usableWcs[0];
+  var WC2 = usableWcs[1];
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' insertPhase62cTestFixture — PROBE RESULTS');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log('All distinct WCs with active machines (' + usableWcs.length + '):');
+  usableWcs.forEach(function(w) {
+    Logger.log('  ' + w + ' → ' + wcToMachines[w].length + ' machine(s): ' +
+      wcToMachines[w].map(function(m) { return m.code; }).join(', '));
+  });
+  Logger.log('');
+  Logger.log('SELECTED WC #1 (op 0010): ' + WC1);
+  wcToMachines[WC1].forEach(function(m) { Logger.log('  ' + m.code + ' — ' + m.name); });
+  Logger.log('');
+  Logger.log('SELECTED WC #2 (op 0020): ' + WC2);
+  wcToMachines[WC2].forEach(function(m) { Logger.log('  ' + m.code + ' — ' + m.name); });
+  Logger.log('');
+
+  // ── Step 2a: ProductionOrders — stub row so getOpsForMo_ finds data without SAP fallback ──
+  var poSh = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  if (!poSh) throw new Error('ProductionOrders sheet not found');
+  var poData  = poSh.getDataRange().getValues();
+  var poHdr   = poData[0];
+  var poMoIdx = poHdr.indexOf('ManufacturingOrder');
+
+  // '0000000001' without '@' format is stored as number 1 — check both forms
+  var poExists = false;
+  for (var i = 1; i < poData.length; i++) {
+    var raw = poData[i][poMoIdx];
+    var str = String(raw == null ? '' : raw).trim();
+    if (str === TEST_MO || raw === 1) {
+      poExists = true;
+      Logger.log('ProductionOrders: MO ' + TEST_MO + ' already exists at row ' + (i + 1) + ' — skip insert');
+      break;
+    }
+  }
+
+  if (!poExists) {
+    var fakeOpsJson = JSON.stringify([
+      { opNo: '0010', opText: 'Manual Test 2 - Step A',               workCenter: WC1 },
+      { opNo: '0020', opText: 'Manual Test 2 - Step B — Final Step',  workCenter: WC2 }
+    ]);
+    var insertPoAt = poSh.getLastRow() + 1;
+    var poRow = poHdr.map(function(h) {
+      var vals = {
+        ManufacturingOrder:     TEST_MO,
+        Material:               'ZZMANUALTEST2',
+        ManufacturingOrderType: 'ZZ',
+        TotalQuantity:          10,
+        ProductionUnit:         'PC',
+        Plant:                  '1100',
+        StorageLocation:        'PW30',
+        OperationsJSON:         fakeOpsJson,
+        FinalOperation:         '0020',
+        LastSyncAt:             today
+      };
+      return vals.hasOwnProperty(h) ? vals[h] : '';
+    });
+    poSh.getRange(insertPoAt, 1, 1, poRow.length).setValues([poRow]);
+    // Force MO cell to text so '0000000001' is not coerced to number 1
+    poSh.getRange(insertPoAt, poMoIdx + 1).setNumberFormat('@').setValue(TEST_MO);
+    Logger.log('ProductionOrders: inserted stub MO ' + TEST_MO + ' at row ' + insertPoAt);
+    Logger.log('  OperationsJSON: ' + fakeOpsJson);
+  }
+
+  // ── Step 2b: PalletMaster — insert test pallet ──
+  var pmSh = ss.getSheetByName(CFG.SHEETS.PALLET_MASTER);
+  if (!pmSh) throw new Error('PalletMaster sheet not found');
+  var pmData = pmSh.getDataRange().getValues();
+  var pmHdr  = pmData[0];
+  var pidIdx = pmHdr.indexOf('PalletID');
+  for (var j = 1; j < pmData.length; j++) {
+    if (String(pmData[j][pidIdx]).trim() === TEST_PALLET_ID) {
+      Logger.log('PalletMaster: ' + TEST_PALLET_ID + ' already exists at row ' + (j + 1) + ' — abort');
+      return;
+    }
+  }
+
+  var pmRow = buildPalletRow_({
+    PalletID:           TEST_PALLET_ID,
+    ManufacturingOrder: TEST_MO,
+    Material:           'ZZMANUALTEST2',
+    MaterialName:       'Manual Test 2 - DO NOT CONFIRM TO SAP',
+    Batch:              '',
+    QtyPerPallet:       10,
+    Unit:               'PC',
+    PalletSeq:          1,
+    TotalPallets:       1,
+    WorkCenter:         WC1,
+    ProductionDate:     today,
+    TotalQuantity:      10,
+    Plant:              '1100',
+    StorageLocation:    'PW30',
+    QRPayload:          'PALLET|PL-MANUALTEST-002|0000000001|ZZMANUALTEST2||10',
+    Status:             'PRINTED',
+    CreatedAt:          today,
+    PrintedAt:          today,
+    ScanStatus:         'CREATED',
+    QCStatus:           ''
+  });
+
+  var newPmRow = pmSh.getLastRow() + 1;
+  pmSh.getRange(newPmRow, 1, 1, pmRow.length).setValues([pmRow]);
+
+  // Force ManufacturingOrder cell to text — same fix as PL-MANUALTEST-001's fixPhase62TestFixtureMO
+  var moColIdx = PM_HEADERS.indexOf('ManufacturingOrder') + 1;
+  pmSh.getRange(newPmRow, moColIdx).setNumberFormat('@').setValue(TEST_MO);
+
+  // Format Batch cell as '@' per leading-zero convention (blank but format matters for later writes)
+  var batchColIdx = PM_HEADERS.indexOf('Batch') + 1;
+  pmSh.getRange(newPmRow, batchColIdx).setNumberFormat('@');
+
+  SpreadsheetApp.flush();
+
+  Logger.log('PalletMaster: inserted ' + TEST_PALLET_ID + ' at row ' + newPmRow);
+  Logger.log('  WorkCenter (op 0010 WC): ' + WC1);
+
+  // ── Cleanup note in EventLog ──
+  logEvent('FIXTURE_TODO', 'Phase62cTestFixture', 'CLEANUP_NEEDED', 0,
+    'PL-MANUALTEST-002 — manual UI test fixture for Phase 6.2c ActualMachine dropdown, ' +
+    'delete after testing complete. ' +
+    'PalletMaster row ' + newPmRow + ', ProductionOrders MO ' + TEST_MO + '. ' +
+    'Run cleanupPhase62cTestFixture() when done.');
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' FIXTURE INSERTED — Summary');
+  Logger.log('  PalletID: ' + TEST_PALLET_ID);
+  Logger.log('  MO:       ' + TEST_MO + '  (fake — safe if confirmScan reaches SAP, order not found)');
+  Logger.log('  Op 0010 WorkCenter: ' + WC1 +
+    '  → ' + wcToMachines[WC1].length + ' machine(s): ' +
+    wcToMachines[WC1].map(function(m) { return m.code; }).join(', '));
+  Logger.log('  Op 0020 WorkCenter: ' + WC2 +
+    '  → ' + wcToMachines[WC2].length + ' machine(s): ' +
+    wcToMachines[WC2].map(function(m) { return m.code; }).join(', '));
+  Logger.log('══════════════════════════════════════════');
+  Logger.log('');
+  Logger.log('Next: run verifyPhase62cTestFixture() to confirm fixture shape and machine lists.');
+}
+
+/**
+ * Step 3: Verify the Phase 6.2c fixture by calling lookupPallet and
+ * getMachinesForWorkCenter for each operation's WorkCenter.
+ * Prints the full lookupPallet() return + both getMachinesForWorkCenter() returns.
+ * Read-only — safe to run any time after insertPhase62cTestFixture().
+ */
+function verifyPhase62cTestFixture() {
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' verifyPhase62cTestFixture');
+  Logger.log('══════════════════════════════════════════');
+
+  // ── lookupPallet ──
+  var result = lookupPallet('PL-MANUALTEST-002');
+  Logger.log('lookupPallet("PL-MANUALTEST-002") =');
+  Logger.log(JSON.stringify(result, null, 2));
+
+  if (!result.found) {
+    Logger.log('❌ Pallet not found — run insertPhase62cTestFixture() first');
+    return;
+  }
+
+  if (result.operations.length < 2) {
+    Logger.log('❌ Expected 2 operations, got ' + result.operations.length +
+      ' — check ProductionOrders OperationsJSON for MO 0000000001');
+    return;
+  }
+
+  var wc1 = result.operations[0].workCenter;
+  var wc2 = result.operations[1].workCenter;
+
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log('Op routing:');
+  Logger.log('  [0] opNo=' + result.operations[0].opNo +
+    ' workCenter=' + wc1 +
+    ' isFinal=' + result.operations[0].isFinal);
+  Logger.log('  [1] opNo=' + result.operations[1].opNo +
+    ' workCenter=' + wc2 +
+    ' isFinal=' + result.operations[1].isFinal);
+
+  // ── getMachinesForWorkCenter for WC1 ──
+  _machineMasterCache_ = null;
+  var m1 = getMachinesForWorkCenter(wc1);
+  Logger.log('');
+  Logger.log('getMachinesForWorkCenter("' + wc1 + '") =');
+  Logger.log(JSON.stringify(m1, null, 2));
+
+  // ── getMachinesForWorkCenter for WC2 ──
+  var m2 = getMachinesForWorkCenter(wc2);
+  Logger.log('');
+  Logger.log('getMachinesForWorkCenter("' + wc2 + '") =');
+  Logger.log(JSON.stringify(m2, null, 2));
+
+  // ── Verdict ──
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  var wcsDistinct       = wc1 !== wc2;
+  var m1HasMachines     = m1.ok && m1.machines.length > 0;
+  var m2HasMachines     = m2.ok && m2.machines.length > 0;
+  var machinesDiffer    = JSON.stringify(m1.machines) !== JSON.stringify(m2.machines);
+  var opsNotConfirmed   = !result.allOpsConfirmed && result.operationLogs.length === 0;
+
+  var allOk = result.found && result.operations.length === 2 &&
+              wcsDistinct && m1HasMachines && m2HasMachines &&
+              machinesDiffer && opsNotConfirmed;
+
+  if (allOk) {
+    Logger.log('✅ FIXTURE READY for Phase 6.2c browser testing');
+    Logger.log('  found:              YES');
+    Logger.log('  2 operations:       YES (0010=' + wc1 + ', 0020=' + wc2 + ')');
+    Logger.log('  WCs distinct:       YES');
+    Logger.log('  WC1 machines:       ' + m1.machines.length + '  [' +
+      m1.machines.map(function(m) { return m.code; }).join(', ') + ']');
+    Logger.log('  WC2 machines:       ' + m2.machines.length + '  [' +
+      m2.machines.map(function(m) { return m.code; }).join(', ') + ']');
+    Logger.log('  Machine lists differ: YES (dropdown will show DIFFERENT options per step)');
+    Logger.log('  allOpsConfirmed:    false  (correct — no confirmations yet)');
+    Logger.log('  operationLogs:      0  (correct)');
+    Logger.log('');
+    Logger.log('  → Search PL-MANUALTEST-002 in ?app=desktop to begin browser testing.');
+  } else {
+    Logger.log('❌ FIXTURE NOT READY — failing conditions:');
+    if (!result.found)              Logger.log('  ✗ pallet not found');
+    if (result.operations.length !== 2) Logger.log('  ✗ ops=' + result.operations.length + ' (expected 2)');
+    if (!wcsDistinct)               Logger.log('  ✗ WC1===WC2 (' + wc1 + ') — dropdown won\'t differ');
+    if (!m1HasMachines)             Logger.log('  ✗ WC1 (' + wc1 + ') has no machines');
+    if (!m2HasMachines)             Logger.log('  ✗ WC2 (' + wc2 + ') has no machines');
+    if (!machinesDiffer)            Logger.log('  ✗ machine lists identical — dropdown won\'t differ');
+    if (!opsNotConfirmed)           Logger.log('  ✗ allOpsConfirmed=' + result.allOpsConfirmed +
+      ' or operationLogs=' + result.operationLogs.length + ' (expected both 0/false)');
+  }
+  Logger.log('══════════════════════════════════════════');
+}
+
+/**
+ * Cleanup: remove Phase 6.2c fixture rows when browser testing is complete.
+ * Removes: PalletMaster row PL-MANUALTEST-002, ProductionOrders row MO 0000000001.
+ * Run from Apps Script Editor after testing is done.
+ */
+function cleanupPhase62cTestFixture() {
+  var TEST_PALLET_ID = 'PL-MANUALTEST-002';
+  var TEST_MO        = '0000000001';
+  var ss             = getSpreadsheet_();
+  var removed        = [];
+
+  // PalletMaster
+  var pmSh = ss.getSheetByName(CFG.SHEETS.PALLET_MASTER);
+  if (pmSh && pmSh.getLastRow() >= 2) {
+    var pmData = pmSh.getDataRange().getValues();
+    var pidIdx = pmData[0].indexOf('PalletID');
+    if (pidIdx >= 0) {
+      for (var i = pmData.length - 1; i >= 1; i--) {
+        if (String(pmData[i][pidIdx]).trim() === TEST_PALLET_ID) {
+          pmSh.deleteRow(i + 1);
+          removed.push('PalletMaster row ' + (i + 1) + ' (' + TEST_PALLET_ID + ')');
+        }
+      }
+    }
+  }
+
+  // ProductionOrders — check both text '0000000001' and number 1 (Sheets coerces leading-zero strings)
+  var poSh = ss.getSheetByName(CFG.SHEETS.PRODUCTION_ORDERS);
+  if (poSh && poSh.getLastRow() >= 2) {
+    var poData = poSh.getDataRange().getValues();
+    var moIdx  = poData[0].indexOf('ManufacturingOrder');
+    if (moIdx >= 0) {
+      for (var j = poData.length - 1; j >= 1; j--) {
+        var raw = poData[j][moIdx];
+        var str = String(raw == null ? '' : raw).trim();
+        if (str === TEST_MO || raw === 1) {
+          poSh.deleteRow(j + 1);
+          removed.push('ProductionOrders row ' + (j + 1) + ' (MO ' + TEST_MO + ')');
+        }
+      }
+    }
+  }
+
+  SpreadsheetApp.flush();
+  Logger.log('cleanupPhase62cTestFixture: removed ' + removed.length + ' row(s): ' +
+    (removed.length ? removed.join(', ') : '(nothing to remove)'));
+  logEvent('FIXTURE_CLEANUP', 'Phase62cTestFixture', 'OK', 0,
+    removed.length ? ('Removed: ' + removed.join(', ')) : 'Nothing to remove');
 }
