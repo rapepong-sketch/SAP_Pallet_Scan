@@ -43,6 +43,24 @@ function doGet(e) {
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
 
+  // --- Desktop Companion WebApp (Phase 6.1, admin only, READ-ONLY) ---
+  if (app === 'desktop') {
+    if (!isAdminUser_()) {
+      var deskEmail = '';
+      try { deskEmail = Session.getActiveUser().getEmail() || ''; } catch (_) {}
+      return HtmlService.createHtmlOutput(
+        '<h2>Access Denied</h2>' +
+        '<p>This page is restricted to authorized administrators.</p>' +
+        '<p>Signed in as: <strong>' + (deskEmail || '(no email detected)') + '</strong></p>'
+      ).setTitle('Access Denied');
+    }
+    return HtmlService.createTemplateFromFile('Desktop')
+      .evaluate()
+      .setTitle('ติดตามพาเลท — Desktop')
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
   // --- Admin pages (auth gate) ---
   // --- Slip page (admin-gated, uses createHtmlOutputFromFile — no templating needed) ---
   if (app === 'slip') {
@@ -256,12 +274,14 @@ function confirmScan(params) {
       return { success: false, sapSent: false, message: 'ค่าต้องเป็นจำนวนเต็ม >= 0', logId: null };
     }
     const bucketSum = qtyGood + qtyRepair + qtyScrap + qtyAwaitConv;
-    if (bucketSum !== pallet.QtyPerPallet) {
+    if (bucketSum <= 0 || bucketSum > pallet.QtyPerPallet) {
       logEvent('RECORD_OP_BUCKETS', 'OperationLog', 'REJECT', 0,
-        palletId + ' op=' + opNo + ' sum=' + bucketSum + ' expected=' + pallet.QtyPerPallet);
+        palletId + ' op=' + opNo + ' sum=' + bucketSum + ' max=' + pallet.QtyPerPallet);
       return {
         success: false, sapSent: false,
-        message: 'ยอดรวม (' + bucketSum + ') ไม่เท่ากับ QtyPerPallet (' + pallet.QtyPerPallet + ')',
+        message: bucketSum <= 0
+          ? 'ยอดรวมต้องมากกว่า 0'
+          : 'ยอดรวม (' + bucketSum + ') เกิน QtyPerPallet (' + pallet.QtyPerPallet + ')',
         logId: null
       };
     }
@@ -316,7 +336,7 @@ function confirmScan(params) {
       operator:      operator,
       role:          role,
       result:        'PASS',
-      source:        'MOBILE',
+      source:        params.source || 'MOBILE',
       actualMachine: actualMachine
     });
 

@@ -137,6 +137,63 @@
       display: flex; gap: 20px; flex-wrap: wrap;
     }
     .status-row strong { color: #212529; }
+
+    /* ---- ยืนยัน button in ops table ---- */
+    .btn-confirm-op {
+      padding: 4px 12px; background: #1565c0; color: #fff;
+      border: none; border-radius: 4px; font-size: 12px; font-family: inherit;
+      cursor: pointer; white-space: nowrap;
+    }
+    .btn-confirm-op:hover { background: #0d47a1; }
+
+    /* ---- Confirm modal ---- */
+    #confirmModal {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,.45);
+    }
+    .modal-box {
+      background: #fff; border-radius: 8px; padding: 24px 28px;
+      max-width: 520px; width: 94%; box-shadow: 0 8px 32px rgba(0,0,0,.25);
+      max-height: 90vh; overflow-y: auto;
+    }
+    .modal-box h3 { margin: 0 0 14px; font-size: 16px; color: #1a237e; }
+    .modal-info { font-size: 13px; margin-bottom: 12px; line-height: 1.9; }
+    .modal-warning {
+      background: #fff3e0; border: 1px solid #ffcc80;
+      padding: 10px 14px; border-radius: 4px; font-size: 13px;
+      color: #e65100; margin-bottom: 14px;
+    }
+    .modal-form {
+      display: grid; grid-template-columns: auto 1fr;
+      gap: 8px 12px; align-items: center; margin-bottom: 16px;
+    }
+    .modal-form label { font-size: 13px; font-weight: 600; white-space: nowrap; }
+    .modal-form input, .modal-form select {
+      padding: 7px 10px; border: 1px solid #ced4da; border-radius: 4px;
+      font-size: 13px; font-family: inherit; width: 100%;
+    }
+    .modal-bucket-hint { grid-column: 1 / -1; font-size: 12px; color: #546e7a; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+    .modal-actions button {
+      padding: 8px 22px; border: none; border-radius: 4px;
+      font-size: 14px; font-family: inherit; cursor: pointer;
+    }
+    #mBtnCancel { background: #eceff1; color: #37474f; }
+    #mBtnCancel:hover { background: #cfd8dc; }
+    #mBtnSubmit { background: #1565c0; color: #fff; }
+    #mBtnSubmit:hover:not(:disabled) { background: #0d47a1; }
+    #mBtnSubmit:disabled { background: #90a4ae; cursor: default; }
+    .modal-result-error {
+      margin-top: 12px; padding: 10px 14px;
+      background: #ffebee; border: 1px solid #ef9a9a;
+      border-radius: 4px; font-size: 13px; color: #b71c1c;
+    }
+    .modal-result-success {
+      margin-top: 12px; padding: 10px 14px;
+      background: #e8f5e9; border: 1px solid #a5d6a7;
+      border-radius: 4px; font-size: 13px; color: #1b5e20;
+    }
   </style>
 </head>
 <body>
@@ -176,19 +233,66 @@
 <!-- Detail Panel (hidden until row click) -->
 <div id="detailPanel" style="display:none">
   <h2 id="detailTitle">รายละเอียดพาเลท</h2>
-  <span class="readonly-note">โหมดอ่านอย่างเดียว — ยังไม่เปิดการทำรายการ</span>
+  <span class="readonly-note">Desktop mode — ยืนยันการผลิตได้ แต่ไม่มีการสแกน QR ยืนยันตัวพาเลทจริง</span>
   <div id="detailContent"></div>
+</div>
 
-  <!-- ช่องนี้สำหรับปุ่มดำเนินการในเฟส 6.2+ ยังไม่เปิดใช้งานในเฟสนี้ -->
-  <div id="actionPanel"></div>
+<!-- Confirm production modal (Phase 6.2) -->
+<div id="confirmModal">
+  <div class="modal-box">
+    <h3>ยืนยันขั้นตอนการผลิต</h3>
+    <div class="modal-info">
+      <div>รหัสพาเลท: <strong id="mPalletId"></strong></div>
+      <div>ใบสั่งผลิต: <strong id="mMO"></strong></div>
+      <div>วัสดุ: <strong id="mMaterial"></strong></div>
+      <div>ขั้นตอนที่จะยืนยัน: <strong id="mOpDesc"></strong></div>
+      <div>จำนวน/พาเลท: <strong id="mQty"></strong></div>
+    </div>
+    <div class="modal-warning">
+      ⚠️ กรุณาตรวจสอบให้ถูกต้องก่อนยืนยัน — Desktop ไม่มีการสแกน QR ยืนยันตัวพาเลทจริง
+    </div>
+    <div class="modal-form">
+      <label>ผู้ปฏิบัติงาน *</label>
+      <input type="text" id="mOperator" placeholder="ชื่อ-นามสกุล หรือ รหัสพนักงาน">
+      <label>บทบาท *</label>
+      <select id="mRole">
+        <option value="">-- เลือก Role --</option>
+        <option value="OP">OP — พนักงานผลิต</option>
+        <option value="PD">PD — วิศวกรการผลิต</option>
+        <option value="QC">QC — ผู้ตรวจสอบ</option>
+      </select>
+      <label>จำนวนดี *</label>
+      <input type="number" id="mQtyGood" min="0" step="1" oninput="recalcBucketHint_()">
+      <label>จำนวนซ่อม</label>
+      <input type="number" id="mQtyRepair" min="0" step="1" value="0" oninput="recalcBucketHint_()">
+      <label>จำนวนเสีย</label>
+      <input type="number" id="mQtyScrap" min="0" step="1" value="0" oninput="recalcBucketHint_()">
+      <label>รอปรับสภาพ</label>
+      <input type="number" id="mQtyAwaitConv" min="0" step="1" value="0" oninput="recalcBucketHint_()">
+      <div id="mBucketHint" class="modal-bucket-hint"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="mBtnCancel" type="button">ยกเลิก</button>
+      <button id="mBtnSubmit" type="button">ยืนยัน</button>
+    </div>
+    <div id="mResult" style="display:none"></div>
+  </div>
 </div>
 
 <script>
 (function () {
   'use strict';
 
-  var selectedTr = null;
-  var allRows    = []; // full result set from last search — used by client-side filters
+  var selectedTr    = null;
+  var allRows       = []; // full result set from last search — used by client-side filters
+  var _detailPallet = null; // current detail pallet — used by confirm modal
+  var _detailOpsMap = {}; // opNo → op object — used by confirm modal
+  var _activeUserEmail = '';
+
+  google.script.run
+    .withSuccessHandler(function (email) { _activeUserEmail = email || ''; })
+    .withFailureHandler(function () {})
+    .getActiveUserEmail();
 
   // ── Escape helpers ──────────────────────────────────────────────────────────
   function esc(s) {
@@ -381,9 +485,14 @@
       return;
     }
 
-    var p   = result.pallet;
-    var ops = result.operations || [];
+    var p    = result.pallet;
+    var ops  = result.operations || [];
     var logs = result.operationLogs || [];
+
+    // Store for confirm modal
+    _detailPallet = p;
+    _detailOpsMap = {};
+    ops.forEach(function (op) { _detailOpsMap[op.opNo] = op; });
 
     // ---- Pallet field grid ----
     var fields = [
@@ -418,18 +527,30 @@
 
     // ---- Operations routing table ----
     if (ops.length > 0) {
+      // Find first unlogged op — the only one the server will accept next
+      var nextPendingOpNo = null;
+      if (!result.allOpsConfirmed) {
+        ops.some(function (op) {
+          var logged = logs.some(function (l) { return l.operationNo === op.opNo; });
+          if (!logged) { nextPendingOpNo = op.opNo; return true; }
+          return false;
+        });
+      }
+
       html += '<div class="section-title">ขั้นตอนการผลิต</div>' +
         '<table class="ops"><thead><tr>' +
-        '<th>ลำดับ</th><th>คำอธิบาย</th><th>ศูนย์งาน</th><th>สถานะ</th>' +
+        '<th>ลำดับ</th><th>คำอธิบาย</th><th>ศูนย์งาน</th><th>สถานะ</th><th>ดำเนินการ</th>' +
         '</tr></thead><tbody>';
 
       ops.forEach(function (op) {
         var logged = logs.some(function (l) { return l.operationNo === op.opNo; });
+        var isNext = op.opNo === nextPendingOpNo;
         html += '<tr>' +
           '<td>' + esc(op.opNo) + '</td>' +
           '<td>' + esc(op.opText) + '</td>' +
           '<td>' + esc(op.workCenter) + '</td>' +
           '<td>' + (logged ? '✅ บันทึกแล้ว' : '⬜ ยังไม่บันทึก') + '</td>' +
+          '<td>' + (isNext ? '<button class="btn-confirm-op" data-opno="' + esc(op.opNo) + '">ยืนยัน</button>' : '') + '</td>' +
           '</tr>';
       });
       html += '</tbody></table>';
@@ -442,6 +563,152 @@
       '</div>';
 
     content.innerHTML = html;
+
+    // Bind ยืนยัน buttons — there is at most one per render
+    content.querySelectorAll('.btn-confirm-op').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var opNo = btn.getAttribute('data-opno');
+        openConfirmModal(_detailPallet, _detailOpsMap[opNo]);
+      });
+    });
+  }
+
+  // ── Confirm production modal (Phase 6.2) ───────────────────────────────────
+  var _confirmCtx = {};
+
+  function openConfirmModal(pallet, op) {
+    _confirmCtx = { pallet: pallet, op: op };
+    document.getElementById('mPalletId').textContent = pallet.PalletID;
+    document.getElementById('mMO').textContent       = pallet.ManufacturingOrder;
+    document.getElementById('mMaterial').textContent = pallet.Material + (pallet.MaterialName ? ' — ' + pallet.MaterialName : '');
+    document.getElementById('mOpDesc').textContent   = op.opNo + ' — ' + op.opText + ' (' + op.workCenter + ')';
+    document.getElementById('mQty').textContent      = pallet.QtyPerPallet + ' ' + (pallet.Unit || '');
+    document.getElementById('mOperator').value       = _activeUserEmail;
+    document.getElementById('mRole').value           = '';
+    document.getElementById('mQtyGood').value        = pallet.QtyPerPallet;
+    document.getElementById('mQtyRepair').value      = '0';
+    document.getElementById('mQtyScrap').value       = '0';
+    document.getElementById('mQtyAwaitConv').value   = '0';
+    recalcBucketHint_();
+    document.getElementById('mResult').style.display = 'none';
+    document.getElementById('mResult').className      = '';
+    document.getElementById('mResult').textContent    = '';
+    var sub = document.getElementById('mBtnSubmit');
+    sub.disabled    = false;
+    sub.textContent = 'ยืนยัน';
+    document.getElementById('confirmModal').style.display = 'flex';
+  }
+
+  function closeConfirmModal() {
+    document.getElementById('confirmModal').style.display = 'none';
+    _confirmCtx = {};
+  }
+
+  function recalcBucketHint_() {
+    var pallet = _confirmCtx.pallet;
+    if (!pallet) return;
+    var maxQty = Number(pallet.QtyPerPallet);
+    var g = parseInt(document.getElementById('mQtyGood').value,      10) || 0;
+    var r = parseInt(document.getElementById('mQtyRepair').value,    10) || 0;
+    var s = parseInt(document.getElementById('mQtyScrap').value,     10) || 0;
+    var a = parseInt(document.getElementById('mQtyAwaitConv').value, 10) || 0;
+    var sum = g + r + s + a;
+    var hint = document.getElementById('mBucketHint');
+    var btn  = document.getElementById('mBtnSubmit');
+    if (sum === 0) {
+      hint.textContent = 'กรุณาใส่จำนวนมากกว่า 0 (สูงสุด ' + maxQty + ')';
+      hint.style.color = '#b71c1c';
+      btn.disabled = true;
+    } else if (sum > maxQty) {
+      hint.textContent = 'ยอดรวม ' + sum + ' เกิน ' + maxQty + ' — ลดจำนวนลง';
+      hint.style.color = '#b71c1c';
+      btn.disabled = true;
+    } else if (sum < maxQty) {
+      hint.textContent = 'ยอดรวม ' + sum + ' / ' + maxQty + ' — ส่วนต่างจะรอพิมพ์ใบใหม่';
+      hint.style.color = '#2e7d32';
+      btn.disabled = false;
+    } else {
+      hint.textContent = 'ยอดรวม ' + sum + ' / ' + maxQty + ' ✓';
+      hint.style.color = '#2e7d32';
+      btn.disabled = false;
+    }
+  }
+
+  function submitConfirm() {
+    var pallet = _confirmCtx.pallet;
+    var op     = _confirmCtx.op;
+    if (!pallet || !op) return;
+
+    var operator     = document.getElementById('mOperator').value.trim();
+    var role         = document.getElementById('mRole').value;
+    var qtyGood      = parseInt(document.getElementById('mQtyGood').value,      10) || 0;
+    var qtyRepair    = parseInt(document.getElementById('mQtyRepair').value,    10) || 0;
+    var qtyScrap     = parseInt(document.getElementById('mQtyScrap').value,     10) || 0;
+    var qtyAwaitConv = parseInt(document.getElementById('mQtyAwaitConv').value, 10) || 0;
+
+    if (!operator) { showModalMsg('error', 'กรุณาระบุผู้ปฏิบัติงาน'); return; }
+    if (!role)     { showModalMsg('error', 'กรุณาเลือก Role'); return; }
+
+    var bucketSum = qtyGood + qtyRepair + qtyScrap + qtyAwaitConv;
+    var maxQty = Number(pallet.QtyPerPallet);
+    if (bucketSum === 0) {
+      showModalMsg('error', 'กรุณาใส่จำนวนมากกว่า 0');
+      return;
+    }
+    if (bucketSum > maxQty) {
+      showModalMsg('error', 'ยอดรวม (' + bucketSum + ') เกิน QtyPerPallet (' + maxQty + ')');
+      return;
+    }
+
+    var sub = document.getElementById('mBtnSubmit');
+    sub.disabled    = true;
+    sub.textContent = '⏳ กำลังบันทึก...';
+    document.getElementById('mResult').style.display = 'none';
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        sub.disabled    = false;
+        sub.textContent = 'ยืนยัน';
+        if (!res.success) {
+          showModalMsg('error', '❌ ' + (res.message || 'เกิดข้อผิดพลาด'));
+          return;
+        }
+        showModalMsg('success', '✅ ' + (res.message || 'บันทึกสำเร็จ'));
+        setTimeout(function () {
+          closeConfirmModal();
+          loadDetail(pallet.PalletID);
+        }, 2200);
+      })
+      .withFailureHandler(function (err) {
+        sub.disabled    = false;
+        sub.textContent = 'ยืนยัน';
+        showModalMsg('error', '❌ บันทึกไม่สำเร็จ: ' + (err.message || String(err)));
+      })
+      .confirmScan({
+        palletId:      pallet.PalletID,
+        opNo:          op.opNo,
+        opText:        op.opText,
+        isFinal:       op.isFinal,
+        qtyGood:       qtyGood,
+        qtyScrap:      qtyScrap,
+        qtyRepair:     qtyRepair,
+        qtyAwaitConv:  qtyAwaitConv,
+        operator:      operator,
+        role:          role,
+        actualMachine: '',
+        source:        'DESKTOP'
+      });
+  }
+
+  window.recalcBucketHint_ = recalcBucketHint_;
+  window.closeConfirmModal  = closeConfirmModal;
+  window.submitConfirm      = submitConfirm;
+
+  function showModalMsg(type, msg) {
+    var el = document.getElementById('mResult');
+    el.className        = type === 'error' ? 'modal-result-error' : 'modal-result-success';
+    el.textContent      = msg;
+    el.style.display    = 'block';
   }
 
   function hideDetail() {
@@ -449,6 +716,10 @@
     document.getElementById('detailContent').innerHTML = '';
     if (selectedTr) { selectedTr.classList.remove('selected'); selectedTr = null; }
   }
+
+  // ── Modal button bindings (onclick attributes are stripped by GAS sanitizer) ──
+  document.getElementById('mBtnCancel').addEventListener('click', closeConfirmModal);
+  document.getElementById('mBtnSubmit').addEventListener('click', submitConfirm);
 
   // ── Enter key triggers search ───────────────────────────────────────────────
   document.getElementById('searchValue').addEventListener('keypress', function (e) {

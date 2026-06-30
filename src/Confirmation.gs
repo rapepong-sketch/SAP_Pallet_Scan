@@ -88,12 +88,14 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
     defect   = isNaN(defect)   ? 0 : defect;
     awaitCnv = isNaN(awaitCnv) ? 0 : awaitCnv;
 
-    // Validate sum == QtyPerPallet
+    // Validate 0 < sum <= QtyPerPallet (partial pallets allowed — remainder becomes a new pallet)
     var bucketSum = good + repair + defect + awaitCnv;
-    if (bucketSum !== pallet.QtyPerPallet) {
-      var msg = 'Bucket sum mismatch for ' + palletId + ': Good(' + good +
-        ')+Repair(' + repair + ')+Defect(' + defect + ')+AwaitConv(' + awaitCnv +
-        ')=' + bucketSum + ' ≠ QtyPerPallet(' + pallet.QtyPerPallet + ')';
+    if (bucketSum <= 0 || bucketSum > pallet.QtyPerPallet) {
+      var msg = bucketSum <= 0
+        ? 'Bucket sum is zero for ' + palletId
+        : 'Bucket sum exceeds QtyPerPallet for ' + palletId + ': Good(' + good +
+          ')+Repair(' + repair + ')+Defect(' + defect + ')+AwaitConv(' + awaitCnv +
+          ')=' + bucketSum + ' > QtyPerPallet(' + pallet.QtyPerPallet + ')';
       logEvent('CONFIRM', 'ERROR', msg);
       return { error: msg };
     }

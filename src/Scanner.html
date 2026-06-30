@@ -1145,10 +1145,22 @@ function recalcYield() {
   var errEl = document.getElementById('yield-sum-error');
   var btn   = document.getElementById('btn-confirm');
 
-  if (sum !== expected) {
-    errEl.textContent = 'ยอดรวม 4 ช่องต้องเท่ากับ ' + expected + ' (ตอนนี้ ' + sum + ')';
+  if (sum === 0 || sum > expected) {
+    errEl.textContent = sum === 0
+      ? 'กรุณาใส่จำนวนมากกว่า 0'
+      : 'ยอดรวม ' + sum + ' เกินจำนวน/พาเลท ' + expected;
+    errEl.style.background  = '#fdeaea';
+    errEl.style.color       = '#c0392b';
+    errEl.style.borderColor = '#e74c3c';
     errEl.classList.remove('hidden');
     btn.disabled = true;
+  } else if (sum < expected) {
+    errEl.textContent = 'ยอดรวม ' + sum + ' / ' + expected + ' — ส่วนต่างจะรอพิมพ์ใบใหม่';
+    errEl.style.background  = '#e8f5e9';
+    errEl.style.color       = '#2e7d32';
+    errEl.style.borderColor = '#a5d6a7';
+    errEl.classList.remove('hidden');
+    btn.disabled = false;
   } else {
     errEl.classList.add('hidden');
     btn.disabled = false;
@@ -1171,9 +1183,14 @@ function submitConfirm() {
   if (!role)     { showMsg('error', 'กรุณาเลือก Role'); return; }
 
   var sum = goodQty + repairQty + defectQty + awaitConvQty;
-  if (sum !== currentPallet.QtyPerPallet) {
+  if (sum === 0 || sum > currentPallet.QtyPerPallet) {
     var errEl = document.getElementById('yield-sum-error');
-    errEl.textContent = 'ยอดรวม 4 ช่องต้องเท่ากับ ' + currentPallet.QtyPerPallet + ' (ตอนนี้ ' + sum + ')';
+    errEl.textContent = sum === 0
+      ? 'กรุณาใส่จำนวนมากกว่า 0'
+      : 'ยอดรวม ' + sum + ' เกินจำนวน/พาเลท ' + currentPallet.QtyPerPallet;
+    errEl.style.background  = '#fdeaea';
+    errEl.style.color       = '#c0392b';
+    errEl.style.borderColor = '#e74c3c';
     errEl.classList.remove('hidden');
     return;
   }
