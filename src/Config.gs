@@ -17,7 +17,7 @@ const CFG = {
   // ---- SAP tenant --------------------------------------------------------
   SAP_BASE_URL: 'https://my417293-api.s4hana.cloud.sap',
   PLANT: '1100',
-  DEST_SLOCS: ['PW40'],
+  DEST_SLOCS: ['PW40', 'PW44'],
 
   // ---- Factory identity --------------------------------------------------
   FACTORY_NAME: 'PJ Chonburi',
