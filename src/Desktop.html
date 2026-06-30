@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ติดตามพาเลท — Desktop</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: 'Sarabun', 'Segoe UI', sans-serif;
+      margin: 0; padding: 16px 20px;
+      background: #f0f2f5; color: #212529; font-size: 14px;
+    }
+    h1 { margin: 0 0 14px; font-size: 18px; color: #1a237e; }
+
+    /* ---- Search bar ---- */
+    .search-bar {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      background: #fff; padding: 12px 16px; border-radius: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12); margin-bottom: 14px;
+    }
+    .search-bar label { font-weight: 600; white-space: nowrap; }
+    .search-bar select, .search-bar input {
+      padding: 7px 10px; border: 1px solid #ced4da; border-radius: 4px;
+      font-size: 14px; font-family: inherit;
+    }
+    .search-bar select { min-width: 140px; }
+    .search-bar input  { flex: 1; min-width: 220px; }
+    .search-bar button {
+      padding: 7px 20px; background: #1565c0; color: #fff;
+      border: none; border-radius: 4px; font-size: 14px; font-family: inherit;
+      cursor: pointer; white-space: nowrap;
+    }
+    .search-bar button:hover:not(:disabled) { background: #0d47a1; }
+    .search-bar button:disabled { background: #90a4ae; cursor: default; }
+
+    /* ---- Notices ---- */
+    .notice-capped {
+      background: #fff8e1; border: 1px solid #ffe082;
+      padding: 8px 14px; border-radius: 4px; margin-bottom: 8px;
+      font-size: 13px; color: #5d4037;
+    }
+    .notice-error {
+      background: #ffebee; border: 1px solid #ef9a9a;
+      padding: 10px 14px; border-radius: 4px; font-size: 13px; color: #b71c1c;
+    }
+    .loading { color: #78909c; font-style: italic; padding: 10px 0; }
+
+    /* ---- Results table ---- */
+    .tbl-wrap { overflow-x: auto; }
+    table.results {
+      width: 100%; border-collapse: collapse;
+      background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.12);
+      border-radius: 6px; overflow: hidden;
+    }
+    table.results thead th {
+      background: #1565c0; color: #fff;
+      padding: 9px 10px; text-align: left; font-size: 13px; white-space: nowrap;
+      font-weight: 600;
+    }
+    table.results tbody td {
+      padding: 7px 10px; font-size: 13px; border-bottom: 1px solid #eceff1;
+      white-space: nowrap;
+    }
+    table.results tbody tr.data-row { cursor: pointer; }
+    table.results tbody tr.data-row:hover { background: #e3f2fd; }
+    table.results tbody tr.data-row.selected { background: #bbdefb; }
+
+    /* ---- Status badges ---- */
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 10px;
+      font-size: 11px; font-weight: 700; letter-spacing: .3px;
+    }
+    .badge-CONFIRMED  { background: #c8e6c9; color: #1b5e20; }
+    .badge-QC_COMPLETE { background: #dcedc8; color: #33691e; }
+    .badge-PD_COMPLETE { background: #f0f4c3; color: #827717; }
+    .badge-SCANNED    { background: #fff9c4; color: #f57f17; }
+    .badge-PRINTED    { background: #e3f2fd; color: #1565c0; }
+    .badge-CREATED    { background: #f5f5f5; color: #616161; }
+    .badge-INSPECTED  { background: #e8f5e9; color: #2e7d32; }
+
+    /* ---- Filter Bar ---- */
+    #filterBar {
+      background: #fff; padding: 10px 16px; border-radius: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12); margin-bottom: 10px;
+    }
+    #filterBar .filter-inner {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    }
+    #filterBar label { font-weight: 600; white-space: nowrap; font-size: 13px; }
+    #filterBar select {
+      padding: 5px 8px; border: 1px solid #ced4da; border-radius: 4px;
+      font-size: 13px; font-family: inherit; min-width: 130px;
+    }
+    #filterBar .clear-btn {
+      padding: 5px 12px; background: none; border: 1px solid #bdbdbd;
+      border-radius: 4px; font-size: 13px; font-family: inherit;
+      cursor: pointer; color: #546e7a;
+    }
+    #filterBar .clear-btn:hover { background: #f5f5f5; }
+
+    /* ---- Detail panel ---- */
+    #detailPanel {
+      margin-top: 18px; background: #fff; padding: 18px 20px;
+      border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.12);
+    }
+    #detailPanel h2 { margin: 0 0 10px; font-size: 16px; color: #1a237e; }
+
+    .readonly-note {
+      background: #fff3e0; border: 1px solid #ffcc80;
+      padding: 7px 12px; border-radius: 4px; font-size: 13px;
+      color: #e65100; margin-bottom: 14px; display: inline-block;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 10px; margin-bottom: 16px;
+    }
+    .info-item { background: #f8f9fa; padding: 8px 12px; border-radius: 4px; }
+    .info-label { font-size: 11px; color: #757575; margin-bottom: 3px; text-transform: uppercase; letter-spacing: .4px; }
+    .info-value { font-size: 14px; font-weight: 500; word-break: break-all; }
+
+    .section-title { font-size: 14px; font-weight: 700; color: #37474f; margin: 16px 0 8px; }
+
+    table.ops {
+      width: 100%; border-collapse: collapse; font-size: 13px;
+      background: #fafafa; border-radius: 4px; overflow: hidden;
+    }
+    table.ops thead th {
+      background: #eceff1; padding: 7px 10px; text-align: left; font-weight: 600;
+    }
+    table.ops tbody td { padding: 6px 10px; border-bottom: 1px solid #eceff1; }
+
+    .status-row {
+      margin-top: 14px; font-size: 13px; color: #546e7a;
+      display: flex; gap: 20px; flex-wrap: wrap;
+    }
+    .status-row strong { color: #212529; }
+  </style>
+</head>
+<body>
+
+<h1>ติดตามพาเลท — Desktop</h1>
+
+<!-- Search Bar -->
+<div class="search-bar">
+  <label>ค้นด้วย:</label>
+  <select id="searchMode">
+    <option value="mo">ใบสั่งผลิต</option>
+    <option value="material">วัสดุ</option>
+    <option value="palletId">รหัสพาเลท</option>
+  </select>
+  <input type="text" id="searchValue" placeholder="ระบุค่าค้นหา..." autocomplete="off">
+  <button id="searchBtn" onclick="doSearch()">ค้นหา</button>
+</div>
+
+<!-- Results area -->
+<div id="resultsArea"></div>
+
+<!-- Filter Bar (hidden until first search returns results) -->
+<div id="filterBar" style="display:none">
+  <div class="filter-inner">
+    <label>กรองคลัง:</label>
+    <select id="filterSloc" onchange="applyFilters_()">
+      <option value="">ทั้งหมด</option>
+    </select>
+    <label>กรองกลุ่มสินค้า:</label>
+    <select id="filterGroup" onchange="applyFilters_()">
+      <option value="">ทั้งหมด</option>
+    </select>
+    <button type="button" class="clear-btn" onclick="clearFilters_()">ล้างตัวกรอง</button>
+  </div>
+</div>
+
+<!-- Detail Panel (hidden until row click) -->
+<div id="detailPanel" style="display:none">
+  <h2 id="detailTitle">รายละเอียดพาเลท</h2>
+  <span class="readonly-note">โหมดอ่านอย่างเดียว — ยังไม่เปิดการทำรายการ</span>
+  <div id="detailContent"></div>
+
+  <!-- ช่องนี้สำหรับปุ่มดำเนินการในเฟส 6.2+ ยังไม่เปิดใช้งานในเฟสนี้ -->
+  <div id="actionPanel"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var selectedTr = null;
+  var allRows    = []; // full result set from last search — used by client-side filters
+
+  // ── Escape helpers ──────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // ── Search ──────────────────────────────────────────────────────────────────
+  window.doSearch = function () {
+    var mode  = document.getElementById('searchMode').value;
+    var value = document.getElementById('searchValue').value;
+    var btn   = document.getElementById('searchBtn');
+    var area  = document.getElementById('resultsArea');
+
+    btn.disabled = true;
+    area.innerHTML = '<div class="loading">กำลังค้นหา...</div>';
+    document.getElementById('filterBar').style.display = 'none';
+    hideDetail();
+
+    google.script.run
+      .withSuccessHandler(function (result) {
+        btn.disabled = false;
+        renderResults(result);
+      })
+      .withFailureHandler(function (err) {
+        btn.disabled = false;
+        area.innerHTML = '<div class="notice-error">เกิดข้อผิดพลาด (searchPallets): ' + esc(String(err)) + '</div>';
+      })
+      .searchPallets({ mode: mode, value: value });
+  };
+
+  function renderResults(result) {
+    var area      = document.getElementById('resultsArea');
+    var filterBar = document.getElementById('filterBar');
+
+    if (!result || !result.ok) {
+      allRows = [];
+      filterBar.style.display = 'none';
+      var msg = (result && result.error === 'NOT_ADMIN')
+        ? 'ไม่มีสิทธิ์เข้าใช้งาน (admin เท่านั้น)'
+        : 'เกิดข้อผิดพลาด: ' + esc((result && result.error) || 'unknown');
+      area.innerHTML = '<div class="notice-error">' + msg + '</div>';
+      return;
+    }
+
+    if (!result.rows || result.rows.length === 0) {
+      allRows = [];
+      filterBar.style.display = 'none';
+      area.innerHTML = '<div class="loading" style="color:#90a4ae">ไม่พบข้อมูลที่ตรงกัน</div>';
+      return;
+    }
+
+    allRows = result.rows;
+
+    var html = '';
+    if (result.capped) {
+      html += '<div class="notice-capped">แสดง 200 แถวแรก — ผลลัพธ์อาจมีมากกว่านี้ กรุณากรองให้เฉพาะเจาะจงขึ้น</div>';
+    }
+
+    html += '<div class="tbl-wrap"><table class="results"><thead><tr>' +
+      '<th>รหัสพาเลท</th><th>ใบสั่งผลิต</th><th>วัสดุ</th><th>ชื่อวัสดุ</th>' +
+      '<th>Batch</th><th>จำนวน/พาเลท</th><th>หน่วย</th><th>ลำดับ</th><th>รวมพาเลท</th>' +
+      '<th>ศูนย์งาน</th><th>วันที่ผลิต</th><th>สถานะ</th><th>สแกน</th><th>QC</th>' +
+      '</tr></thead><tbody>';
+
+    html += buildRowsHtml_(allRows);
+
+    html += '</tbody></table></div>';
+    area.innerHTML = html;
+
+    // Populate filter dropdowns and reveal filter bar
+    populateFilterDropdowns_(allRows);
+    filterBar.style.display = '';
+  }
+
+  function buildRowsHtml_(rows) {
+    if (!rows || rows.length === 0) {
+      return '<tr><td colspan="14" style="text-align:center;color:#90a4ae;padding:12px">ไม่พบข้อมูลตามเงื่อนไข</td></tr>';
+    }
+    var html = '';
+    rows.forEach(function (row) {
+      html += '<tr class="data-row" data-palletid="' + esc(row.PalletID) + '" onclick="selectRow(this)">' +
+        '<td><strong>' + esc(row.PalletID) + '</strong></td>' +
+        '<td>' + esc(row.ManufacturingOrder) + '</td>' +
+        '<td>' + esc(row.Material) + '</td>' +
+        '<td>' + esc(row.MaterialName) + '</td>' +
+        '<td>' + esc(row.Batch) + '</td>' +
+        '<td style="text-align:right">' + (row.QtyPerPallet || '') + '</td>' +
+        '<td>' + esc(row.Unit) + '</td>' +
+        '<td style="text-align:center">' + (row.PalletSeq || '') + '</td>' +
+        '<td style="text-align:center">' + (row.TotalPallets || '') + '</td>' +
+        '<td>' + esc(row.WorkCenter) + '</td>' +
+        '<td>' + esc(row.ProductionDate) + '</td>' +
+        '<td>' + badge(row.Status) + '</td>' +
+        '<td>' + badge(row.ScanStatus) + '</td>' +
+        '<td>' + badge(row.QCStatus) + '</td>' +
+        '</tr>';
+    });
+    return html;
+  }
+
+  function badge(val) {
+    if (!val) return '<span style="color:#bbb">—</span>';
+    return '<span class="badge badge-' + esc(val) + '">' + esc(val) + '</span>';
+  }
+
+  // ── Filter Bar helpers ──────────────────────────────────────────────────────
+
+  function populateFilterDropdowns_(rows) {
+    var slocSet  = {};
+    var groupSet = {};
+    rows.forEach(function (row) {
+      if (row.StorageLocation) slocSet[row.StorageLocation]  = true;
+      if (row.productGroup)    groupSet[row.productGroup]    = true;
+    });
+
+    var slocEl  = document.getElementById('filterSloc');
+    var groupEl = document.getElementById('filterGroup');
+
+    slocEl.innerHTML  = '<option value="">ทั้งหมด</option>';
+    groupEl.innerHTML = '<option value="">ทั้งหมด</option>';
+
+    Object.keys(slocSet).sort().forEach(function (v) {
+      slocEl.innerHTML += '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+    });
+    Object.keys(groupSet).sort().forEach(function (v) {
+      groupEl.innerHTML += '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+    });
+
+    slocEl.value  = '';
+    groupEl.value = '';
+  }
+
+  window.applyFilters_ = function () {
+    var sloc  = document.getElementById('filterSloc').value;
+    var group = document.getElementById('filterGroup').value;
+
+    var active = allRows.filter(function (row) {
+      var slocOk  = !sloc  || row.StorageLocation === sloc;
+      var groupOk = !group || row.productGroup    === group;
+      return slocOk && groupOk;
+    });
+
+    var tbody = document.querySelector('table.results tbody');
+    if (!tbody) return;
+    // Clear stale selectedTr reference; detail panel stays open intentionally.
+    if (selectedTr && !tbody.contains(selectedTr)) selectedTr = null;
+    tbody.innerHTML = buildRowsHtml_(active);
+  };
+
+  window.clearFilters_ = function () {
+    document.getElementById('filterSloc').value  = '';
+    document.getElementById('filterGroup').value = '';
+    window.applyFilters_();
+  };
+
+  // ── Row selection → detail ──────────────────────────────────────────────────
+  window.selectRow = function (tr) {
+    if (selectedTr) selectedTr.classList.remove('selected');
+    tr.classList.add('selected');
+    selectedTr = tr;
+
+    var palletId = tr.getAttribute('data-palletid');
+    loadDetail(palletId);
+  };
+
+  function loadDetail(palletId) {
+    var panel   = document.getElementById('detailPanel');
+    var content = document.getElementById('detailContent');
+    panel.style.display = 'block';
+    document.getElementById('detailTitle').textContent = 'รายละเอียดพาเลท: ' + palletId;
+    content.innerHTML = '<div class="loading">กำลังโหลดรายละเอียด...</div>';
+
+    google.script.run
+      .withSuccessHandler(function (result) {
+        renderDetail(result);
+      })
+      .withFailureHandler(function (err) {
+        content.innerHTML = '<div class="notice-error">เกิดข้อผิดพลาด (lookupPallet): ' + esc(String(err)) + '</div>';
+      })
+      .lookupPallet(palletId);
+  }
+
+  function renderDetail(result) {
+    var content = document.getElementById('detailContent');
+
+    if (!result || !result.found) {
+      content.innerHTML = '<div class="notice-error">' + esc((result && result.error) || 'ไม่พบพาเลท') + '</div>';
+      return;
+    }
+
+    var p   = result.pallet;
+    var ops = result.operations || [];
+    var logs = result.operationLogs || [];
+
+    // ---- Pallet field grid ----
+    var fields = [
+      ['รหัสพาเลท',      p.PalletID],
+      ['ใบสั่งผลิต',     p.ManufacturingOrder],
+      ['วัสดุ',          p.Material],
+      ['ชื่อวัสดุ',      p.MaterialName],
+      ['Batch',          p.Batch],
+      ['จำนวน/พาเลท',   p.QtyPerPallet],
+      ['หน่วย',          p.Unit],
+      ['ลำดับ / รวม',    (p.PalletSeq || '') + ' / ' + (p.TotalPallets || '')],
+      ['ศูนย์งาน',       p.WorkCenter],
+      ['วันที่ผลิต',     p.ProductionDate],
+      ['ที่เก็บ',        p.StorageLocation || '—'],
+      ['สถานะ',          p.Status],
+      ['สถานะสแกน',     p.ScanStatus],
+      ['สถานะ QC',       p.QCStatus || '—'],
+      ['ผล QC',          p.QCResult || '—'],
+      ['หมายเหตุ QC',   p.QCResultNote || '—'],
+      ['สแกนเมื่อ',      p.ScannedAt || '—'],
+      ['สแกนโดย',        p.ScannedBy || '—']
+    ];
+
+    var html = '<div class="info-grid">';
+    fields.forEach(function (f) {
+      html += '<div class="info-item">' +
+        '<div class="info-label">' + esc(f[0]) + '</div>' +
+        '<div class="info-value">' + esc(String(f[1] == null ? '—' : f[1])) + '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+
+    // ---- Operations routing table ----
+    if (ops.length > 0) {
+      html += '<div class="section-title">ขั้นตอนการผลิต</div>' +
+        '<table class="ops"><thead><tr>' +
+        '<th>ลำดับ</th><th>คำอธิบาย</th><th>ศูนย์งาน</th><th>สถานะ</th>' +
+        '</tr></thead><tbody>';
+
+      ops.forEach(function (op) {
+        var logged = logs.some(function (l) { return l.operationNo === op.opNo; });
+        html += '<tr>' +
+          '<td>' + esc(op.opNo) + '</td>' +
+          '<td>' + esc(op.opText) + '</td>' +
+          '<td>' + esc(op.workCenter) + '</td>' +
+          '<td>' + (logged ? '✅ บันทึกแล้ว' : '⬜ ยังไม่บันทึก') + '</td>' +
+          '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+
+    // ---- Summary flags ----
+    html += '<div class="status-row">' +
+      '<span>ครบทุกขั้นตอน: <strong>' + (result.allOpsConfirmed ? '✅ ใช่' : '❌ ยังไม่ครบ') + '</strong></span>' +
+      '<span>QC เสร็จแล้ว: <strong>' + (result.qcDone ? '✅ ใช่' : '❌ ยังไม่ตรวจ') + '</strong></span>' +
+      '</div>';
+
+    content.innerHTML = html;
+  }
+
+  function hideDetail() {
+    document.getElementById('detailPanel').style.display = 'none';
+    document.getElementById('detailContent').innerHTML = '';
+    if (selectedTr) { selectedTr.classList.remove('selected'); selectedTr = null; }
+  }
+
+  // ── Enter key triggers search ───────────────────────────────────────────────
+  document.getElementById('searchValue').addEventListener('keypress', function (e) {
+    if (e.key === 'Enter') window.doSearch();
+  });
+
+}());
+</script>
+</body>
+</html>
