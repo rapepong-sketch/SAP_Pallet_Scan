@@ -265,6 +265,15 @@ function buildOneSlipHtml_(p, pgMap, ts, opts) {
   h += '<span class="slip-badge" style="background:' + badgeColor + '">' + esc_(badgeText) + '</span>';
   h += '</div>';
 
+  var transferStampHtml = opts.transferable
+    ? '<div style="display:inline-block;padding:4px 12px;border-radius:4px;' +
+      'font-size:12px;font-weight:bold;margin-top:6px;margin-left:6px;' +
+      'background:#1e8449;color:#fff;">✅ โอนย้ายได้ — สแกน QR เพื่อโอนย้าย</div>'
+    : '<div style="display:inline-block;padding:4px 12px;border-radius:4px;' +
+      'font-size:12px;font-weight:bold;margin-top:6px;margin-left:6px;' +
+      'background:#c0392b;color:#fff;">🚫 ไม่สามารถโอนย้ายได้</div>';
+  h += transferStampHtml;
+
   // ---- Big row: PART NO / QTY / หน่วย ----
   h += '<div class="slip-bigrow">';
   h += '<span class="big-part">PART NO : <b>' + esc_(p.Material) + '</b></span>';
@@ -454,7 +463,7 @@ function buildSlipSheetsHtml(palletIds, mode) {
   var pgMap = getProductGroupMap_();
   var ts    = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd/MM/yyyy HH:mm');
 
-  var slips = rows.map(function(p) { return buildOneSlipHtml_(p, pgMap, ts); });
+  var slips = rows.map(function(p) { return buildOneSlipHtml_(p, pgMap, ts, { transferable: false }); });
 
   var html = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n' +
     SLIP_CSS_ +
@@ -554,7 +563,8 @@ function buildPickSlipsHtml(pickResult) {
       qrPayload:   issueSlipQrPayload_(row),
       qtyOverride: row.IssueQty,
       lotOverride: row.LotNo,
-      refDoc:      row.RefDoc || ''
+      refDoc:      row.RefDoc || '',
+      transferable: true
     }));
   }
 
@@ -570,7 +580,8 @@ function buildPickSlipsHtml(pickResult) {
       badgeText:   'คงเหลือ',
       badgeColor:  '#7f8c8d',
       qrPayload:   remainSlipQrPayload_(parentR, alloc.remainingAfter),
-      qtyOverride: alloc.remainingAfter
+      qtyOverride: alloc.remainingAfter,
+      transferable: false
     }));
   }
 

@@ -149,6 +149,11 @@ function buildOneSheetHtml_(p, poMap, mmMap, timestamp, reprintTs) {
   h += `<div class="hdr-qr"><img src="${buildPsQrUrl_(p.QRPayload)}" width="110" height="110" alt="QR"></div>`;
   h += `</div>`;
 
+  h += '<div style="display:inline-block;padding:4px 12px;border-radius:4px;' +
+       'font-size:12px;font-weight:bold;margin:6px 0;' +
+       'background:#c0392b;color:#fff;">🚫 ไม่สามารถโอนย้ายได้ ' +
+       '(ใช้ใบแบ่งเบิกสำหรับโอนย้าย)</div>';
+
   if (reprintTs) {
     h += `<div class="reprint-badge">REPRINT &middot; ${esc_(reprintTs)}</div>`;
   }
