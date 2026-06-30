@@ -261,6 +261,18 @@
         <option value="PD">PD — วิศวกรการผลิต</option>
         <option value="QC">QC — ผู้ตรวจสอบ</option>
       </select>
+      <label>เครื่องที่ใช้จริง *</label>
+      <div>
+        <div id="mDeptLabel" style="display:none; font-size:11px; color:#1565c0; margin-bottom:4px"></div>
+        <select id="mActualMachine" style="width:100%">
+          <option value="">-- เลือกเครื่อง --</option>
+        </select>
+        <input type="text" id="mActualMachineFree" style="display:none; width:100%"
+          placeholder="(ไม่พบในระบบ — กรอกชื่อเครื่องเอง)">
+        <div id="mActualMachineNote" style="display:none; font-size:11px; color:#e65100; margin-top:4px">
+          ไม่พบเครื่องสำหรับศูนย์งานนี้ — กรอกหรือข้ามได้
+        </div>
+      </div>
       <label>จำนวนดี *</label>
       <input type="number" id="mQtyGood" min="0" step="1" oninput="recalcBucketHint_()">
       <label>จำนวนซ่อม</label>
@@ -585,6 +597,45 @@
     document.getElementById('mQty').textContent      = pallet.QtyPerPallet + ' ' + (pallet.Unit || '');
     document.getElementById('mOperator').value       = _activeUserEmail;
     document.getElementById('mRole').value           = '';
+    // Reset machine field then async-populate from MachineMaster
+    var _mSel   = document.getElementById('mActualMachine');
+    var _mFree  = document.getElementById('mActualMachineFree');
+    var _mNote  = document.getElementById('mActualMachineNote');
+    var _mDept  = document.getElementById('mDeptLabel');
+    _mSel.innerHTML      = '<option value="">-- เลือกเครื่อง --</option>';
+    _mSel.style.display  = '';
+    _mFree.style.display = 'none';
+    _mFree.value         = '';
+    _mNote.style.display = 'none';
+    _mDept.style.display = 'none';
+    _mDept.textContent   = '';
+    google.script.run
+      .withSuccessHandler(function(result) {
+        _mSel.innerHTML = '<option value="">-- เลือกเครื่อง --</option>';
+        if (!result || !result.ok || result.machines.length === 0) {
+          _mSel.style.display  = 'none';
+          _mFree.style.display = '';
+          _mNote.style.display = '';
+        } else {
+          if (result.department) {
+            _mDept.textContent   = 'แผนก: ' + result.department;
+            _mDept.style.display = '';
+          }
+          result.machines.forEach(function(m) {
+            var opt = document.createElement('option');
+            opt.value = m.code;
+            opt.textContent = m.code + ' — ' + m.name;
+            _mSel.appendChild(opt);
+          });
+        }
+      })
+      .withFailureHandler(function() {
+        _mSel.style.display  = 'none';
+        _mFree.style.display = '';
+        _mNote.textContent   = 'โหลดรายการเครื่องไม่สำเร็จ — กรอกชื่อเครื่องเอง';
+        _mNote.style.display = '';
+      })
+      .getMachinesForStepWorkCenter(op.workCenter || '');
     document.getElementById('mQtyGood').value        = pallet.QtyPerPallet;
     document.getElementById('mQtyRepair').value      = '0';
     document.getElementById('mQtyScrap').value       = '0';
@@ -649,6 +700,16 @@
     if (!operator) { showModalMsg('error', 'กรุณาระบุผู้ปฏิบัติงาน'); return; }
     if (!role)     { showModalMsg('error', 'กรุณาเลือก Role'); return; }
 
+    var _mFree2       = document.getElementById('mActualMachineFree');
+    var isFreeText    = _mFree2.style.display !== 'none';
+    var actualMachine = isFreeText
+      ? _mFree2.value.trim()
+      : document.getElementById('mActualMachine').value;
+    if (!isFreeText && !actualMachine) {
+      showModalMsg('error', 'กรุณาเลือกเครื่องที่ใช้จริง');
+      return;
+    }
+
     var bucketSum = qtyGood + qtyRepair + qtyScrap + qtyAwaitConv;
     var maxQty = Number(pallet.QtyPerPallet);
     if (bucketSum === 0) {
@@ -695,7 +756,7 @@
         qtyAwaitConv:  qtyAwaitConv,
         operator:      operator,
         role:          role,
-        actualMachine: '',
+        actualMachine: actualMachine,
         source:        'DESKTOP'
       });
   }
