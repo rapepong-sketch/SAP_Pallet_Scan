@@ -36,6 +36,69 @@ function padOperation_(v) {
 }
 
 /**
+ * Pure OFF-path (6.2-REV) validation — bucketSum must equal qtyPerPallet
+ * exactly, no partial rounds. Extracted so it can be unit-tested without a
+ * real pallet row and so buildConfirmationPayload_ has a single call site
+ * for this check either way the flag is set.
+ * @param {number} qtyPerPallet
+ * @param {number} bucketSum
+ * @return {{allowed:boolean, message:string|null}}
+ */
+function _validateExactMatchConfirm_(qtyPerPallet, bucketSum) {
+  if (Number(bucketSum) !== Number(qtyPerPallet)) {
+    return {
+      allowed: false,
+      message: '⛔ ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + qtyPerPallet + ') — ไม่อนุญาตให้ส่งน้อยกว่า'
+    };
+  }
+  return { allowed: true, message: null };
+}
+
+/**
+ * Pure validation of one cumulative/partial confirmation round's qty math
+ * (Phase 6.5 Gate 2 Part 1) — no SAP call, no sheet read/write. Used by
+ * buildConfirmationPayload_ and exercised directly by TEST_ scenarios with
+ * fake in-memory values.
+ *
+ * Rule: no per-round minimum/proportion — any split across up to
+ * CFG.MAX_CONFIRM_ROUNDS rounds is allowed, as long as cumulative never
+ * exceeds qtyPerPallet and the completing round brings cumulative to
+ * exactly qtyPerPallet.
+ *
+ * @param {number} qtyPerPallet
+ * @param {number} cumulativeConfirmedQty — qty confirmed to SAP so far (rounds 1..N-1)
+ * @param {number} confirmRound — rounds already completed (0 = none yet)
+ * @param {number} bucketSum — qty this round is attempting to confirm
+ * @return {{allowed:boolean, isCompletingRound:boolean, newCumulative:number,
+ *   nextRound:number, message:string|null}}
+ */
+function _validateCumulativeRound_(qtyPerPallet, cumulativeConfirmedQty, confirmRound, bucketSum) {
+  var nextRound      = Number(confirmRound || 0) + 1;
+  var newCumulative  = Number(cumulativeConfirmedQty || 0) + Number(bucketSum || 0);
+  var isCompletingRound = (newCumulative === Number(qtyPerPallet));
+
+  if (nextRound > CFG.MAX_CONFIRM_ROUNDS && !isCompletingRound) {
+    return {
+      allowed: false, isCompletingRound: false,
+      newCumulative: newCumulative, nextRound: nextRound,
+      message: '⛔ ใช้ครบ ' + CFG.MAX_CONFIRM_ROUNDS + ' รอบแล้ว ยอดยังไม่ครบจำนวนต่อพาเลท (' +
+        qtyPerPallet + ') — กรุณาติดต่อ Admin'
+    };
+  }
+  if (newCumulative > Number(qtyPerPallet)) {
+    return {
+      allowed: false, isCompletingRound: false,
+      newCumulative: newCumulative, nextRound: nextRound,
+      message: '⛔ ยอดรวมสะสมเกินจำนวนต่อพาเลท (' + qtyPerPallet + ')'
+    };
+  }
+  return {
+    allowed: true, isCompletingRound: isCompletingRound,
+    newCumulative: newCumulative, nextRound: nextRound, message: null
+  };
+}
+
+/**
  * Build the SAP order confirmation payload for one QC-passed pallet.
  * Pure read + transform — does not call SAP or write any sheet.
  *
@@ -44,6 +107,13 @@ function padOperation_(v) {
  *   scrap = DefectQty
  * Fallback: if all 4 buckets are empty (legacy pallet), uses QtyPerPallet / scrap 0.
  * qtyOverride is IGNORED when buckets are present; only applies in legacy fallback.
+ *
+ * Phase 6.5 Gate 2 Part 1: when isCumulativeConfirmEnabled_() is true, the
+ * bucket-derived qty is validated as one round of up to CFG.MAX_CONFIRM_ROUNDS
+ * against PalletMaster.CumulativeConfirmedQty/ConfirmRound instead of requiring
+ * an exact QtyPerPallet match every call. IsFinalConfirmation/ConfirmationText
+ * are round-aware in that case. Flag OFF (default) preserves 6.2-REV behavior
+ * exactly — legacy (bucketless) pallets are never round-aware either way.
  *
  * @param {string} palletId
  * @param {number} [qtyOverride] — reduce-only admin override (legacy path only).
@@ -71,6 +141,8 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
       ' — cannot confirm');
   }
 
+  const cumulativeOn = isCumulativeConfirmEnabled_();
+
   // ---- Phase 3.5 Gate 4: 4-bucket yield resolution ----
   var good     = (pallet.GoodQty     != null && pallet.GoodQty     !== '') ? Number(pallet.GoodQty)     : NaN;
   var repair   = (pallet.RepairQty   != null && pallet.RepairQty   !== '') ? Number(pallet.RepairQty)   : NaN;
@@ -80,6 +152,8 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
   var bucketsPresent = !isNaN(good) || !isNaN(repair) || !isNaN(defect) || !isNaN(awaitCnv);
 
   var yieldQty, scrapQty, source;
+  var isCompletingRound = true; // legacy/OFF path is always a single completing round
+  var nextRound = 1;
 
   if (bucketsPresent) {
     // Treat any remaining NaN as 0 (partial fill = zero for that bucket)
@@ -87,13 +161,23 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
     repair   = isNaN(repair)   ? 0 : repair;
     defect   = isNaN(defect)   ? 0 : defect;
     awaitCnv = isNaN(awaitCnv) ? 0 : awaitCnv;
-
-    // Validate sum === QtyPerPallet exactly (partial pallets not allowed)
     var bucketSum = good + repair + defect + awaitCnv;
-    if (bucketSum !== Number(pallet.QtyPerPallet)) {
-      var msg = '⛔ ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + pallet.QtyPerPallet + ') — ไม่อนุญาตให้ส่งน้อยกว่า';
-      logEvent('CONFIRM', 'ERROR', msg);
-      return { error: msg };
+
+    if (cumulativeOn) {
+      var v = _validateCumulativeRound_(
+        pallet.QtyPerPallet, pallet.CumulativeConfirmedQty, pallet.ConfirmRound, bucketSum);
+      if (!v.allowed) {
+        logEvent('CONFIRM', 'ERROR', palletId + ' ' + v.message);
+        return { error: v.message };
+      }
+      isCompletingRound = v.isCompletingRound;
+      nextRound = v.nextRound;
+    } else {
+      var exact = _validateExactMatchConfirm_(pallet.QtyPerPallet, bucketSum);
+      if (!exact.allowed) {
+        logEvent('CONFIRM', 'ERROR', exact.message);
+        return { error: exact.message };
+      }
     }
 
     yieldQty = good + repair + awaitCnv;
@@ -105,7 +189,7 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
         ' IGNORED — buckets are source of truth (yield=' + yieldQty + ' scrap=' + scrapQty + ')');
     }
   } else {
-    // Legacy fallback: no bucket data recorded
+    // Legacy fallback: no bucket data recorded — cumulative rounds don't apply
     var qty = (qtyOverride != null) ? qtyOverride : pallet.QtyPerPallet;
     if (!qty || qty <= 0) {
       throw new Error('QtyPerPallet missing or invalid for PalletID: ' + palletId);
@@ -116,9 +200,10 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
   }
 
   logEvent('CONFIRM', 'PAYLOAD', palletId + ' source=' + source +
-    ' yield=' + yieldQty + ' scrap=' + scrapQty);
+    ' yield=' + yieldQty + ' scrap=' + scrapQty +
+    (cumulativeOn && bucketsPresent ? ' round=' + nextRound + ' final=' + isCompletingRound : ''));
 
-  return {
+  var payload = {
     OrderID:                   orderId,
     OrderOperation:            padOperation_(finalOp),
     Sequence:                  '0',
@@ -126,10 +211,15 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
     ConfirmationScrapQuantity: String(scrapQty),
     ConfirmationUnit:          pallet.Unit || 'PC',
     Plant:                     CFG.PLANT,
-    IsFinalConfirmation:       true,
-    FinalConfirmationType:     'X',
-    ConfirmationText:          String(palletId).slice(0, 40)
+    IsFinalConfirmation:       (cumulativeOn && bucketsPresent) ? isCompletingRound : true,
+    ConfirmationText:          (cumulativeOn && bucketsPresent)
+      ? buildPartialConfirmationText_(palletId, nextRound)
+      : String(palletId).slice(0, 40)
   };
+  if (payload.IsFinalConfirmation) {
+    payload.FinalConfirmationType = 'X';
+  }
+  return payload;
 }
 
 /**
@@ -281,6 +371,43 @@ function _healConfirmedPallet_(palletId, rb) {
   });
   try { backfillMaterialDocument(palletId); } catch (e) {
     logEvent('CONFIRM', 'HEAL_BACKFILL_ERR', palletId + ' ' + e.message);
+  }
+}
+
+/**
+ * Phase 6.5 Gate 2 Part 1 — round-aware heal. Same idea as
+ * _healConfirmedPallet_, but a readback hit for a NON-completing round must
+ * NOT jump ScanStatus to CONFIRMED — the pallet stays in QC_COMPLETE, ready
+ * for the next round. Only advances CumulativeConfirmedQty/ConfirmRound
+ * (and ScanStatus/ConfirmedAt/ConfirmedBy, on the completing round only).
+ * @param {string} palletId
+ * @param {{confirmationGroup:string, confirmationCount:string}} rb
+ * @param {Object} pallet — pallet row from lookupPalletById_ (pre-round state)
+ * @param {Object} payload — the round's payload from buildConfirmationPayload_
+ * @param {number} roundNumber — the round this readback hit belongs to
+ */
+function _healConfirmedPalletRound_(palletId, rb, pallet, payload, roundNumber) {
+  var bucketSum = Number(payload.ConfirmationYieldQuantity || 0) + Number(payload.ConfirmationScrapQuantity || 0);
+  var newCumulative = Number(pallet.CumulativeConfirmedQty || 0) + bucketSum;
+  var isCompletingRound = payload.IsFinalConfirmation === true;
+
+  var fields = {
+    ConfirmationGroup:      rb.confirmationGroup,
+    ConfirmationCount:      rb.confirmationCount,
+    CumulativeConfirmedQty: newCumulative,
+    ConfirmRound:           roundNumber
+  };
+  if (isCompletingRound) {
+    fields.ScanStatus  = 'CONFIRMED';
+    fields.ConfirmedAt = new Date();
+    fields.ConfirmedBy = 'HEAL';
+  }
+  updatePalletScanFields_(palletId, fields);
+
+  if (isCompletingRound) {
+    try { backfillMaterialDocument(palletId); } catch (e) {
+      logEvent('CONFIRM', 'HEAL_BACKFILL_ERR', palletId + ' ' + e.message);
+    }
   }
 }
 
@@ -532,6 +659,77 @@ function sapReadbackConfirmation_(palletId) {
 }
 
 /**
+ * Phase 6.5 Gate 2 Part 1 — SAP readback for ONE SPECIFIC round of a
+ * cumulative/partial confirmation. Filters on the exact round token
+ * '{palletId}-R{n}' (not a prefix search — the caller already knows the
+ * exact round number, so an exact eq filter is cheaper than startswith()).
+ *
+ * Unlike sapReadbackConfirmation_ (which is a bare palletId match and stays
+ * unchanged for the OFF-flag path), this must NOT match any other round's
+ * ConfirmationText — otherwise round 2's readback could false-positive on
+ * round 1's already-posted confirmation.
+ *
+ * READ-ONLY, best-effort — never throws. Returns {found:false, error} on any
+ * failure so callers can fall through to normal POST behaviour.
+ *
+ * @param {string} palletId
+ * @param {number} roundNumber
+ * @return {{found:boolean, confirmationGroup?:string, confirmationCount?:string,
+ *   orderId?:string, confirmationText?:string, round?:number, error?:string}}
+ */
+function sapReadbackConfirmationRound_(palletId, roundNumber) {
+  try {
+    var token = buildPartialConfirmationText_(palletId, roundNumber);
+    var serviceRoot = CFG.SAP_BASE_URL + CFG.SERVICES.PROD_ORDER_CONF;
+    var url = buildSapUrl_(serviceRoot + 'ProdnOrdConf2', {
+      '$filter': "ConfirmationText eq '" + token + "'",
+      '$select': 'ConfirmationGroup,ConfirmationCount,OrderID,OrderOperation,ConfirmationText',
+      '$top': '1',
+      '$format': 'json'
+    });
+
+    logEvent('CONFIRM', 'READBACK_ROUND_URL', url);
+    var creds = getSapCredentials_();
+    var resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: {
+        'Authorization': 'Basic ' + Utilities.base64Encode(creds.user + ':' + creds.pass),
+        'Accept': 'application/json'
+      },
+      muteHttpExceptions: true
+    });
+
+    var code = resp.getResponseCode();
+    var body = resp.getContentText();
+
+    if (code < 200 || code >= 300) {
+      logEvent('CONFIRM', 'READBACK_ROUND_HTTP_ERR', code + ' ' + body.slice(0, 300));
+      return { found: false, error: 'HTTP ' + code };
+    }
+
+    var parsed = JSON.parse(body);
+    var results = (parsed.d && parsed.d.results) || [];
+
+    if (results.length === 0) {
+      return { found: false };
+    }
+
+    var hit = results[0];
+    return {
+      found: true,
+      confirmationGroup: hit.ConfirmationGroup || '',
+      confirmationCount: hit.ConfirmationCount || '',
+      orderId:           hit.OrderID || '',
+      confirmationText:  hit.ConfirmationText || '',
+      round:             roundNumber
+    };
+  } catch (e) {
+    logEvent('CONFIRM', 'READBACK_ROUND_EXCEPTION', e.message);
+    return { found: false, error: e.message };
+  }
+}
+
+/**
  * Orchestrator: build → POST → readback → writeback for a single pallet.
  * Idempotency guard: skips if ScanStatus is already CONFIRMED or ConfirmationGroup
  * is non-empty. Writes confirmation results + material document back to PalletMaster.
@@ -547,6 +745,8 @@ function confirmPallet(palletId) {
     var pallet = lookupPalletById_(palletId);
     if (!pallet) throw new Error('PalletID not found: ' + palletId);
 
+    var cumulativeOn = isCumulativeConfirmEnabled_();
+
     // ---- Idempotency guard: read ConfirmationGroup from sheet ----
     var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
     var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
@@ -555,9 +755,19 @@ function confirmPallet(palletId) {
       ? String(sh.getRange(pallet.rowNum, cgColIdx + 1).getValue() || '').trim()
       : '';
 
-    if (pallet.ScanStatus === 'CONFIRMED' || cgVal !== '') {
-      logEvent('CONFIRM', 'SKIP', palletId + ' already confirmed');
-      return { alreadyConfirmed: true };
+    if (cumulativeOn) {
+      // Phase 6.5 Gate 2 Part 1: every round produces a new ConfirmationGroup/
+      // Count, so presence of ANY ConfirmationGroup no longer means "done" —
+      // only ScanStatus === 'CONFIRMED' means fully done under this flag.
+      if (pallet.ScanStatus === 'CONFIRMED') {
+        logEvent('CONFIRM', 'SKIP', palletId + ' already confirmed (cumulative)');
+        return { alreadyConfirmed: true };
+      }
+    } else {
+      if (pallet.ScanStatus === 'CONFIRMED' || cgVal !== '') {
+        logEvent('CONFIRM', 'SKIP', palletId + ' already confirmed');
+        return { alreadyConfirmed: true };
+      }
     }
 
     // ---- Build payload ----
@@ -567,8 +777,18 @@ function confirmPallet(palletId) {
       throw new Error(payload.error);
     }
 
+    // nextRound/isCompletingRound are re-derived here (not read off payload
+    // directly) so no extra, non-SAP fields ever get attached to the object
+    // that postConfirmation_ JSON.stringifies straight into the POST body.
+    var nextRound = cumulativeOn ? (Number(pallet.ConfirmRound || 0) + 1) : null;
+
     // ---- POST with readback-first retry ----
-    var result = postConfirmationWithRetry_(payload, palletId);
+    var result = cumulativeOn
+      ? postConfirmationWithRetry_(payload, palletId, {
+          readbackFn: function (pid) { return sapReadbackConfirmationRound_(pid, nextRound); },
+          healFn: function (pid, rb) { _healConfirmedPalletRound_(pid, rb, pallet, payload, nextRound); }
+        })
+      : postConfirmationWithRetry_(payload, palletId);
 
     if (result.healed) return { alreadyConfirmed: true, healed: true };
     if (result.unknownState || result.retryExhausted) {
@@ -604,22 +824,42 @@ function confirmPallet(palletId) {
         GRMaterialDocument:     matDoc.materialDocument,
         GRMaterialDocumentYear: matDoc.materialDocumentYear,
         ConfirmedAt:            new Date(),
-        ConfirmedBy:            getActiveUserSafe_(),
-        ScanStatus:             'CONFIRMED'
+        ConfirmedBy:            getActiveUserSafe_()
       };
       if (grBatch) {
         writebackFields.Batch = String(grBatch);
       }
+
+      var isCompletingRound = true;
+      if (cumulativeOn) {
+        var bucketSum = Number(payload.ConfirmationYieldQuantity || 0) + Number(payload.ConfirmationScrapQuantity || 0);
+        var newCumulative = Number(pallet.CumulativeConfirmedQty || 0) + bucketSum;
+        isCompletingRound = payload.IsFinalConfirmation === true;
+
+        writebackFields.CumulativeConfirmedQty = newCumulative;
+        writebackFields.ConfirmRound = nextRound;
+        if (isCompletingRound) {
+          writebackFields.ScanStatus = 'CONFIRMED';
+        }
+        // else: ScanStatus intentionally omitted — pallet stays in its
+        // current stage (QC_COMPLETE), ready for the next round.
+      } else {
+        writebackFields.ScanStatus = 'CONFIRMED';
+      }
+
       updatePalletScanFields_(palletId, writebackFields);
 
       logEvent('CONFIRM', 'CONFIRMED', palletId + ' matDoc=' + matDoc.materialDocument +
-        (grBatch ? ' batch=' + grBatch : ' batch=UNRESOLVED'));
+        (grBatch ? ' batch=' + grBatch : ' batch=UNRESOLVED') +
+        (cumulativeOn ? ' round=' + nextRound + '/' + (isCompletingRound ? 'FINAL' : 'PARTIAL') : ''));
 
       return {
         ok: true,
         materialDocument: matDoc.materialDocument,
         confirmationGroup: result.confirmationGroup,
-        confirmationCount: result.confirmationCount
+        confirmationCount: result.confirmationCount,
+        round: cumulativeOn ? nextRound : undefined,
+        isCompletingRound: cumulativeOn ? isCompletingRound : undefined
       };
     }
 

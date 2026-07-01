@@ -495,7 +495,10 @@ function lookupPalletById_(palletId) {
       GoodQty:            idx['GoodQty']      !== undefined ? data[r][idx['GoodQty']]      : null,
       RepairQty:          idx['RepairQty']    !== undefined ? data[r][idx['RepairQty']]    : null,
       DefectQty:          idx['DefectQty']    !== undefined ? data[r][idx['DefectQty']]    : null,
-      AwaitConvQty:       idx['AwaitConvQty'] !== undefined ? data[r][idx['AwaitConvQty']] : null
+      AwaitConvQty:       idx['AwaitConvQty'] !== undefined ? data[r][idx['AwaitConvQty']] : null,
+      // Phase 6.5 Gate 2 Part 1 — cumulative/partial confirmation
+      CumulativeConfirmedQty: idx['CumulativeConfirmedQty'] !== undefined ? data[r][idx['CumulativeConfirmedQty']] : null,
+      ConfirmRound:            idx['ConfirmRound']           !== undefined ? data[r][idx['ConfirmRound']]           : null
     };
   }
   return null;
