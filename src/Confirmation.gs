@@ -88,14 +88,10 @@ function buildConfirmationPayload_(palletId, qtyOverride) {
     defect   = isNaN(defect)   ? 0 : defect;
     awaitCnv = isNaN(awaitCnv) ? 0 : awaitCnv;
 
-    // Validate 0 < sum <= QtyPerPallet (partial pallets allowed — remainder becomes a new pallet)
+    // Validate sum === QtyPerPallet exactly (partial pallets not allowed)
     var bucketSum = good + repair + defect + awaitCnv;
-    if (bucketSum <= 0 || bucketSum > pallet.QtyPerPallet) {
-      var msg = bucketSum <= 0
-        ? 'Bucket sum is zero for ' + palletId
-        : 'Bucket sum exceeds QtyPerPallet for ' + palletId + ': Good(' + good +
-          ')+Repair(' + repair + ')+Defect(' + defect + ')+AwaitConv(' + awaitCnv +
-          ')=' + bucketSum + ' > QtyPerPallet(' + pallet.QtyPerPallet + ')';
+    if (bucketSum !== Number(pallet.QtyPerPallet)) {
+      var msg = '⛔ ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + pallet.QtyPerPallet + ') — ไม่อนุญาตให้ส่งน้อยกว่า';
       logEvent('CONFIRM', 'ERROR', msg);
       return { error: msg };
     }

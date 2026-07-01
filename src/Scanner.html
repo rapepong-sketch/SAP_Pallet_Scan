@@ -1145,25 +1145,26 @@ function recalcYield() {
   var errEl = document.getElementById('yield-sum-error');
   var btn   = document.getElementById('btn-confirm');
 
-  if (sum === 0 || sum > expected) {
-    errEl.textContent = sum === 0
-      ? 'กรุณาใส่จำนวนมากกว่า 0'
-      : 'ยอดรวม ' + sum + ' เกินจำนวน/พาเลท ' + expected;
+  if (sum === expected) {
+    errEl.classList.add('hidden');
+    btn.disabled = false;
+  } else if (sum === 0) {
+    errEl.classList.add('hidden');
+    btn.disabled = true;
+  } else if (sum > expected) {
+    errEl.textContent = 'ยอดรวมเกินจำนวนต่อพาเลท (' + expected + ')';
     errEl.style.background  = '#fdeaea';
     errEl.style.color       = '#c0392b';
     errEl.style.borderColor = '#e74c3c';
     errEl.classList.remove('hidden');
     btn.disabled = true;
-  } else if (sum < expected) {
-    errEl.textContent = 'ยอดรวม ' + sum + ' / ' + expected + ' — ส่วนต่างจะรอพิมพ์ใบใหม่';
-    errEl.style.background  = '#e8f5e9';
-    errEl.style.color       = '#2e7d32';
-    errEl.style.borderColor = '#a5d6a7';
-    errEl.classList.remove('hidden');
-    btn.disabled = false;
   } else {
-    errEl.classList.add('hidden');
-    btn.disabled = false;
+    errEl.textContent = 'ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + expected + ') — ไม่อนุญาตให้ส่งน้อยกว่า';
+    errEl.style.background  = '#fdeaea';
+    errEl.style.color       = '#c0392b';
+    errEl.style.borderColor = '#e74c3c';
+    errEl.classList.remove('hidden');
+    btn.disabled = true;
   }
 }
 
@@ -1183,11 +1184,9 @@ function submitConfirm() {
   if (!role)     { showMsg('error', 'กรุณาเลือก Role'); return; }
 
   var sum = goodQty + repairQty + defectQty + awaitConvQty;
-  if (sum === 0 || sum > currentPallet.QtyPerPallet) {
+  if (sum !== currentPallet.QtyPerPallet) {
     var errEl = document.getElementById('yield-sum-error');
-    errEl.textContent = sum === 0
-      ? 'กรุณาใส่จำนวนมากกว่า 0'
-      : 'ยอดรวม ' + sum + ' เกินจำนวน/พาเลท ' + currentPallet.QtyPerPallet;
+    errEl.textContent = 'ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + currentPallet.QtyPerPallet + ') — ไม่อนุญาตให้ส่งน้อยกว่า';
     errEl.style.background  = '#fdeaea';
     errEl.style.color       = '#c0392b';
     errEl.style.borderColor = '#e74c3c';

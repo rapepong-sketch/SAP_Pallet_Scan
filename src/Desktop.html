@@ -734,22 +734,22 @@
     var sum = g + r + s + a;
     var hint = document.getElementById('mBucketHint');
     var btn  = document.getElementById('mBtnSubmit');
-    if (sum === 0) {
-      hint.textContent = 'กรุณาใส่จำนวนมากกว่า 0 (สูงสุด ' + maxQty + ')';
-      hint.style.color = '#b71c1c';
-      btn.disabled = true;
-    } else if (sum > maxQty) {
-      hint.textContent = 'ยอดรวม ' + sum + ' เกิน ' + maxQty + ' — ลดจำนวนลง';
-      hint.style.color = '#b71c1c';
-      btn.disabled = true;
-    } else if (sum < maxQty) {
-      hint.textContent = 'ยอดรวม ' + sum + ' / ' + maxQty + ' — ส่วนต่างจะรอพิมพ์ใบใหม่';
-      hint.style.color = '#2e7d32';
-      btn.disabled = false;
-    } else {
+    if (sum === maxQty) {
       hint.textContent = 'ยอดรวม ' + sum + ' / ' + maxQty + ' ✓';
       hint.style.color = '#2e7d32';
       btn.disabled = false;
+    } else if (sum === 0) {
+      hint.textContent = '';
+      hint.style.color = '';
+      btn.disabled = true;
+    } else if (sum > maxQty) {
+      hint.textContent = 'ยอดรวมเกินจำนวนต่อพาเลท (' + maxQty + ')';
+      hint.style.color = '#b71c1c';
+      btn.disabled = true;
+    } else {
+      hint.textContent = 'ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + maxQty + ') — ไม่อนุญาตให้ส่งน้อยกว่า';
+      hint.style.color = '#b71c1c';
+      btn.disabled = true;
     }
   }
 
@@ -780,12 +780,8 @@
 
     var bucketSum = qtyGood + qtyRepair + qtyScrap + qtyAwaitConv;
     var maxQty = Number(pallet.QtyPerPallet);
-    if (bucketSum === 0) {
-      showModalMsg('error', 'กรุณาใส่จำนวนมากกว่า 0');
-      return;
-    }
-    if (bucketSum > maxQty) {
-      showModalMsg('error', 'ยอดรวม (' + bucketSum + ') เกิน QtyPerPallet (' + maxQty + ')');
+    if (bucketSum !== maxQty) {
+      showModalMsg('error', 'ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + maxQty + ') — ไม่อนุญาตให้ส่งน้อยกว่า');
       return;
     }
 

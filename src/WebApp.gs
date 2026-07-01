@@ -274,14 +274,12 @@ function confirmScan(params) {
       return { success: false, sapSent: false, message: 'ค่าต้องเป็นจำนวนเต็ม >= 0', logId: null };
     }
     const bucketSum = qtyGood + qtyRepair + qtyScrap + qtyAwaitConv;
-    if (bucketSum <= 0 || bucketSum > pallet.QtyPerPallet) {
+    if (bucketSum !== Number(pallet.QtyPerPallet)) {
       logEvent('RECORD_OP_BUCKETS', 'OperationLog', 'REJECT', 0,
         palletId + ' op=' + opNo + ' sum=' + bucketSum + ' max=' + pallet.QtyPerPallet);
       return {
         success: false, sapSent: false,
-        message: bucketSum <= 0
-          ? 'ยอดรวมต้องมากกว่า 0'
-          : 'ยอดรวม (' + bucketSum + ') เกิน QtyPerPallet (' + pallet.QtyPerPallet + ')',
+        message: '⛔ ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + pallet.QtyPerPallet + ') — ไม่อนุญาตให้ส่งน้อยกว่า',
         logId: null
       };
     }
