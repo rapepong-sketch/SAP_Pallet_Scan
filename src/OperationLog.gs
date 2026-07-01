@@ -418,11 +418,15 @@ function runBackfillOperationLogRoundColumns() {
  * without an extra round-trip. Legacy/flag-OFF rows have roundNumber=0 and
  * isFinalRound=false when blank (never backfilled) — harmless for OFF-mode
  * consumers, which only check plain row existence.
+ * OFF (LOCAL_OP_CUMULATIVE_ENABLED=false): returns the original 7-field shape
+ * only (operationNo, status, pdResult, opBy, pdBy, pdNote, timestamp) —
+ * byte-identical to pre-feature commit 9f8732e. ON: adds roundNumber/
+ * isFinalRound/the 4 bucket qtys described above.
  * @param {string} palletId
  * @return {Array<{operationNo:string, status:string, pdResult:string|null,
  *   opBy:string, pdBy:string, pdNote:string, timestamp:string,
- *   roundNumber:number, isFinalRound:boolean, goodQty:number, scrapQty:number,
- *   repairQty:number, awaitConvQty:number}>}
+ *   roundNumber:number=, isFinalRound:boolean=, goodQty:number=, scrapQty:number=,
+ *   repairQty:number=, awaitConvQty:number=}>}
  */
 function getOperationLogs_(palletId) {
   palletId = String(palletId || '').trim();
@@ -441,26 +445,30 @@ function getOperationLogs_(palletId) {
     return [];
   }
 
+  const cumulativeOn = isLocalOpCumulativeEnabled_();
   const results = [];
   for (let r = 1; r < data.length; r++) {
     if (String(data[r][idx.PalletID] || '').trim() !== palletId) continue;
     const pdResult = String(data[r][idx.PDResult] || '').trim();
-    const rawRound = idx.RoundNumber !== undefined ? data[r][idx.RoundNumber] : '';
-    results.push({
-      operationNo:  _normOpNo_(data[r][idx.OperationNo]),
-      status:       String(data[r][idx.Result]      || ''),
-      pdResult:     pdResult || null,
-      opBy:         String(data[r][idx.Operator]     || ''),
-      pdBy:         String(data[r][idx.PDInspector]  || ''),
-      pdNote:       String(data[r][idx.PDNote]       || ''),
-      timestamp:    _fmtLogTimestamp_(data[r][idx.LoggedAt]),
-      roundNumber:  rawRound === '' || rawRound == null ? 0 : Number(rawRound),
-      isFinalRound: idx.IsFinalRound !== undefined && data[r][idx.IsFinalRound] === true,
-      goodQty:      Number(data[r][idx.GoodQty])      || 0,
-      scrapQty:     Number(data[r][idx.ScrapQty])     || 0,
-      repairQty:    Number(data[r][idx.RepairQty])    || 0,
-      awaitConvQty: Number(data[r][idx.AwaitConvQty]) || 0
-    });
+    const row = {
+      operationNo: _normOpNo_(data[r][idx.OperationNo]),
+      status:      String(data[r][idx.Result]      || ''),
+      pdResult:    pdResult || null,
+      opBy:        String(data[r][idx.Operator]     || ''),
+      pdBy:        String(data[r][idx.PDInspector]  || ''),
+      pdNote:      String(data[r][idx.PDNote]       || ''),
+      timestamp:   _fmtLogTimestamp_(data[r][idx.LoggedAt])
+    };
+    if (cumulativeOn) {
+      const rawRound = idx.RoundNumber !== undefined ? data[r][idx.RoundNumber] : '';
+      row.roundNumber  = rawRound === '' || rawRound == null ? 0 : Number(rawRound);
+      row.isFinalRound = idx.IsFinalRound !== undefined && data[r][idx.IsFinalRound] === true;
+      row.goodQty      = Number(data[r][idx.GoodQty])      || 0;
+      row.scrapQty     = Number(data[r][idx.ScrapQty])     || 0;
+      row.repairQty    = Number(data[r][idx.RepairQty])    || 0;
+      row.awaitConvQty = Number(data[r][idx.AwaitConvQty]) || 0;
+    }
+    results.push(row);
   }
   return results;
 }

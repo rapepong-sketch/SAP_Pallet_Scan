@@ -39,7 +39,8 @@ function TEST_localOpCumulative_runAll() {
     TEST_localOp_round_limit_exceeded,
     TEST_localOp_round3_can_still_complete,
     TEST_localOp_flag_off_preserves_6_2_rev,
-    TEST_updatePdResult_targets_final_round_only
+    TEST_updatePdResult_targets_final_round_only,
+    TEST_getOperationLogs_shape_gated_by_flag
   ];
 
   var results = fns.map(function (fn) { return fn(); });
@@ -215,6 +216,63 @@ function TEST_updatePdResult_targets_final_round_only() {
     detail = 'upd=' + JSON.stringify(upd) +
       ' round1=' + JSON.stringify(round1After) +
       ' round2=' + JSON.stringify(round2After);
+
+  } finally {
+    _localOpTest_removeFixtureRows_();
+    if (originalFlag === null) {
+      props.deleteProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE);
+    } else {
+      props.setProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE, originalFlag);
+    }
+  }
+
+  return { name: name, pass: pass, detail: detail };
+}
+
+// ============================================================================
+// 8: getOperationLogs_ shape gating — OFF must be the pre-feature 7-key
+// shape (byte-identical to commit 9f8732e), ON must be the enriched 12-key
+// shape. Reuses the same self-cleaning ZZTEST- fixture pallet/op as Test 7.
+// ============================================================================
+
+/**
+ * Writes one OperationLog row for the fixture pallet+op, then reads it back
+ * via getOperationLogs_() with the flag OFF and again with it ON, asserting
+ * the row shape (key count + exact key set) matches what each mode promises.
+ */
+function TEST_getOperationLogs_shape_gated_by_flag() {
+  var name = 'TEST_getOperationLogs_shape_gated_by_flag';
+  var props = PropertiesService.getScriptProperties();
+  var originalFlag = props.getProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE);
+  var pass = false;
+  var detail = '';
+
+  var offKeys = ['operationNo', 'status', 'pdResult', 'opBy', 'pdBy', 'pdNote', 'timestamp'].sort();
+  var onKeys  = offKeys.concat(['roundNumber', 'isFinalRound', 'goodQty', 'scrapQty', 'repairQty', 'awaitConvQty']).sort();
+
+  try {
+    _localOpTest_removeFixtureRows_(); // clean slate in case a previous run left rows behind
+
+    logOperation_({
+      palletId: LOCAL_OP_TEST_PALLET_ID_, mo: 'ZZTESTMO', operationNo: LOCAL_OP_TEST_OP_NO_,
+      operationText: 'TEST FIXTURE', goodQty: 200, scrapQty: 0, repairQty: 0, awaitConvQty: 0,
+      operator: 'TEST_SUITE', role: 'OP', result: 'PASS', source: 'SYSTEM'
+    });
+
+    props.setProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE, 'false');
+    var offRows = getOperationLogs_(LOCAL_OP_TEST_PALLET_ID_);
+    var offRow  = offRows[0];
+    var offOk   = !!offRow && Object.keys(offRow).length === offKeys.length &&
+      JSON.stringify(Object.keys(offRow).sort()) === JSON.stringify(offKeys);
+
+    props.setProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE, 'true');
+    var onRows = getOperationLogs_(LOCAL_OP_TEST_PALLET_ID_);
+    var onRow  = onRows[0];
+    var onOk   = !!onRow && Object.keys(onRow).length === onKeys.length &&
+      JSON.stringify(Object.keys(onRow).sort()) === JSON.stringify(onKeys);
+
+    pass = offOk && onOk;
+    detail = 'off=' + JSON.stringify(offRow) + ' on=' + JSON.stringify(onRow);
 
   } finally {
     _localOpTest_removeFixtureRows_();
