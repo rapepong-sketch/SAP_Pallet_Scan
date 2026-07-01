@@ -150,6 +150,7 @@ function onOpen() {
 
   addGate0ProbeMenu_(); // Phase 6.5 Gate 0 — separate probe menu, defined in Gate0Probe.gs
   addLocalOpCumulativeTestsMenu_(); // Local per-operation cumulative confirmation tests — LocalOpCumulativeTests.gs
+  addEdgeCaseFixtureMenu_(); // Self-cleaning edge-case fixture for Local Op Cumulative — EdgeCaseFixture.gs
 }
 
 let _ss_ = null;
