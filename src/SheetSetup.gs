@@ -48,8 +48,8 @@ function onOpen() {
     .addItem('🧪 DRY_RUN: เปิด (ไม่ POST)',   'flagDryRunOn')
     .addItem('⚠️ DRY_RUN: ปิด (POST จริง)',   'flagDryRunOff')
     .addSeparator()
-    .addItem('🟢 เปิด Cumulative Confirm (Gate 2 Part 1)', 'flagEnableCumulativeConfirm')
-    .addItem('🔴 ปิด Cumulative Confirm',                  'flagDisableCumulativeConfirm')
+    .addItem('🟢 เปิด Local Op Cumulative Confirm', 'flagEnableLocalOpCumulative')
+    .addItem('🔴 ปิด Local Op Cumulative Confirm',  'flagDisableLocalOpCumulative')
     .addSeparator()
     .addItem('📊 ดูสถานะ flag',                'flagShowStatus')
     .addItem('↩️ รีเซ็ตเป็น default ปลอดภัย', 'flagSetDefaults');
@@ -116,8 +116,7 @@ function onOpen() {
     .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets')
     .addItem('🔄 Migrate: FinalOp Leading Zeros',       'migrateFinalOpLeadingZeros')
     .addItem('🔒 Migrate: Add QCInspector column',      'runQCInspectorMigration')
-    .addItem('🔄 Migrate: Add Cumulative Confirm Columns', 'runCumulativeColumnsMigration')
-    .addItem('🔧 Backfill Cumulative Columns',             'runBackfillCumulativeColumns')
+    .addItem('🔧 Backfill OL RoundNumber/IsFinalRound', 'runBackfillOperationLogRoundColumns')
     .addSeparator()
     .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets')
     .addSeparator()
@@ -150,7 +149,6 @@ function onOpen() {
   refreshRunbookOnOpen_();
 
   addGate0ProbeMenu_(); // Phase 6.5 Gate 0 — separate probe menu, defined in Gate0Probe.gs
-  addGate2Part1TestsMenu_(); // Phase 6.5 Gate 2 Part 1 — separate test menu, defined in CumulativeConfirmTests.gs
 }
 
 let _ss_ = null;

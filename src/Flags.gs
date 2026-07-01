@@ -33,14 +33,15 @@ function isDryRun_() {
 }
 
 /**
- * @return {boolean} true = cumulative/partial SAP confirmation rounds enabled
- * (Phase 6.5 Gate 2 Part 1). Defaults to false (safe) when the property has
- * never been set — existing 6.2-REV exact-match-only behavior stays in force
- * everywhere until Kor explicitly flips this on for controlled testing.
+ * @return {boolean} true = local per-operation cumulative confirmation
+ * (up to CFG.MAX_ROUNDS_PER_OP rounds per operation per pallet) is enabled.
+ * Local-only (OperationLog/UI) — never touches SAP. Defaults to false (safe)
+ * when the property has never been set — existing single-round exact-match
+ * behavior stays in force everywhere until Kor explicitly flips this on.
  */
-function isCumulativeConfirmEnabled_() {
+function isLocalOpCumulativeEnabled_() {
   return PropertiesService.getScriptProperties()
-    .getProperty(CFG.FLAG_KEYS.CUMULATIVE_CONFIRM) === 'true'; // unset → safe default false
+    .getProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE) === 'true'; // unset → safe default false
 }
 
 // ============================================================================
@@ -92,22 +93,43 @@ function flagDryRunOff() {
   );
 }
 
+/** 🟢 เปิด Local Op Cumulative Confirm (per-operation, local only — no SAP) */
+function flagEnableLocalOpCumulative() {
+  PropertiesService.getScriptProperties().setProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE, 'true');
+  logEvent('FLAG', CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE, 'SET_TRUE', 0, 'via menu');
+  SpreadsheetApp.getUi().alert(
+    '✅ LOCAL_OP_CUMULATIVE_ENABLED = true\n\n' +
+    'อนุญาตบันทึกขั้นตอนแบบแบ่งรอบ (สูงสุด ' + CFG.MAX_ROUNDS_PER_OP + ' รอบ) ต่อขั้นตอนต่อพาเลท\n' +
+    '(local เท่านั้น — ไม่เกี่ยวกับ SAP)'
+  );
+}
+
+/** 🔴 ปิด Local Op Cumulative Confirm (กลับสู่ exact-match เดิม — 6.2-REV) */
+function flagDisableLocalOpCumulative() {
+  PropertiesService.getScriptProperties().setProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE, 'false');
+  logEvent('FLAG', CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE, 'SET_FALSE', 0, 'via menu');
+  SpreadsheetApp.getUi().alert(
+    '🔴 LOCAL_OP_CUMULATIVE_ENABLED = false\n\n' +
+    'กลับสู่พฤติกรรมเดิม (6.2-REV) — ต้องบันทึกครบจำนวนต่อขั้นตอนในครั้งเดียว'
+  );
+}
+
 /** 📊 แสดงสถานะ flag ปัจจุบัน */
 function flagShowStatus() {
   const p        = PropertiesService.getScriptProperties();
   const sapWrite = p.getProperty(CFG.FLAG_KEYS.SAP_WRITE) || '(ยังไม่ตั้ง → default false)';
   const dryRun   = p.getProperty(CFG.FLAG_KEYS.DRY_RUN)   || '(ยังไม่ตั้ง → default true)';
-  const cumConf  = p.getProperty(CFG.FLAG_KEYS.CUMULATIVE_CONFIRM) || '(ยังไม่ตั้ง → default false)';
+  const localCum = p.getProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE) || '(ยังไม่ตั้ง → default false)';
 
   const sapIcon = sapWrite === 'true' ? '🟢' : '🔴';
   const drIcon  = dryRun  === 'false' ? '⚠️' : '🧪';
-  const ccIcon  = cumConf === 'true'  ? '🟢' : '🔴';
+  const lcIcon  = localCum === 'true' ? '🟢' : '🔴';
 
   SpreadsheetApp.getUi().alert(
     '📊 สถานะ Feature Flags\n\n' +
     sapIcon + ' SAP_WRITE_ENABLED = ' + sapWrite + '\n' +
     drIcon  + ' DRY_RUN           = ' + dryRun   + '\n' +
-    ccIcon  + ' CUMULATIVE_CONFIRM_ENABLED = ' + cumConf + '\n\n' +
+    lcIcon  + ' LOCAL_OP_CUMULATIVE_ENABLED = ' + localCum + '\n\n' +
     _flagModeDesc_(sapWrite, dryRun)
   );
 }
@@ -117,35 +139,14 @@ function flagSetDefaults() {
   const p = PropertiesService.getScriptProperties();
   p.setProperty(CFG.FLAG_KEYS.SAP_WRITE, 'false');
   p.setProperty(CFG.FLAG_KEYS.DRY_RUN,   'true');
-  p.setProperty(CFG.FLAG_KEYS.CUMULATIVE_CONFIRM, 'false');
-  logEvent('FLAG', 'DEFAULTS', 'RESET', 0, 'SAP_WRITE=false DRY_RUN=true CUMULATIVE_CONFIRM=false via menu');
+  p.setProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE, 'false');
+  logEvent('FLAG', 'DEFAULTS', 'RESET', 0, 'SAP_WRITE=false DRY_RUN=true LOCAL_OP_CUMULATIVE=false via menu');
   SpreadsheetApp.getUi().alert(
     '↩️ รีเซ็ตเป็น default ปลอดภัยแล้ว\n\n' +
     '🔴 SAP_WRITE_ENABLED = false (ปิด SAP)\n' +
     '🧪 DRY_RUN           = true\n' +
-    '🔴 CUMULATIVE_CONFIRM_ENABLED = false\n\n' +
+    '🔴 LOCAL_OP_CUMULATIVE_ENABLED = false\n\n' +
     'โหมด: UI ทำงานเต็ม — บันทึก local เท่านั้น ไม่มี SAP call'
-  );
-}
-
-/** 🟢 เปิด Cumulative/Partial Confirm (Phase 6.5 Gate 2 Part 1) */
-function flagEnableCumulativeConfirm() {
-  PropertiesService.getScriptProperties().setProperty(CFG.FLAG_KEYS.CUMULATIVE_CONFIRM, 'true');
-  logEvent('FLAG', CFG.FLAG_KEYS.CUMULATIVE_CONFIRM, 'SET_TRUE', 0, 'via menu');
-  SpreadsheetApp.getUi().alert(
-    '✅ CUMULATIVE_CONFIRM_ENABLED = true\n\n' +
-    'อนุญาตยืนยัน SAP แบบแบ่งรอบ (สูงสุด ' + CFG.MAX_CONFIRM_ROUNDS + ' รอบ) ต่อพาเลท\n' +
-    'ใช้เฉพาะช่วงทดสอบที่ตรวจสอบแล้วเท่านั้น — ยังไม่มี UI รองรับ (Gate 2 Part 2)'
-  );
-}
-
-/** 🔴 ปิด Cumulative/Partial Confirm (กลับสู่ exact-match เดิม — 6.2-REV) */
-function flagDisableCumulativeConfirm() {
-  PropertiesService.getScriptProperties().setProperty(CFG.FLAG_KEYS.CUMULATIVE_CONFIRM, 'false');
-  logEvent('FLAG', CFG.FLAG_KEYS.CUMULATIVE_CONFIRM, 'SET_FALSE', 0, 'via menu');
-  SpreadsheetApp.getUi().alert(
-    '🔴 CUMULATIVE_CONFIRM_ENABLED = false\n\n' +
-    'กลับสู่พฤติกรรมเดิม (6.2-REV) — ต้องยืนยันครบจำนวนต่อพาเลทในครั้งเดียว'
   );
 }
 

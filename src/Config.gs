@@ -52,20 +52,23 @@ const CFG = {
   },
 
   // ---- Phase 3: Feature flags (stored in Script Properties, managed via Flags.gs + menu)
-  // Readers: sapWriteEnabled_() / isDryRun_() / isCumulativeConfirmEnabled_()  — ใช้ภายในโค้ด
-  // Setters: flagEnable/Disable/DryRunOn/Off/CumulativeConfirm — ผูกกับ menu ⚙️ Pallet SAP Toggle
+  // Readers: sapWriteEnabled_() / isDryRun_() / isLocalOpCumulativeEnabled_()  — ใช้ภายในโค้ด
+  // Setters: flagEnable/Disable/DryRunOn/Off/LocalOpCumulative — ผูกกับ menu ⚙️ Pallet SAP Toggle
   FLAG_KEYS: {
     SAP_WRITE: 'SAP_WRITE_ENABLED', // 'false'(default) | 'true'
     DRY_RUN:   'DRY_RUN',           // 'true'(default)  | 'false'
-    // Phase 6.5 Gate 2 Part 1 — cumulative/partial SAP confirmation rounds.
-    // Defaults to false (unset) — 6.2-REV exact-match-only behavior stays in
-    // force until Kor explicitly flips this on for controlled testing.
-    CUMULATIVE_CONFIRM: 'CUMULATIVE_CONFIRM_ENABLED' // 'false'(default) | 'true'
+    // Local-only per-operation cumulative confirmation (up to MAX_ROUNDS_PER_OP
+    // rounds per operation per pallet) — OperationLog/UI concern only, never
+    // touches SAP. Unrelated to the dormant Confirmation.gs cumulative-SAP-round
+    // work; kept under a distinct key/name on purpose to avoid any confusion
+    // between the two. Defaults to false (unset) — 6.2-REV exact-match-only
+    // behavior stays in force everywhere until Kor explicitly flips this on.
+    LOCAL_OP_CUMULATIVE: 'LOCAL_OP_CUMULATIVE_ENABLED' // 'false'(default) | 'true'
   },
 
-  // ---- Phase 6.5 Gate 2 Part 1: cumulative/partial confirmation ----------
-  // Max SAP confirmation rounds allowed per pallet before Admin escalation.
-  MAX_CONFIRM_ROUNDS: 3,
+  // ---- Local per-operation cumulative confirmation (OperationLog-only) ----
+  // Max rounds allowed per operation per pallet before Admin escalation.
+  MAX_ROUNDS_PER_OP: 3,
 
   // ---- Phase 5: ConfirmationText stamp deploy date (Asia/Bangkok) --------
   // Pallets confirmed BEFORE this date have no ConfirmationText → token-only
@@ -134,10 +137,7 @@ const CFG = {
       'LabelPrintedAt', 'UpdatedAt', 'QCResultNote',
       'OverrideBy', 'OverrideReason', 'OverrideAt',
       'GoodQty', 'RepairQty', 'DefectQty', 'AwaitConvQty',
-      'QCInspector',
-      // Phase 6.5 Gate 2 Part 1 — cumulative/partial confirmation (additive,
-      // appended at the end — see PM_HEADERS in PalletGen.gs, kept in sync).
-      'CumulativeConfirmedQty', 'ConfirmRound'
+      'QCInspector'
     ],
 
     MOQ_CONFIG: [

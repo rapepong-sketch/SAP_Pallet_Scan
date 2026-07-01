@@ -19,7 +19,12 @@ const OL_HEADERS = [
   'GoodQty', 'ScrapQty', 'RepairQty', 'AwaitConvQty',
   'Operator', 'Role', 'Result', 'LoggedAt', 'Source',
   'PDResult', 'PDInspector', 'PDNote', 'PDTimestamp',
-  'ActualMachine'
+  'ActualMachine',
+  // Local per-operation cumulative confirmation (LOCAL_OP_CUMULATIVE_ENABLED,
+  // gated in WebApp.gs confirmScan) — additive, appended at the end. Rows
+  // written before this flag existed have both columns blank; see
+  // backfillOperationLogRoundColumns_() for the one-time manual backfill.
+  'RoundNumber', 'IsFinalRound'
 ];
 
 // ============================================================================
@@ -164,6 +169,8 @@ function assertOperationLogSchema_(liveHeaderOverride) {
  *   result:        string   — 'PASS' | 'FAIL'
  *   source:        string   — 'MOBILE' | 'MANUAL' | 'SYSTEM'
  *   actualMachine: string   — MachineMaster code e.g. 'APS005' (optional)
+ *   roundNumber:   number   — LOCAL_OP_CUMULATIVE_ENABLED only (1..MAX_ROUNDS_PER_OP)
+ *   isFinalRound:  boolean  — LOCAL_OP_CUMULATIVE_ENABLED only
  * }
  * @return {string} LogID
  */
@@ -190,7 +197,9 @@ function logOperation(entry) {
     PDResult:      '',
     PDInspector:   '',
     PDNote:        '',
-    PDTimestamp:   ''
+    PDTimestamp:   '',
+    RoundNumber:   entry.roundNumber   != null ? Number(entry.roundNumber) : '',
+    IsFinalRound:  entry.isFinalRound  != null ? Boolean(entry.isFinalRound) : ''
   };
   const row = OL_HEADERS.map(function (h) { return vals[h] !== undefined ? vals[h] : ''; });
 
@@ -261,13 +270,159 @@ function getOperationLogForPallet(palletId) {
   return results.reverse(); // newest first
 }
 
+// ============================================================================
+// Local per-operation cumulative confirmation (LOCAL_OP_CUMULATIVE_ENABLED)
+// — additive read helpers only. getOperationLogForPallet/getOperationLogs_
+// above are untouched and keep their one-row-per-operation assumption for the
+// flag-OFF path.
+// ============================================================================
+
 /**
- * Per-operation log entries for a pallet, shaped for the Scanner.html timeline
- * and sequential-gate checks. One row per OperationNo (written once by
- * confirmScan() via logOperation_(), then updated in place by updatePdResult_()
- * when PD inspects it) — so this returns at most one entry per operation.
+ * All OperationLog rows for one palletId+opNo, sorted by RoundNumber
+ * ascending. Rows with a blank RoundNumber (pre-flag legacy rows that were
+ * never backfilled) sort first, treated as round 0.
  * @param {string} palletId
- * @return {Array<{operationNo:string, status:string, pdResult:string|null, opBy:string, pdBy:string, pdNote:string, timestamp:string}>}
+ * @param {string} opNo
+ * @return {Array<{logId, roundNumber:number, isFinalRound:boolean, goodQty,
+ *   scrapQty, repairQty, awaitConvQty, operator, loggedAt}>}
+ */
+function getOperationLogRoundsForOp_(palletId, opNo) {
+  palletId = String(palletId || '').trim();
+  opNo     = _normOpNo_(opNo);
+  if (!palletId || !opNo) return [];
+
+  const sh = getSpreadsheet_().getSheetByName(OL_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+
+  const data = sh.getDataRange().getValues();
+  const hdr  = data[0];
+  const idx  = {};
+  hdr.forEach((h, i) => { idx[h] = i; });
+
+  const rows = [];
+  for (let r = 1; r < data.length; r++) {
+    if (String(data[r][idx.PalletID] || '').trim() !== palletId) continue;
+    if (_normOpNo_(data[r][idx.OperationNo]) !== opNo) continue;
+
+    const rawRound = idx.RoundNumber !== undefined ? data[r][idx.RoundNumber] : '';
+    rows.push({
+      logId:        String(data[r][idx.LogID] || ''),
+      roundNumber:  rawRound === '' || rawRound == null ? 0 : Number(rawRound),
+      isFinalRound: idx.IsFinalRound !== undefined && data[r][idx.IsFinalRound] === true,
+      goodQty:      Number(data[r][idx.GoodQty])      || 0,
+      scrapQty:     Number(data[r][idx.ScrapQty])     || 0,
+      repairQty:    Number(data[r][idx.RepairQty])    || 0,
+      awaitConvQty: Number(data[r][idx.AwaitConvQty]) || 0,
+      operator:     String(data[r][idx.Operator] || ''),
+      loggedAt:     data[r][idx.LoggedAt]
+    });
+  }
+
+  rows.sort(function (a, b) { return a.roundNumber - b.roundNumber; });
+  return rows;
+}
+
+/**
+ * Cumulative qty confirmed so far for one palletId+opNo, across all rounds
+ * logged (sum of all 4 buckets on every row). Never stores a running total —
+ * always computed fresh from getOperationLogRoundsForOp_() to avoid a second
+ * source of truth alongside the per-round raw values.
+ * @param {string} palletId
+ * @param {string} opNo
+ * @return {{cumulativeQty:number, roundsUsed:number, hasFinalRound:boolean}}
+ */
+function getCumulativeQtyForOp_(palletId, opNo) {
+  const rounds = getOperationLogRoundsForOp_(palletId, opNo);
+  const cumulativeQty = rounds.reduce(function (sum, r) {
+    return sum + r.goodQty + r.scrapQty + r.repairQty + r.awaitConvQty;
+  }, 0);
+  const hasFinalRound = rounds.some(function (r) { return r.isFinalRound; });
+  return { cumulativeQty: cumulativeQty, roundsUsed: rounds.length, hasFinalRound: hasFinalRound };
+}
+
+/**
+ * True if a row with IsFinalRound=true already exists for this palletId+opNo
+ * — the LOCAL_OP_CUMULATIVE_ENABLED equivalent of isOperationLogged_()'s
+ * existence check. Used by confirmScan's idempotency gate, the sequential
+ * gate, and checkAllOperationsDone_/lookupPallet when the flag is on — one
+ * helper, reused everywhere, so all three call sites agree on what "done"
+ * means under cumulative rounds.
+ * @param {string} palletId
+ * @param {string} opNo
+ * @return {boolean}
+ */
+function isOperationFinallyLogged_(palletId, opNo) {
+  return getCumulativeQtyForOp_(palletId, opNo).hasFinalRound;
+}
+
+/**
+ * Menu-only, manual, one-time backfill: stamps RoundNumber=1 and
+ * IsFinalRound=TRUE on every existing OperationLog row that predates the
+ * RoundNumber/IsFinalRound columns (blank RoundNumber cell). Safe because
+ * under the pre-existing single-round exact-match system, every row WAS by
+ * definition a complete, final, single-round confirmation — this just makes
+ * that fact explicit so getOperationLogRoundsForOp_/getCumulativeQtyForOp_
+ * treat old rows the same way as new cumulative-mode rows.
+ * NOT run automatically — call from the Apps Script editor or menu only.
+ * @return {{scanned:number, backfilled:number}}
+ */
+function backfillOperationLogRoundColumns_() {
+  const sh = ensureOperationLogSheet_(); // migrates missing columns first
+  if (sh.getLastRow() < 2) return { scanned: 0, backfilled: 0 };
+
+  const data = sh.getDataRange().getValues();
+  const hdr  = data[0];
+  const idx  = {};
+  hdr.forEach((h, i) => { idx[h] = i; });
+
+  let scanned = 0;
+  let backfilled = 0;
+  for (let r = 1; r < data.length; r++) {
+    scanned++;
+    const rawRound = data[r][idx.RoundNumber];
+    if (rawRound !== '' && rawRound != null) continue; // already has a round — skip
+
+    const rowNum = r + 1;
+    sh.getRange(rowNum, idx.RoundNumber  + 1).setValue(1);
+    sh.getRange(rowNum, idx.IsFinalRound + 1).setValue(true);
+    backfilled++;
+    logEvent('OL_BACKFILL_ROUNDS', OL_SHEET, 'OK', 0,
+      'row=' + rowNum + ' logId=' + String(data[r][idx.LogID] || ''));
+  }
+
+  logEvent('OL_BACKFILL_ROUNDS', OL_SHEET, 'DONE', 0,
+    'scanned=' + scanned + ' backfilled=' + backfilled);
+  return { scanned: scanned, backfilled: backfilled };
+}
+
+/** Menu-callable wrapper for backfillOperationLogRoundColumns_(). */
+function runBackfillOperationLogRoundColumns() {
+  const result = backfillOperationLogRoundColumns_();
+  SpreadsheetApp.getUi().alert(
+    '✅ Backfill RoundNumber/IsFinalRound เสร็จสิ้น\n\n' +
+    'ตรวจสอบทั้งหมด: ' + result.scanned + ' แถว\n' +
+    'Backfill แล้ว: ' + result.backfilled + ' แถว'
+  );
+}
+
+/**
+ * Per-operation log entries for a pallet, shaped for the Scanner.html/
+ * Desktop.html timeline and sequential-gate checks. Under the flag-OFF
+ * single-round system this is one row per OperationNo (written once by
+ * confirmScan() via logOperation_(), then updated in place by updatePdResult_()
+ * when PD inspects it). Under LOCAL_OP_CUMULATIVE_ENABLED an operation can
+ * have up to CFG.MAX_ROUNDS_PER_OP rows (one per round) — roundNumber/
+ * isFinalRound/the 4 bucket qtys are included so the client can compute
+ * cumulative progress and round-aware "is this op done" checks itself
+ * (Scanner.html's _findOpLog/_opRoundState, Desktop.html's equivalents)
+ * without an extra round-trip. Legacy/flag-OFF rows have roundNumber=0 and
+ * isFinalRound=false when blank (never backfilled) — harmless for OFF-mode
+ * consumers, which only check plain row existence.
+ * @param {string} palletId
+ * @return {Array<{operationNo:string, status:string, pdResult:string|null,
+ *   opBy:string, pdBy:string, pdNote:string, timestamp:string,
+ *   roundNumber:number, isFinalRound:boolean, goodQty:number, scrapQty:number,
+ *   repairQty:number, awaitConvQty:number}>}
  */
 function getOperationLogs_(palletId) {
   palletId = String(palletId || '').trim();
@@ -290,14 +445,21 @@ function getOperationLogs_(palletId) {
   for (let r = 1; r < data.length; r++) {
     if (String(data[r][idx.PalletID] || '').trim() !== palletId) continue;
     const pdResult = String(data[r][idx.PDResult] || '').trim();
+    const rawRound = idx.RoundNumber !== undefined ? data[r][idx.RoundNumber] : '';
     results.push({
-      operationNo: _normOpNo_(data[r][idx.OperationNo]),
-      status:      String(data[r][idx.Result]      || ''),
-      pdResult:    pdResult || null,
-      opBy:        String(data[r][idx.Operator]     || ''),
-      pdBy:        String(data[r][idx.PDInspector]  || ''),
-      pdNote:      String(data[r][idx.PDNote]       || ''),
-      timestamp:   _fmtLogTimestamp_(data[r][idx.LoggedAt])
+      operationNo:  _normOpNo_(data[r][idx.OperationNo]),
+      status:       String(data[r][idx.Result]      || ''),
+      pdResult:     pdResult || null,
+      opBy:         String(data[r][idx.Operator]     || ''),
+      pdBy:         String(data[r][idx.PDInspector]  || ''),
+      pdNote:       String(data[r][idx.PDNote]       || ''),
+      timestamp:    _fmtLogTimestamp_(data[r][idx.LoggedAt]),
+      roundNumber:  rawRound === '' || rawRound == null ? 0 : Number(rawRound),
+      isFinalRound: idx.IsFinalRound !== undefined && data[r][idx.IsFinalRound] === true,
+      goodQty:      Number(data[r][idx.GoodQty])      || 0,
+      scrapQty:     Number(data[r][idx.ScrapQty])     || 0,
+      repairQty:    Number(data[r][idx.RepairQty])    || 0,
+      awaitConvQty: Number(data[r][idx.AwaitConvQty]) || 0
     });
   }
   return results;
@@ -308,6 +470,20 @@ function getOperationLogs_(palletId) {
  * already created for this pallet+operation. Rejects if OP hasn't confirmed
  * yet (no row) or PD already inspected (PDResult already set) — PD columns
  * are write-once per row, same as the OP columns.
+ *
+ * OFF (LOCAL_OP_CUMULATIVE_ENABLED=false): unchanged — finds the first row
+ * (by sheet row order) matching palletId+operationNo. Under the single-round
+ * system confirmScan's idempotency gate guarantees at most one such row, so
+ * "first match" and "only match" are the same row in normal operation.
+ *
+ * ON: an operation can have up to CFG.MAX_ROUNDS_PER_OP rows (one per round).
+ * Only the row with IsFinalRound=true is eligible for PD inspection — partial
+ * rounds are skipped even if matched, since PD inspects the completed
+ * operation, not an in-progress round. If no final-round row exists yet
+ * (shouldn't happen — the QC/PD-unlock gate in WebApp.gs should have blocked
+ * access before all rounds completed — but checked defensively anyway), this
+ * returns a clear error instead of silently updating a partial-round row.
+ *
  * @param {string} palletId
  * @param {string} operationNo
  * @param {string} result    'PASS' | 'FAIL'
@@ -329,22 +505,37 @@ function updatePdResult_(palletId, operationNo, result, inspector, note) {
   const idx  = {};
   hdr.forEach((h, i) => { idx[h] = i; });
 
+  const cumulativeOn = isLocalOpCumulativeEnabled_();
+  let targetRowNum = -1;
+
   for (let r = 1; r < data.length; r++) {
     if (String(data[r][idx.PalletID] || '').trim() !== palletId) continue;
     if (_normOpNo_(data[r][idx.OperationNo]) !== operationNo)    continue;
 
-    if (String(data[r][idx.PDResult] || '').trim()) {
-      return { ok: false, message: 'PD ตรวจขั้นตอนนี้แล้ว' };
+    if (cumulativeOn) {
+      const isFinalRound = idx.IsFinalRound !== undefined && data[r][idx.IsFinalRound] === true;
+      if (!isFinalRound) continue; // partial round — keep scanning for the final one
     }
 
-    const rowNum = r + 1; // data[] includes header at index 0, so sheet row = r+1
-    sh.getRange(rowNum, idx.PDResult    + 1).setValue(result);
-    sh.getRange(rowNum, idx.PDInspector + 1).setValue(inspector);
-    sh.getRange(rowNum, idx.PDNote      + 1).setValue(note);
-    sh.getRange(rowNum, idx.PDTimestamp + 1).setValue(new Date());
-    return { ok: true, message: null };
+    targetRowNum = r + 1; // data[] includes header at index 0, so sheet row = r+1
+    break;
   }
-  return { ok: false, message: 'ยังไม่มีการบันทึกงานสำหรับขั้นตอนนี้' };
+
+  if (targetRowNum === -1) {
+    return cumulativeOn
+      ? { ok: false, message: 'ยังไม่มีรอบสุดท้ายของขั้นตอนนี้ — บันทึกยังไม่ครบจำนวนต่อพาเลท' }
+      : { ok: false, message: 'ยังไม่มีการบันทึกงานสำหรับขั้นตอนนี้' };
+  }
+
+  if (String(data[targetRowNum - 1][idx.PDResult] || '').trim()) {
+    return { ok: false, message: 'PD ตรวจขั้นตอนนี้แล้ว' };
+  }
+
+  sh.getRange(targetRowNum, idx.PDResult    + 1).setValue(result);
+  sh.getRange(targetRowNum, idx.PDInspector + 1).setValue(inspector);
+  sh.getRange(targetRowNum, idx.PDNote      + 1).setValue(note);
+  sh.getRange(targetRowNum, idx.PDTimestamp + 1).setValue(new Date());
+  return { ok: true, message: null };
 }
 
 /** Format a Date or string as 'dd/MM/yyyy HH:mm' for JSON transfer to the UI */
