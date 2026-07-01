@@ -59,7 +59,9 @@ var PM_HEADERS = [
   'RepairQty',               // 37 — Phase 3.5 yield bucket
   'DefectQty',               // 38 — Phase 3.5 yield bucket
   'AwaitConvQty',            // 39 — Phase 3.5 yield bucket
-  'QCInspector'              // 40 — Phase 4.5 Gate 3a
+  'QCInspector',             // 40 — Phase 4.5 Gate 3a
+  'CumulativeConfirmedQty',  // 41 — Phase 6.5 Gate 2 Part 1
+  'ConfirmRound'             // 42 — Phase 6.5 Gate 2 Part 1
 ];
 
 /**

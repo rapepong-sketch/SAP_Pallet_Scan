@@ -48,6 +48,9 @@ function onOpen() {
     .addItem('🧪 DRY_RUN: เปิด (ไม่ POST)',   'flagDryRunOn')
     .addItem('⚠️ DRY_RUN: ปิด (POST จริง)',   'flagDryRunOff')
     .addSeparator()
+    .addItem('🟢 เปิด Cumulative Confirm (Gate 2 Part 1)', 'flagEnableCumulativeConfirm')
+    .addItem('🔴 ปิด Cumulative Confirm',                  'flagDisableCumulativeConfirm')
+    .addSeparator()
     .addItem('📊 ดูสถานะ flag',                'flagShowStatus')
     .addItem('↩️ รีเซ็ตเป็น default ปลอดภัย', 'flagSetDefaults');
 
@@ -113,6 +116,8 @@ function onOpen() {
     .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets')
     .addItem('🔄 Migrate: FinalOp Leading Zeros',       'migrateFinalOpLeadingZeros')
     .addItem('🔒 Migrate: Add QCInspector column',      'runQCInspectorMigration')
+    .addItem('🔄 Migrate: Add Cumulative Confirm Columns', 'runCumulativeColumnsMigration')
+    .addItem('🔧 Backfill Cumulative Columns',             'runBackfillCumulativeColumns')
     .addSeparator()
     .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets')
     .addSeparator()

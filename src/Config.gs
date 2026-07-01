@@ -52,12 +52,20 @@ const CFG = {
   },
 
   // ---- Phase 3: Feature flags (stored in Script Properties, managed via Flags.gs + menu)
-  // Readers: sapWriteEnabled_() / isDryRun_()  — ใช้ภายในโค้ด
-  // Setters: flagEnable/Disable/DryRunOn/Off    — ผูกกับ menu ⚙️ Pallet SAP Toggle
+  // Readers: sapWriteEnabled_() / isDryRun_() / isCumulativeConfirmEnabled_()  — ใช้ภายในโค้ด
+  // Setters: flagEnable/Disable/DryRunOn/Off/CumulativeConfirm — ผูกกับ menu ⚙️ Pallet SAP Toggle
   FLAG_KEYS: {
     SAP_WRITE: 'SAP_WRITE_ENABLED', // 'false'(default) | 'true'
-    DRY_RUN:   'DRY_RUN'            // 'true'(default)  | 'false'
+    DRY_RUN:   'DRY_RUN',           // 'true'(default)  | 'false'
+    // Phase 6.5 Gate 2 Part 1 — cumulative/partial SAP confirmation rounds.
+    // Defaults to false (unset) — 6.2-REV exact-match-only behavior stays in
+    // force until Kor explicitly flips this on for controlled testing.
+    CUMULATIVE_CONFIRM: 'CUMULATIVE_CONFIRM_ENABLED' // 'false'(default) | 'true'
   },
+
+  // ---- Phase 6.5 Gate 2 Part 1: cumulative/partial confirmation ----------
+  // Max SAP confirmation rounds allowed per pallet before Admin escalation.
+  MAX_CONFIRM_ROUNDS: 3,
 
   // ---- Phase 5: ConfirmationText stamp deploy date (Asia/Bangkok) --------
   // Pallets confirmed BEFORE this date have no ConfirmationText → token-only
@@ -126,7 +134,10 @@ const CFG = {
       'LabelPrintedAt', 'UpdatedAt', 'QCResultNote',
       'OverrideBy', 'OverrideReason', 'OverrideAt',
       'GoodQty', 'RepairQty', 'DefectQty', 'AwaitConvQty',
-      'QCInspector'
+      'QCInspector',
+      // Phase 6.5 Gate 2 Part 1 — cumulative/partial confirmation (additive,
+      // appended at the end — see PM_HEADERS in PalletGen.gs, kept in sync).
+      'CumulativeConfirmedQty', 'ConfirmRound'
     ],
 
     MOQ_CONFIG: [
