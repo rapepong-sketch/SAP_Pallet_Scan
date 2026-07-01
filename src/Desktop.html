@@ -194,6 +194,29 @@
       background: #e8f5e9; border: 1px solid #a5d6a7;
       border-radius: 4px; font-size: 13px; color: #1b5e20;
     }
+
+    /* ---- Transfer action button (detail panel) ---- */
+    .detail-action-bar { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn-transfer-action {
+      padding: 6px 18px; background: #00796b; color: #fff;
+      border: none; border-radius: 4px; font-size: 13px; font-family: inherit;
+      cursor: pointer; white-space: nowrap;
+    }
+    .btn-transfer-action:hover:not(:disabled) { background: #004d40; }
+    .btn-transfer-action:disabled { background: #90a4ae; cursor: default; }
+
+    /* ---- Transfer modal ---- */
+    #transferModal {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,.45);
+    }
+    #tBtnCancel { background: #eceff1; color: #37474f; }
+    #tBtnCancel:hover { background: #cfd8dc; }
+    #tBtnSubmit { background: #00796b; color: #fff; }
+    #tBtnSubmit:hover:not(:disabled) { background: #004d40; }
+    #tBtnSubmit:disabled { background: #90a4ae; cursor: default; }
+    .trf-dest-hint { font-size: 12px; min-height: 16px; margin-top: 4px; }
   </style>
 </head>
 <body>
@@ -288,6 +311,39 @@
       <button id="mBtnSubmit" type="button">ยืนยัน</button>
     </div>
     <div id="mResult" style="display:none"></div>
+  </div>
+</div>
+
+<!-- Transfer modal (Phase 6.3) -->
+<div id="transferModal">
+  <div class="modal-box">
+    <h3>โอนย้ายพาเลท (311 Transfer)</h3>
+    <div class="modal-info">
+      <div>รหัสพาเลท: <strong id="tPalletId"></strong></div>
+      <div>ใบสั่งผลิต: <strong id="tMO"></strong></div>
+      <div>วัสดุ: <strong id="tMaterial"></strong></div>
+      <div>Batch: <strong id="tBatch"></strong></div>
+      <div>จำนวน: <strong id="tQty"></strong></div>
+      <div>ศูนย์งาน: <strong id="tWorkCenter"></strong></div>
+      <div>คลังต้นทาง: <strong id="tSourceSloc"></strong></div>
+    </div>
+    <div class="modal-warning">
+      ⚠️ การดำเนินการนี้จะส่งข้อมูลโอนย้ายสต็อกไปยัง SAP จริง — Desktop ไม่มีการสแกน QR ยืนยันตัวพาเลทจริง กรุณาตรวจสอบให้ถูกต้องก่อนยืนยัน
+    </div>
+    <div class="modal-form">
+      <label>คลังปลายทาง *</label>
+      <div>
+        <select id="tDestSloc" style="width:100%">
+          <option value="">-- เลือกคลังปลายทาง --</option>
+        </select>
+        <div id="tDestHint" class="trf-dest-hint"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="tBtnCancel" type="button">ยกเลิก</button>
+      <button id="tBtnSubmit" type="button" disabled>ยืนยัน</button>
+    </div>
+    <div id="tResult" style="display:none"></div>
   </div>
 </div>
 
@@ -574,6 +630,10 @@
       '<span>QC เสร็จแล้ว: <strong>' + (result.qcDone ? '✅ ใช่' : '❌ ยังไม่ตรวจ') + '</strong></span>' +
       '</div>';
 
+    html += '<div class="detail-action-bar">' +
+      '<button class="btn-transfer-action" type="button">โอนย้าย (311)</button>' +
+      '</div>';
+
     content.innerHTML = html;
 
     // Bind ยืนยัน buttons — there is at most one per render
@@ -583,6 +643,14 @@
         openConfirmModal(_detailPallet, _detailOpsMap[opNo]);
       });
     });
+
+    // Bind โอนย้าย button
+    var trfBtn = content.querySelector('.btn-transfer-action');
+    if (trfBtn) {
+      trfBtn.addEventListener('click', function () {
+        openTransferModal_(_detailPallet.PalletID);
+      });
+    }
   }
 
   // ── Confirm production modal (Phase 6.2) ───────────────────────────────────
@@ -760,6 +828,150 @@
         source:        'DESKTOP'
       });
   }
+
+  // ── Transfer modal (Phase 6.3) ─────────────────────────────────────────────
+  var _transferCtx = {};
+
+  function openTransferModal_(palletId) {
+    var trfBtn = document.querySelector('.btn-transfer-action');
+    if (trfBtn) { trfBtn.disabled = true; trfBtn.textContent = '⏳ กำลังโหลด...'; }
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (trfBtn) { trfBtn.disabled = false; trfBtn.textContent = 'โอนย้าย (311)'; }
+        if (!res || !res.ok) {
+          showTransferInlineError_(res ? res.error : 'ไม่สามารถโหลดข้อมูลพาเลทได้');
+          return;
+        }
+        _transferCtx = { palletId: palletId, lookup: res };
+
+        document.getElementById('tPalletId').textContent   = res.palletId  || palletId;
+        document.getElementById('tMO').textContent         = res.mo        || '—';
+        document.getElementById('tMaterial').textContent   = res.material  || '—';
+        document.getElementById('tBatch').textContent      = res.batch     || '—';
+        document.getElementById('tQty').textContent        = (res.qty || '') + ' ' + (res.unit || '');
+        document.getElementById('tWorkCenter').textContent = res.workCenter || '—';
+        document.getElementById('tSourceSloc').textContent = res.sourceSLoc || '—';
+
+        var sel = document.getElementById('tDestSloc');
+        sel.innerHTML = '<option value="">-- เลือกคลังปลายทาง --</option>';
+        (res.destSLocOptions || []).forEach(function (code) {
+          var opt = document.createElement('option');
+          opt.value = code; opt.textContent = code;
+          sel.appendChild(opt);
+        });
+        sel.value = '';
+
+        document.getElementById('tDestHint').textContent   = '';
+        document.getElementById('tDestHint').style.color   = '';
+        document.getElementById('tResult').style.display   = 'none';
+        document.getElementById('tResult').textContent     = '';
+        document.getElementById('tResult').className       = '';
+        document.getElementById('tBtnSubmit').disabled     = true;
+        document.getElementById('tBtnSubmit').textContent  = 'ยืนยัน';
+
+        document.getElementById('transferModal').style.display = 'flex';
+      })
+      .withFailureHandler(function (err) {
+        if (trfBtn) { trfBtn.disabled = false; trfBtn.textContent = 'โอนย้าย (311)'; }
+        showTransferInlineError_('เกิดข้อผิดพลาด: ' + (err.message || String(err)));
+      })
+      .scanTransferLookup(palletId);
+  }
+
+  function showTransferInlineError_(msg) {
+    var content  = document.getElementById('detailContent');
+    var existing = content.querySelector('.transfer-inline-error');
+    if (existing) existing.remove();
+    var el = document.createElement('div');
+    el.className       = 'notice-error transfer-inline-error';
+    el.style.marginTop = '10px';
+    el.textContent     = '⚠️ โอนย้ายไม่ได้: ' + msg;
+    content.appendChild(el);
+  }
+
+  function closeTransferModal_() {
+    document.getElementById('transferModal').style.display = 'none';
+    _transferCtx = {};
+  }
+
+  function validateTransferDestSloc_() {
+    var sel      = document.getElementById('tDestSloc');
+    var destSloc = sel.value;
+    var hint     = document.getElementById('tDestHint');
+    var btn      = document.getElementById('tBtnSubmit');
+    var src      = (_transferCtx.lookup && _transferCtx.lookup.sourceSLoc) || '';
+
+    if (!destSloc) {
+      hint.textContent = 'กรุณาเลือกคลังปลายทาง';
+      hint.style.color = '#b71c1c';
+      btn.disabled = true;
+      return;
+    }
+    if (destSloc === src) {
+      hint.textContent = 'คลังปลายทางต้องไม่ซ้ำกับคลังต้นทาง (' + src + ')';
+      hint.style.color = '#b71c1c';
+      btn.disabled = true;
+      return;
+    }
+    hint.textContent = '';
+    btn.disabled = false;
+  }
+
+  function submitTransfer_() {
+    var ctx = _transferCtx;
+    if (!ctx.palletId || !ctx.lookup) return;
+
+    var destSloc = document.getElementById('tDestSloc').value;
+    var src      = ctx.lookup.sourceSLoc || '';
+
+    if (!destSloc || destSloc === src) {
+      validateTransferDestSloc_();
+      return;
+    }
+
+    var sub = document.getElementById('tBtnSubmit');
+    sub.disabled    = true;
+    sub.textContent = '⏳ กำลังโอนย้าย...';
+    document.getElementById('tResult').style.display = 'none';
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        sub.disabled    = false;
+        sub.textContent = 'ยืนยัน';
+        if (!res || !res.ok) {
+          showTransferModalMsg_('error', '❌ ' + (res && res.error ? res.error : 'เกิดข้อผิดพลาด'));
+          return;
+        }
+        var msg = res.dryRun
+          ? '[DRY RUN] โอนย้ายสำเร็จ (จำลอง) — ไม่มีการเขียนข้อมูลจริงไปยัง SAP'
+          : '✅ โอนย้ายสำเร็จ — เอกสาร: ' + (res.materialDocument || '(ไม่มีเลขเอกสาร)');
+        showTransferModalMsg_('success', msg);
+        setTimeout(function () {
+          closeTransferModal_();
+          loadDetail(ctx.palletId);
+        }, 2500);
+      })
+      .withFailureHandler(function (err) {
+        sub.disabled    = false;
+        sub.textContent = 'ยืนยัน';
+        showTransferModalMsg_('error', '❌ โอนย้ายไม่สำเร็จ: ' + (err.message || String(err)));
+      })
+      .scanTransferConfirm(ctx.palletId, destSloc, { source: 'DESKTOP' });
+  }
+
+  function showTransferModalMsg_(type, msg) {
+    var el = document.getElementById('tResult');
+    el.className     = type === 'error' ? 'modal-result-error' : 'modal-result-success';
+    el.textContent   = msg;
+    el.style.display = 'block';
+  }
+
+  window.closeTransferModal_ = closeTransferModal_;
+
+  document.getElementById('tBtnCancel').addEventListener('click', closeTransferModal_);
+  document.getElementById('tBtnSubmit').addEventListener('click', submitTransfer_);
+  document.getElementById('tDestSloc').addEventListener('change', validateTransferDestSloc_);
 
   window.recalcBucketHint_ = recalcBucketHint_;
   window.closeConfirmModal  = closeConfirmModal;
