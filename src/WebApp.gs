@@ -171,13 +171,20 @@ function getActiveUserEmail() {
 }
 
 /**
- * Return current SAP flag status for the UI badge.
- * @return {{ sapWriteEnabled: boolean, dryRun: boolean }}
+ * Return current SAP flag status for the UI badge, plus the local
+ * per-operation cumulative confirmation flag (Scanner.html/Desktop.html read
+ * localOpCumulativeEnabled/maxRoundsPerOp to switch their bucket hint/guard
+ * logic — see recalcYield/submitConfirm in Scanner.html and
+ * recalcBucketHint_/submitConfirm in Desktop.html).
+ * @return {{ sapWriteEnabled: boolean, dryRun: boolean,
+ *   localOpCumulativeEnabled: boolean, maxRoundsPerOp: number }}
  */
 function getSapStatus() {
   return {
     sapWriteEnabled: sapWriteEnabled_(),
-    dryRun:          isDryRun_()
+    dryRun:          isDryRun_(),
+    localOpCumulativeEnabled: isLocalOpCumulativeEnabled_(),
+    maxRoundsPerOp:           CFG.MAX_ROUNDS_PER_OP
   };
 }
 
@@ -216,7 +223,7 @@ function lookupPallet(palletId) {
     // Same rule as checkAllOperationsDone_, computed inline to avoid re-fetching
     // operations/operationLogs that are already in scope.
     const allOpsConfirmed = operations.length > 0 && operations.every(function (op) {
-      return operationLogs.some(function (log) { return log.operationNo === op.opNo; });
+      return _isOpDoneForGate_(palletId, op.opNo, operationLogs);
     });
     const qcDone = pallet.QCStatus === 'INSPECTED';
 
@@ -235,6 +242,50 @@ function lookupPallet(palletId) {
     logError('lookupPallet', 'PalletMaster', e.message, palletId);
     return { found: false, pallet: null, operations: [], operationLogs: [], allOpsConfirmed: false, qcDone: false, error: 'เกิดข้อผิดพลาด: ' + e.message };
   }
+}
+
+/**
+ * Pure validation of one local per-operation cumulative confirmation round's
+ * qty math (LOCAL_OP_CUMULATIVE_ENABLED) — no sheet read/write, no SAP call.
+ * Used by confirmScan and exercised directly by TEST_ scenarios with fake
+ * in-memory values, same pattern as Confirmation.gs's (out-of-scope, dormant)
+ * _validateCumulativeRound_ — this is a separate, local-only implementation,
+ * not a call into that file.
+ *
+ * Rule: no per-round minimum/proportion — any split across up to
+ * CFG.MAX_ROUNDS_PER_OP rounds is allowed, as long as cumulative never
+ * exceeds qtyPerPallet and the completing round brings cumulative to
+ * exactly qtyPerPallet.
+ *
+ * @param {number} qtyPerPallet
+ * @param {number} priorCumulative — qty logged so far (rounds 1..N-1)
+ * @param {number} roundsUsed — rounds already completed (0 = none yet)
+ * @param {number} bucketSum — qty this round is attempting to log
+ * @return {{allowed:boolean, isFinalRound:boolean, newCumulative:number,
+ *   roundNumber:number, message:string|null}}
+ */
+function _validateLocalOpRound_(qtyPerPallet, priorCumulative, roundsUsed, bucketSum) {
+  const roundNumber   = Number(roundsUsed || 0) + 1;
+  const newCumulative = Number(priorCumulative || 0) + Number(bucketSum || 0);
+  const isFinalRound  = newCumulative === Number(qtyPerPallet);
+
+  if (roundNumber > CFG.MAX_ROUNDS_PER_OP && !isFinalRound) {
+    return {
+      allowed: false, isFinalRound: false, newCumulative: newCumulative, roundNumber: roundNumber,
+      message: '⛔ ใช้ครบ ' + CFG.MAX_ROUNDS_PER_OP + ' รอบแล้ว ยอดยังไม่ครบจำนวนต่อพาเลท (' +
+        qtyPerPallet + ') — กรุณาติดต่อ Admin'
+    };
+  }
+  if (newCumulative > Number(qtyPerPallet)) {
+    return {
+      allowed: false, isFinalRound: false, newCumulative: newCumulative, roundNumber: roundNumber,
+      message: '⛔ ยอดรวมสะสมของขั้นตอนนี้เกินจำนวนต่อพาเลท (' + qtyPerPallet + ')'
+    };
+  }
+  return {
+    allowed: true, isFinalRound: isFinalRound, newCumulative: newCumulative,
+    roundNumber: roundNumber, message: null
+  };
 }
 
 /**
@@ -267,14 +318,14 @@ function confirmScan(params) {
     const pallet = lookupPalletById_(palletId);
     if (!pallet) return { success: false, sapSent: false, message: 'ไม่พบพาเลท: ' + palletId, logId: null };
 
-    // === 4-bucket validation (server-side) ===
+    // === 4-bucket validation (server-side) — unchanged regardless of flag ===
     if ([qtyGood, qtyRepair, qtyScrap, qtyAwaitConv].some(function (v) { return v < 0 || !Number.isInteger(v); })) {
       logEvent('RECORD_OP_BUCKETS', 'OperationLog', 'REJECT', 0,
         palletId + ' op=' + opNo + ' invalid bucket values');
       return { success: false, sapSent: false, message: 'ค่าต้องเป็นจำนวนเต็ม >= 0', logId: null };
     }
     const bucketSum = qtyGood + qtyRepair + qtyScrap + qtyAwaitConv;
-    if (bucketSum !== Number(pallet.QtyPerPallet)) {
+    if (!isLocalOpCumulativeEnabled_() && bucketSum !== Number(pallet.QtyPerPallet)) {
       logEvent('RECORD_OP_BUCKETS', 'OperationLog', 'REJECT', 0,
         palletId + ' op=' + opNo + ' sum=' + bucketSum + ' max=' + pallet.QtyPerPallet);
       return {
@@ -293,7 +344,15 @@ function confirmScan(params) {
         logId: null
       };
     }
-    if (opNo && isOperationLogged_(palletId, opNo)) {
+    if (opNo && isLocalOpCumulativeEnabled_()) {
+      if (isOperationFinallyLogged_(palletId, opNo)) {
+        return {
+          success: false, sapSent: false,
+          message: '⚠️ ขั้นตอน ' + opNo + ' ของพาเลทนี้เสร็จสมบูรณ์แล้ว',
+          logId: null
+        };
+      }
+    } else if (opNo && isOperationLogged_(palletId, opNo)) {
       return {
         success: false, sapSent: false,
         message: '⚠️ ขั้นตอน ' + opNo + ' ของพาเลทนี้บันทึกแล้ว',
@@ -308,8 +367,7 @@ function confirmScan(params) {
       if (opIndex > 0) {
         const logs = getOperationLogs_(palletId);
         for (let i = 0; i < opIndex; i++) {
-          const prevLog = logs.find(function (l) { return l.operationNo === operations[i].opNo; });
-          if (!prevLog) {
+          if (!_isOpDoneForGate_(palletId, operations[i].opNo, logs)) {
             return {
               success: false, sapSent: false,
               message: '⚠️ ต้องบันทึกขั้นตอน ' + operations[i].opNo + ' — ' +
@@ -321,8 +379,35 @@ function confirmScan(params) {
       }
     }
 
-    // 1. Append to OperationLog with all 4 buckets
-    const logId = logOperation_({
+    // === Local per-operation cumulative round validation (ON path only) ===
+    // Runs after the idempotency/sequential gates — no point computing round
+    // math for a call the gates would reject anyway. OFF path never reaches
+    // this block's body (isLocalOpCumulativeEnabled_() false short-circuits),
+    // so roundNumber/isFinalRoundLocal stay at their single-complete-round
+    // defaults and the write/message logic below is exactly as before.
+    let roundNumber      = 1;
+    let isFinalRoundLocal = true;
+    let cumulativeMsg     = null;
+    if (opNo && isLocalOpCumulativeEnabled_()) {
+      const roundState = getCumulativeQtyForOp_(palletId, opNo);
+      const v = _validateLocalOpRound_(pallet.QtyPerPallet, roundState.cumulativeQty, roundState.roundsUsed, bucketSum);
+      if (!v.allowed) {
+        logEvent('RECORD_OP_BUCKETS', 'OperationLog', 'REJECT', 0,
+          palletId + ' op=' + opNo + ' round=' + v.roundNumber + ' newCum=' + v.newCumulative +
+          ' max=' + pallet.QtyPerPallet);
+        return { success: false, sapSent: false, message: v.message, logId: null };
+      }
+      roundNumber       = v.roundNumber;
+      isFinalRoundLocal = v.isFinalRound;
+      if (!isFinalRoundLocal) {
+        cumulativeMsg = 'บันทึกรอบ ' + roundNumber + '/' + CFG.MAX_ROUNDS_PER_OP + ' แล้ว (' +
+          v.newCumulative + '/' + pallet.QtyPerPallet + ')';
+      }
+    }
+
+    // 1. Append to OperationLog with all 4 buckets (this round's raw values —
+    //    cumulative is always computed on read, never stored as a running total)
+    const logEntry = {
       palletId:      palletId,
       mo:            pallet.ManufacturingOrder,
       operationNo:   opNo,
@@ -336,19 +421,45 @@ function confirmScan(params) {
       result:        'PASS',
       source:        params.source || 'MOBILE',
       actualMachine: actualMachine
-    });
+    };
+    if (isLocalOpCumulativeEnabled_()) {
+      logEntry.roundNumber  = roundNumber;
+      logEntry.isFinalRound = isFinalRoundLocal;
+    }
+    const logId = logOperation_(logEntry);
 
     // 2. Determine if this is the final operation via routing
     const isFinalOp = _isFinalOperation_(pallet.ManufacturingOrder, opNo);
 
-    // 3. If final op, mirror 4 buckets to PalletMaster
-    if (isFinalOp) {
-      updatePalletScanFields_(palletId, {
-        GoodQty:      qtyGood,
-        RepairQty:    qtyRepair,
-        DefectQty:    qtyScrap,
-        AwaitConvQty: qtyAwaitConv
-      });
+    // 3. If final op AND this round completes it, mirror buckets to PalletMaster.
+    //    OFF path (and legacy free-form opNo-less calls) always completes in one
+    //    round, so this is unchanged. ON path: mirror the CUMULATIVE per-bucket
+    //    totals across all rounds (not just this round's raw values) so a final
+    //    operation confirmed over multiple rounds still leaves PalletMaster with
+    //    the pallet's real totals — this round's isolated numbers would otherwise
+    //    silently overwrite whatever earlier rounds already contributed.
+    if (isFinalOp && isFinalRoundLocal) {
+      if (isLocalOpCumulativeEnabled_()) {
+        const allRounds = getOperationLogRoundsForOp_(palletId, opNo);
+        const totals = allRounds.reduce(function (t, r) {
+          t.good += r.goodQty; t.repair += r.repairQty;
+          t.scrap += r.scrapQty; t.awaitConv += r.awaitConvQty;
+          return t;
+        }, { good: 0, repair: 0, scrap: 0, awaitConv: 0 });
+        updatePalletScanFields_(palletId, {
+          GoodQty:      totals.good,
+          RepairQty:    totals.repair,
+          DefectQty:    totals.scrap,
+          AwaitConvQty: totals.awaitConv
+        });
+      } else {
+        updatePalletScanFields_(palletId, {
+          GoodQty:      qtyGood,
+          RepairQty:    qtyRepair,
+          DefectQty:    qtyScrap,
+          AwaitConvQty: qtyAwaitConv
+        });
+      }
     }
 
     const yieldQty = qtyGood + qtyRepair + qtyAwaitConv;
@@ -380,7 +491,8 @@ function confirmScan(params) {
         success: true,
         sapSent: false,
         allOperationsDone: allOperationsDone,
-        message: 'บันทึกงานสำเร็จ' + (isFinal ? ' (ขั้นตอนสุดท้าย)' : '') + doneSuffix + ' (SAP OFF — โหมดทดสอบ)',
+        message: cumulativeMsg ||
+          ('บันทึกงานสำเร็จ' + (isFinal ? ' (ขั้นตอนสุดท้าย)' : '') + doneSuffix + ' (SAP OFF — โหมดทดสอบ)'),
         logId:   logId
       };
     }
@@ -389,7 +501,7 @@ function confirmScan(params) {
       success: true,
       sapSent: false,
       allOperationsDone: allOperationsDone,
-      message: 'บันทึกงานสำเร็จ' + doneSuffix + ' — SAP confirmation จะเปิดใช้ใน Step 2',
+      message: cumulativeMsg || ('บันทึกงานสำเร็จ' + doneSuffix + ' — SAP confirmation จะเปิดใช้ใน Step 2'),
       logId:   logId
     };
 
@@ -467,6 +579,27 @@ function savePdInspection(params) {
 }
 
 /**
+ * "Is this operation done?" for the sequential gate / checkAllOperationsDone_ /
+ * lookupPallet's allOpsConfirmed — the ONE place all three call sites agree on
+ * what "done" means, so they can't drift from each other.
+ *
+ * OFF (LOCAL_OP_CUMULATIVE_ENABLED=false): unchanged existence check against
+ * the already-fetched getOperationLogs_() result — one row per op, same as
+ * 6.2-REV.
+ * ON: delegates to isOperationFinallyLogged_() (OperationLog.gs) — true only
+ * once a row with IsFinalRound=true exists for this palletId+opNo.
+ *
+ * @param {string} palletId
+ * @param {string} opNo
+ * @param {Array} logs — getOperationLogs_(palletId) result (only used OFF-path)
+ * @return {boolean}
+ */
+function _isOpDoneForGate_(palletId, opNo, logs) {
+  if (isLocalOpCumulativeEnabled_()) return isOperationFinallyLogged_(palletId, opNo);
+  return logs.some(function (l) { return l.operationNo === opNo; });
+}
+
+/**
  * True only when every routing operation for this pallet's MO has an
  * OperationLog row (i.e. OP has confirmed it) — PDResult is NOT checked,
  * since PD inspection is optional random sampling, not every pallet/operation.
@@ -484,7 +617,7 @@ function checkAllOperationsDone_(palletId) {
 
   const logs = getOperationLogs_(palletId);
   return operations.every(function (op) {
-    return logs.some(function (l) { return l.operationNo === op.opNo; });
+    return _isOpDoneForGate_(palletId, op.opNo, logs);
   });
 }
 
