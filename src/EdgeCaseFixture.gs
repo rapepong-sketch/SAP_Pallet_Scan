@@ -66,7 +66,7 @@ function TEST_createEdgeCaseFixture() {
   ];
 
   var poValues = {
-    ManufacturingOrder: FIXTURE_ORDER_ID,
+    ManufacturingOrder: '', // placeholder — set as protected text below (leading-zero-safe)
     Material:           FIXTURE_MATERIAL,
     OperationsJSON:     JSON.stringify(fakeOps)
   };
@@ -74,8 +74,27 @@ function TEST_createEdgeCaseFixture() {
     return poValues.hasOwnProperty(h) ? poValues[h] : '';
   }));
   SpreadsheetApp.flush();
+
+  // ---- Leading-zero-safe ManufacturingOrder write (setNumberFormat before setValue) --
+  // appendRow() coerces all-digit strings to numbers regardless of column format
+  // (same bug fixed for PL-MANUALTEST-001 by fixPhase62TestFixtureMO, Tests.gs) —
+  // '000000099999' would silently become 99999 without this.
+  var poRowNum = poSheet.getLastRow();
+  var poMoCol = poHeaders.indexOf('ManufacturingOrder');
+  if (poMoCol === -1) throw new Error('EdgeCaseFixture: ManufacturingOrder column not found in ProductionOrders headers');
+  var poMoCell = poSheet.getRange(poRowNum, poMoCol + 1);
+  poMoCell.setNumberFormat('@');
+  poMoCell.setValue(FIXTURE_ORDER_ID);
+  SpreadsheetApp.flush();
+
+  var poMoCheck = String(poMoCell.getValue());
+  if (poMoCheck !== FIXTURE_ORDER_ID) {
+    throw new Error('EdgeCaseFixture: ProductionOrders ManufacturingOrder cell mismatch — expected ' +
+      FIXTURE_ORDER_ID + ', got \'' + poMoCheck + '\'');
+  }
   Logger.log('EdgeCaseFixture: ProductionOrders row created for ' + FIXTURE_ORDER_ID +
-    ' with ' + fakeOps.length + ' fake ops (OperationsJSON cache)');
+    ' with ' + fakeOps.length + ' fake ops (OperationsJSON cache), ManufacturingOrder cell verified as text=\'' +
+    poMoCheck + '\'');
 
   // ---- 2. PalletMaster row ------------------------------------------------
   var pmSheet = ss.getSheetByName(CFG.SHEETS.PALLET_MASTER);
@@ -86,7 +105,7 @@ function TEST_createEdgeCaseFixture() {
 
   var pmValues = {
     PalletID:           FIXTURE_PALLET_ID,
-    ManufacturingOrder: FIXTURE_ORDER_ID,
+    ManufacturingOrder: '', // placeholder — set as protected text below (leading-zero-safe)
     Material:           FIXTURE_MATERIAL,
     MaterialName:       'EDGE CASE TEST FIXTURE - DO NOT USE FOR REAL WORK',
     QtyPerPallet:       30,
@@ -100,7 +119,7 @@ function TEST_createEdgeCaseFixture() {
   }));
   SpreadsheetApp.flush();
 
-  // ---- Leading-zero-safe Batch write (setNumberFormat before setValue) --
+  // ---- Leading-zero-safe ManufacturingOrder + Batch write (setNumberFormat before setValue) --
   var pmIdCol = pmHeaders.indexOf('PalletID');
   var lastRow = pmSheet.getLastRow();
   var pmCheck = pmSheet.getRange(2, 1, lastRow - 1, pmSheet.getLastColumn()).getValues();
@@ -109,6 +128,19 @@ function TEST_createEdgeCaseFixture() {
     if (String(pmCheck[i][pmIdCol] || '').trim() === FIXTURE_PALLET_ID) { rowNum = i + 2; break; }
   }
   if (rowNum === -1) throw new Error('EdgeCaseFixture: could not find PalletMaster row just inserted');
+
+  var pmMoCol = pmHeaders.indexOf('ManufacturingOrder');
+  if (pmMoCol === -1) throw new Error('EdgeCaseFixture: ManufacturingOrder column not found in PalletMaster headers');
+  var pmMoCell = pmSheet.getRange(rowNum, pmMoCol + 1);
+  pmMoCell.setNumberFormat('@');
+  pmMoCell.setValue(FIXTURE_ORDER_ID);
+  SpreadsheetApp.flush();
+
+  var pmMoCheck = String(pmMoCell.getValue());
+  if (pmMoCheck !== FIXTURE_ORDER_ID) {
+    throw new Error('EdgeCaseFixture: PalletMaster ManufacturingOrder cell mismatch — expected ' +
+      FIXTURE_ORDER_ID + ', got \'' + pmMoCheck + '\'');
+  }
 
   var batchCol = pmHeaders.indexOf('Batch');
   if (batchCol === -1) throw new Error('EdgeCaseFixture: Batch column not found in headers');
@@ -122,16 +154,28 @@ function TEST_createEdgeCaseFixture() {
     throw new Error('EdgeCaseFixture: Batch cell mismatch — expected ' + FIXTURE_BATCH + ', got ' + batchCheck);
   }
   Logger.log('EdgeCaseFixture: PalletMaster row created for ' + FIXTURE_PALLET_ID +
-    ' at row ' + rowNum + ', Batch=\'' + batchCheck + '\'');
+    ' at row ' + rowNum + ', ManufacturingOrder=\'' + pmMoCheck + '\', Batch=\'' + batchCheck + '\'');
 
   // ---- 3. Confirm cache-hit shape (real call — no live SAP call happens,
   //         since getOpsForMo_ already returned a non-empty array) --------
   var ops = getOperationsForOrder(FIXTURE_ORDER_ID);
   Logger.log('EdgeCaseFixture: getOperationsForOrder(' + FIXTURE_ORDER_ID + ') returned ' +
     ops.length + ' ops: ' + JSON.stringify(ops));
-  if (ops.length !== fakeOps.length) {
-    throw new Error('EdgeCaseFixture: expected ' + fakeOps.length + ' ops back, got ' + ops.length +
-      ' — OperationsJSON cache read did not work as expected');
+
+  var expectedOpNos = ['0010', '0020', '0030'];
+  var actualOpNos = ops.map(function (o) { return o.opNo; });
+  var opNosMatch = actualOpNos.length === expectedOpNos.length &&
+    expectedOpNos.every(function (expected, i) { return actualOpNos[i] === expected; });
+
+  if (!opNosMatch) {
+    var poRawRow  = poSheet.getRange(poRowNum, 1, 1, poSheet.getLastColumn()).getValues()[0];
+    var rawMoCell = poRawRow[poMoCol];
+    var rawOpsJsonCell = poRawRow[poHeaders.indexOf('OperationsJSON')];
+    throw new Error('EdgeCaseFixture: expected opNo [' + expectedOpNos.join(',') + '], got [' +
+      actualOpNos.join(',') + '] — full getOperationsForOrder result: ' + JSON.stringify(ops) +
+      ' | raw ProductionOrders.ManufacturingOrder cell = ' + JSON.stringify(rawMoCell) +
+      ' (type ' + typeof rawMoCell + ')' +
+      ' | raw ProductionOrders.OperationsJSON cell = ' + JSON.stringify(rawOpsJsonCell));
   }
   Logger.log('EdgeCaseFixture: cache-hit confirmed — getOpsForMo_ (WebApp.gs) returned a non-empty ' +
     'array from OperationsJSON, so getOperationsForOrder never called fetchOperationsForMO_ ' +
