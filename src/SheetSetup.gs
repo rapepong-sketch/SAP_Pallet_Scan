@@ -149,6 +149,7 @@ function onOpen() {
   refreshRunbookOnOpen_();
 
   addGate0ProbeMenu_(); // Phase 6.5 Gate 0 — separate probe menu, defined in Gate0Probe.gs
+  addLocalOpCumulativeTestsMenu_(); // Local per-operation cumulative confirmation tests — LocalOpCumulativeTests.gs
 }
 
 let _ss_ = null;
