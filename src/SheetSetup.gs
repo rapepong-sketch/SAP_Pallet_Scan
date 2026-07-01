@@ -150,6 +150,7 @@ function onOpen() {
   refreshRunbookOnOpen_();
 
   addGate0ProbeMenu_(); // Phase 6.5 Gate 0 — separate probe menu, defined in Gate0Probe.gs
+  addGate2Part1TestsMenu_(); // Phase 6.5 Gate 2 Part 1 — separate test menu, defined in CumulativeConfirmTests.gs
 }
 
 let _ss_ = null;
