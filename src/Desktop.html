@@ -304,6 +304,7 @@
       <input type="number" id="mQtyScrap" min="0" step="1" value="0" oninput="recalcBucketHint_()">
       <label>รอปรับสภาพ</label>
       <input type="number" id="mQtyAwaitConv" min="0" step="1" value="0" oninput="recalcBucketHint_()">
+      <div id="mRoundProgress" style="display:none; font-size:12px; color:#1565c0; margin-top:4px;"></div>
       <div id="mBucketHint" class="modal-bucket-hint"></div>
     </div>
     <div class="modal-actions">
@@ -355,12 +356,53 @@
   var allRows       = []; // full result set from last search — used by client-side filters
   var _detailPallet = null; // current detail pallet — used by confirm modal
   var _detailOpsMap = {}; // opNo → op object — used by confirm modal
+  var _detailLogs   = []; // operationLogs from the last lookupPallet — used by confirm modal's cumulative round math
   var _activeUserEmail = '';
+  var localCumEnabled = false; // LOCAL_OP_CUMULATIVE_ENABLED, loaded via getSapStatus()
+  var maxRoundsPerOp  = 3;     // CFG.MAX_ROUNDS_PER_OP, loaded via getSapStatus()
 
   google.script.run
     .withSuccessHandler(function (email) { _activeUserEmail = email || ''; })
     .withFailureHandler(function () {})
     .getActiveUserEmail();
+
+  google.script.run
+    .withSuccessHandler(function (s) {
+      localCumEnabled = !!(s && s.localOpCumulativeEnabled);
+      maxRoundsPerOp  = (s && s.maxRoundsPerOp) || 3;
+    })
+    .withFailureHandler(function () {})
+    .getSapStatus();
+
+  // "Is this op done?" log entry, if any — round-aware when the flag is on
+  // (only a final-round row counts), plain existence otherwise (unchanged).
+  // Mirrors Scanner.html's _findOpLog exactly.
+  function _findOpLog(operationLogs, opNo) {
+    if (localCumEnabled) {
+      return operationLogs.find(function (l) { return l.operationNo === opNo && l.isFinalRound === true; }) || null;
+    }
+    return operationLogs.find(function (l) { return l.operationNo === opNo; }) || null;
+  }
+
+  // Cumulative qty + rounds used so far for one operation, summed from the
+  // operationLogs rows already fetched by lookupPallet (each row = one round).
+  function _opRoundState(operationLogs, opNo) {
+    var rows = operationLogs.filter(function (l) { return l.operationNo === opNo; });
+    var cumulativeQty = rows.reduce(function (s, r) {
+      return s + (r.goodQty || 0) + (r.scrapQty || 0) + (r.repairQty || 0) + (r.awaitConvQty || 0);
+    }, 0);
+    return { cumulativeQty: cumulativeQty, roundsUsed: rows.length };
+  }
+
+  // Pure mirror of WebApp.gs's _validateLocalOpRound_ — same rule, client-side.
+  function _validateLocalRoundClient(qtyPerPallet, priorCumulative, roundsUsed, bucketSum) {
+    var roundNumber   = (roundsUsed || 0) + 1;
+    var newCumulative = (priorCumulative || 0) + (bucketSum || 0);
+    var isFinalRound  = newCumulative === qtyPerPallet;
+    if (roundNumber > maxRoundsPerOp && !isFinalRound) return { allowed: false };
+    if (newCumulative > qtyPerPallet) return { allowed: false };
+    return { allowed: true, isFinalRound: isFinalRound, newCumulative: newCumulative, roundNumber: roundNumber };
+  }
 
   // ── Escape helpers ──────────────────────────────────────────────────────────
   function esc(s) {
@@ -561,6 +603,7 @@
     _detailPallet = p;
     _detailOpsMap = {};
     ops.forEach(function (op) { _detailOpsMap[op.opNo] = op; });
+    _detailLogs = logs;
 
     // ---- Pallet field grid ----
     var fields = [
@@ -599,7 +642,7 @@
       var nextPendingOpNo = null;
       if (!result.allOpsConfirmed) {
         ops.some(function (op) {
-          var logged = logs.some(function (l) { return l.operationNo === op.opNo; });
+          var logged = !!_findOpLog(logs, op.opNo);
           if (!logged) { nextPendingOpNo = op.opNo; return true; }
           return false;
         });
@@ -611,13 +654,20 @@
         '</tr></thead><tbody>';
 
       ops.forEach(function (op) {
-        var logged = logs.some(function (l) { return l.operationNo === op.opNo; });
+        var logged = !!_findOpLog(logs, op.opNo);
         var isNext = op.opNo === nextPendingOpNo;
+        var statusCell = logged ? '✅ บันทึกแล้ว' : '⬜ ยังไม่บันทึก';
+        if (!logged && localCumEnabled) {
+          var st = _opRoundState(logs, op.opNo);
+          if (st.roundsUsed > 0) {
+            statusCell = '🔶 บันทึกแล้ว ' + st.cumulativeQty + '/' + p.QtyPerPallet + ' (รอบ ' + st.roundsUsed + '/' + maxRoundsPerOp + ')';
+          }
+        }
         html += '<tr>' +
           '<td>' + esc(op.opNo) + '</td>' +
           '<td>' + esc(op.opText) + '</td>' +
           '<td>' + esc(op.workCenter) + '</td>' +
-          '<td>' + (logged ? '✅ บันทึกแล้ว' : '⬜ ยังไม่บันทึก') + '</td>' +
+          '<td>' + statusCell + '</td>' +
           '<td>' + (isNext ? '<button class="btn-confirm-op" data-opno="' + esc(op.opNo) + '">ยืนยัน</button>' : '') + '</td>' +
           '</tr>';
       });
@@ -657,7 +707,7 @@
   var _confirmCtx = {};
 
   function openConfirmModal(pallet, op) {
-    _confirmCtx = { pallet: pallet, op: op };
+    _confirmCtx = { pallet: pallet, op: op, logs: _detailLogs };
     document.getElementById('mPalletId').textContent = pallet.PalletID;
     document.getElementById('mMO').textContent       = pallet.ManufacturingOrder;
     document.getElementById('mMaterial').textContent = pallet.Material + (pallet.MaterialName ? ' — ' + pallet.MaterialName : '');
@@ -704,7 +754,12 @@
         _mNote.style.display = '';
       })
       .getMachinesForStepWorkCenter(op.workCenter || '');
-    document.getElementById('mQtyGood').value        = pallet.QtyPerPallet;
+    var defaultGood = pallet.QtyPerPallet;
+    if (localCumEnabled) {
+      var initState = _opRoundState(_detailLogs, op.opNo);
+      defaultGood = Number(pallet.QtyPerPallet) - initState.cumulativeQty;
+    }
+    document.getElementById('mQtyGood').value        = defaultGood;
     document.getElementById('mQtyRepair').value      = '0';
     document.getElementById('mQtyScrap').value       = '0';
     document.getElementById('mQtyAwaitConv').value   = '0';
@@ -725,6 +780,7 @@
 
   function recalcBucketHint_() {
     var pallet = _confirmCtx.pallet;
+    var op     = _confirmCtx.op;
     if (!pallet) return;
     var maxQty = Number(pallet.QtyPerPallet);
     var g = parseInt(document.getElementById('mQtyGood').value,      10) || 0;
@@ -733,23 +789,64 @@
     var a = parseInt(document.getElementById('mQtyAwaitConv').value, 10) || 0;
     var sum = g + r + s + a;
     var hint = document.getElementById('mBucketHint');
+    var progress = document.getElementById('mRoundProgress');
     var btn  = document.getElementById('mBtnSubmit');
-    if (sum === maxQty) {
-      hint.textContent = 'ยอดรวม ' + sum + ' / ' + maxQty + ' ✓';
+
+    if (!localCumEnabled) {
+      progress.style.display = 'none';
+      if (sum === maxQty) {
+        hint.textContent = 'ยอดรวม ' + sum + ' / ' + maxQty + ' ✓';
+        hint.style.color = '#2e7d32';
+        btn.disabled = false;
+      } else if (sum === 0) {
+        hint.textContent = '';
+        hint.style.color = '';
+        btn.disabled = true;
+      } else if (sum > maxQty) {
+        hint.textContent = 'ยอดรวมเกินจำนวนต่อพาเลท (' + maxQty + ')';
+        hint.style.color = '#b71c1c';
+        btn.disabled = true;
+      } else {
+        hint.textContent = 'ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + maxQty + ') — ไม่อนุญาตให้ส่งน้อยกว่า';
+        hint.style.color = '#b71c1c';
+        btn.disabled = true;
+      }
+      return;
+    }
+
+    // === Local per-operation cumulative round mode — checked against the
+    // REMAINING qty (maxQty minus what earlier rounds already logged), since
+    // the bucket inputs represent only THIS round's amount. ===
+    var state = _opRoundState(_confirmCtx.logs || [], op.opNo);
+    var remaining     = maxQty - state.cumulativeQty;
+    var nextRound     = state.roundsUsed + 1;
+    var newCumulative = state.cumulativeQty + sum;
+
+    progress.style.display = '';
+    progress.textContent = 'ขั้นตอน ' + op.opNo + ': บันทึกแล้ว ' + state.cumulativeQty + '/' + maxQty +
+      ' (รอบ ' + state.roundsUsed + '/' + maxRoundsPerOp + ')';
+
+    if (sum === remaining) {
+      hint.textContent = 'ครบจำนวน — ยืนยันได้ (รอบสุดท้าย) ' + sum + ' / ' + remaining + ' ✓';
       hint.style.color = '#2e7d32';
       btn.disabled = false;
     } else if (sum === 0) {
       hint.textContent = '';
       hint.style.color = '';
       btn.disabled = true;
-    } else if (sum > maxQty) {
-      hint.textContent = 'ยอดรวมเกินจำนวนต่อพาเลท (' + maxQty + ')';
+    } else if (sum > remaining) {
+      hint.textContent = 'เกินยอดที่เหลือของพาเลทนี้ (' + remaining + ')';
+      hint.style.color = '#b71c1c';
+      btn.disabled = true;
+    } else if (nextRound > maxRoundsPerOp) {
+      hint.textContent = 'ครบ ' + maxRoundsPerOp + ' รอบแล้ว ต้องส่งให้ครบยอดที่เหลือ (' + remaining + ') ในรอบนี้';
       hint.style.color = '#b71c1c';
       btn.disabled = true;
     } else {
-      hint.textContent = 'ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + maxQty + ') — ไม่อนุญาตให้ส่งน้อยกว่า';
-      hint.style.color = '#b71c1c';
-      btn.disabled = true;
+      hint.textContent = 'บันทึกรอบนี้ได้ (รอบที่ ' + nextRound + '/' + maxRoundsPerOp + ') — ยอดสะสมจะเป็น ' +
+        newCumulative + '/' + maxQty + ' เหลือ ' + (maxQty - newCumulative);
+      hint.style.color = '#1565c0';
+      btn.disabled = false;
     }
   }
 
@@ -780,7 +877,14 @@
 
     var bucketSum = qtyGood + qtyRepair + qtyScrap + qtyAwaitConv;
     var maxQty = Number(pallet.QtyPerPallet);
-    if (bucketSum !== maxQty) {
+    if (localCumEnabled) {
+      var state = _opRoundState(_confirmCtx.logs || [], op.opNo);
+      var v = _validateLocalRoundClient(maxQty, state.cumulativeQty, state.roundsUsed, bucketSum);
+      if (!v.allowed) {
+        showModalMsg('error', 'ยอดรวมไม่ถูกต้องสำหรับรอบนี้ — กรุณาตรวจสอบยอดสะสม');
+        return;
+      }
+    } else if (bucketSum !== maxQty) {
       showModalMsg('error', 'ยอดรวมต้องเท่ากับจำนวนต่อพาเลท (' + maxQty + ') — ไม่อนุญาตให้ส่งน้อยกว่า');
       return;
     }
