@@ -71,6 +71,25 @@ function doGet(e) {
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
 
+  // --- Dashboard (Phase 6.7, admin only, READ-ONLY) ---
+  if (app === 'dashboard') {
+    if (!isAdminUser_()) {
+      var dashEmail = '';
+      try { dashEmail = Session.getActiveUser().getEmail() || ''; } catch (_) {}
+      return HtmlService.createHtmlOutput(
+        '<h2>Access Denied</h2>' +
+        '<p>This page is restricted to authorized administrators.</p>' +
+        '<p>Signed in as: <strong>' + (dashEmail || '(no email detected)') + '</strong></p>'
+      ).setTitle('Access Denied');
+    }
+    var dashTpl = HtmlService.createTemplateFromFile('Dashboard');
+    dashTpl.baseUrl = ScriptApp.getService().getUrl();
+    return dashTpl.evaluate()
+      .setTitle('PJ Chonburi – Dashboard')
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
   // --- Admin pages (auth gate) ---
   // --- Slip page (admin-gated, uses createHtmlOutputFromFile — no templating needed) ---
   if (app === 'slip') {
@@ -178,6 +197,18 @@ function whoAmI() {
 /** Return active user email for admin page display. */
 function getActiveUserEmail() {
   try { return Session.getActiveUser().getEmail() || ''; } catch (_) { return ''; }
+}
+
+/**
+ * Public google.script.run wrapper for getDashboardData_ (Dashboard.gs) —
+ * admin-gated (same guard as getQcWorklist / searchPallets).
+ * @param {string} [dateStr] — 'yyyy-MM-dd'; defaults to today (Asia/Bangkok)
+ * @return {Object} getDashboardData_'s return shape, or
+ *   { error: true, message: 'NOT_ADMIN' } if not authorized
+ */
+function getDashboardData(dateStr) {
+  if (!isAdminUser_()) return { error: true, message: 'NOT_ADMIN' };
+  return getDashboardData_(dateStr);
 }
 
 /**
@@ -317,7 +348,7 @@ function confirmScan(params) {
     const qtyScrap    = Number(params.qtyScrap)      || 0;
     const qtyRepair   = Number(params.qtyRepair)     || 0;
     const qtyAwaitConv = Number(params.qtyAwaitConv) || 0;
-    const operator       = String(params.operator       || '').trim();
+    const operator       = String(params.operator       || '').trim().toLowerCase();
     const role           = String(params.role           || '').trim();
     const actualMachine  = String(params.actualMachine  || '').trim();
 
@@ -554,7 +585,7 @@ function savePdInspection(params) {
     const palletId    = String(params.palletId    || '').trim();
     const operationNo = String(params.operationNo || '').trim();
     const result       = String(params.result       || '').trim().toUpperCase();
-    const inspector     = String(params.inspector     || '').trim();
+    const inspector     = String(params.inspector     || '').trim().toLowerCase();
     const note           = String(params.note           || '').trim();
 
     if (!palletId)    return { success: false, message: 'ไม่มี PalletID', result: null, allOperationsDone: false };
@@ -646,7 +677,7 @@ function saveQcResult(params) {
     params          = params || {};
     const palletId  = String(params.palletId  || '').trim();
     const result    = String(params.result    || '').trim().toUpperCase();
-    const inspector = String(params.inspector || '').trim();
+    const inspector = String(params.inspector || '').trim().toLowerCase();
     const note      = String(params.note      || '').trim();
 
     if (!palletId) return { success: false, message: 'ไม่มี PalletID' };

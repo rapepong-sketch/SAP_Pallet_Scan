@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>PJ Chonburi — Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Sarabun','Segoe UI',Arial,sans-serif;background:#f0f2f5;color:#1a1a2e;padding:20px 24px;font-size:16px}
+
+.hdr{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px}
+.hdr h1{font-size:1.6em;font-weight:700}
+.hdr .date{color:#666;font-size:0.95em}
+.hdr .back{margin-left:auto;color:#1a73e8;text-decoration:none;font-weight:600;font-size:0.95em}
+.hdr .back:hover{text-decoration:underline}
+
+.sec{background:#fff;border-radius:10px;border:1px solid #dee2e6;padding:22px 24px;margin-bottom:24px}
+.sec h3{font-size:1.25em;font-weight:700;margin-bottom:4px;color:#1a1a2e}
+.sec .subtitle{color:#888;font-size:0.85em;margin-bottom:16px}
+.sec .empty{color:#888;font-size:0.95em;padding:8px 0}
+
+.stat-row{display:flex;flex-wrap:wrap;gap:16px}
+.stat-card{flex:1 1 200px;background:#e8f0fe;border-radius:8px;padding:16px 18px;min-width:180px}
+.stat-card .label{font-size:0.9em;color:#444;font-weight:600;margin-bottom:6px}
+.stat-card .value{font-size:1.9em;font-weight:700;color:#1a1a2e}
+.stat-card .caption{font-size:0.78em;color:#888;margin-top:4px}
+.stat-card.alert{background:#f8d7da}
+.stat-card.alert .value{color:#721c24}
+.stat-card.ok{background:#d4edda}
+.stat-card.ok .value{color:#155724}
+
+table{width:100%;border-collapse:collapse}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #eee;font-size:0.95em}
+th{color:#666;font-weight:600;font-size:0.85em;text-transform:uppercase;letter-spacing:.02em}
+tr:last-child td{border-bottom:none}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.dept-name{font-weight:600}
+.dept-name.unknown{color:#999;font-weight:400;font-style:italic}
+
+.good{color:#2e7d32}
+.repair{color:#e65100}
+.defect{color:#c62828}
+.awaitconv{color:#888}
+.pass{color:#2e7d32;font-weight:700}
+.fail{color:#c62828;font-weight:700}
+.pending{color:#888}
+
+.refresh-btn{background:#1a73e8;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:0.95em;font-weight:600;font-family:inherit;cursor:pointer;transition:background .15s}
+.refresh-btn:hover{background:#1558b0}
+.refresh-btn:disabled{background:#aac2ea;cursor:default}
+
+.loading{color:#888;font-size:0.95em;padding:8px 0}
+.error-box{background:#f8d7da;color:#721c24;border-radius:8px;padding:16px 18px;font-size:0.95em}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <h1>PJ Chonburi &mdash; Dashboard</h1>
+  <span class="date" id="dashDate"></span>
+  <a class="back" href="<?= baseUrl ?>?app=hub" target="_top">&larr; กลับ Hub</a>
+</div>
+
+<div id="loadingBox" class="sec"><div class="loading">⏳ กำลังโหลดข้อมูล...</div></div>
+<div id="errorBox" class="sec" style="display:none"><div class="error-box" id="errorMsg"></div></div>
+
+<div id="content" style="display:none">
+
+  <div class="sec">
+    <h3>สถานะระบบ</h3>
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="label">พาเลทรอ QC</div>
+        <div class="value" id="statPendingQc">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">พาเลทรอโอนย้าย</div>
+        <div class="value" id="statPendingTransfer">0</div>
+      </div>
+      <div class="stat-card" id="statDeadLetterCard">
+        <div class="label">Dead-letter ค้าง</div>
+        <div class="value" id="statDeadLetter">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">QC วันนี้</div>
+        <div class="value" id="statQcToday">0</div>
+        <div class="caption">(ประมาณการ)</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h3>ผลผลิตตามแผนก (วันนี้)</h3>
+    <div id="deptTableWrap"></div>
+  </div>
+
+  <div class="sec">
+    <h3>QC ผ่าน/ไม่ผ่าน ตามแผนก</h3>
+    <div class="subtitle">(สะสมทั้งหมด ไม่ใช่แค่วันนี้)</div>
+    <div id="qcTableWrap"></div>
+  </div>
+
+  <button class="refresh-btn" id="refreshBtn">🔄 รีเฟรช</button>
+
+</div>
+
+<script>
+function esc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderDeptTable(departments) {
+  departments = Array.isArray(departments) ? departments : [];
+  if (!departments.length) {
+    return '<div class="empty">ยังไม่มีข้อมูลผลิตวันนี้</div>';
+  }
+  var sorted = departments.slice().sort(function(a, b) {
+    if (a.department === 'ไม่ทราบแผนก') return 1;
+    if (b.department === 'ไม่ทราบแผนก') return -1;
+    return String(a.department).localeCompare(String(b.department));
+  });
+  var rows = sorted.map(function(d) {
+    var isUnknown = d.department === 'ไม่ทราบแผนก';
+    return '<tr>' +
+      '<td class="dept-name' + (isUnknown ? ' unknown' : '') + '">' + esc(d.department || '-') + '</td>' +
+      '<td class="num">' + (d.palletCount || 0) + '</td>' +
+      '<td class="num good">' + (d.goodQty || 0) + '</td>' +
+      '<td class="num repair">' + (d.repairQty || 0) + '</td>' +
+      '<td class="num defect">' + (d.defectQty || 0) + '</td>' +
+      '<td class="num awaitconv">' + (d.awaitConvQty || 0) + '</td>' +
+      '</tr>';
+  }).join('');
+  return '<table><thead><tr>' +
+    '<th>แผนก</th><th class="num">พาเลท</th><th class="num">ดี</th>' +
+    '<th class="num">ซ่อม</th><th class="num">เสีย</th><th class="num">รอแปลง</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function renderQcTable(qcByDepartment) {
+  qcByDepartment = Array.isArray(qcByDepartment) ? qcByDepartment : [];
+  if (!qcByDepartment.length) {
+    return '<div class="empty">ยังไม่มีข้อมูล QC</div>';
+  }
+  var sorted = qcByDepartment.slice().sort(function(a, b) {
+    if (a.department === 'ไม่ทราบแผนก') return 1;
+    if (b.department === 'ไม่ทราบแผนก') return -1;
+    return String(a.department).localeCompare(String(b.department));
+  });
+  var rows = sorted.map(function(d) {
+    var isUnknown = d.department === 'ไม่ทราบแผนก';
+    return '<tr>' +
+      '<td class="dept-name' + (isUnknown ? ' unknown' : '') + '">' + esc(d.department || '-') + '</td>' +
+      '<td class="num pass">' + (d.pass || 0) + '</td>' +
+      '<td class="num fail">' + (d.fail || 0) + '</td>' +
+      '<td class="num pending">' + (d.pending || 0) + '</td>' +
+      '</tr>';
+  }).join('');
+  return '<table><thead><tr>' +
+    '<th>แผนก</th><th class="num">ผ่าน</th><th class="num">ไม่ผ่าน</th><th class="num">รอตรวจ</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+function showError(message) {
+  document.getElementById('loadingBox').style.display = 'none';
+  document.getElementById('content').style.display = 'none';
+  document.getElementById('errorBox').style.display = 'block';
+  document.getElementById('errorMsg').textContent = 'โหลดข้อมูลไม่สำเร็จ: ' + (message || 'ไม่ทราบสาเหตุ');
+}
+
+function renderData(resp) {
+  if (!resp || resp.error === true) {
+    showError(resp && resp.message);
+    return;
+  }
+  try {
+    document.getElementById('dashDate').textContent = resp.date || '';
+
+    document.getElementById('statPendingQc').textContent = resp.pendingQcCount || 0;
+    document.getElementById('statPendingTransfer').textContent = resp.pendingTransferCount || 0;
+
+    var dlCount = resp.deadLetterOpenCount || 0;
+    var dlCard = document.getElementById('statDeadLetterCard');
+    dlCard.classList.remove('alert', 'ok');
+    dlCard.classList.add(dlCount > 0 ? 'alert' : 'ok');
+    document.getElementById('statDeadLetter').textContent = dlCount;
+
+    document.getElementById('statQcToday').textContent = resp.qcCompletedTodayApprox || 0;
+
+    document.getElementById('deptTableWrap').innerHTML = renderDeptTable(resp.departments);
+    document.getElementById('qcTableWrap').innerHTML = renderQcTable(resp.qcByDepartment);
+
+    document.getElementById('loadingBox').style.display = 'none';
+    document.getElementById('errorBox').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+function loadDashboard() {
+  document.getElementById('loadingBox').style.display = 'block';
+  document.getElementById('errorBox').style.display = 'none';
+  document.getElementById('content').style.display = 'none';
+  google.script.run
+    .withSuccessHandler(renderData)
+    .withFailureHandler(function(err) { showError(err && err.message ? err.message : String(err)); })
+    .getDashboardData();
+}
+
+document.addEventListener('click', function(e) {
+  if (e.target && e.target.id === 'refreshBtn') loadDashboard();
+});
+
+loadDashboard();
+</script>
+</body>
+</html>
