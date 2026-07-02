@@ -690,7 +690,7 @@ function TEST_seedFifoPallets_() {
       ScannedAt: olderDate, ScannedBy: 'TEST', ScanStatus: 'CONFIRMED',
       GRMaterialDocument: '', GRMaterialDocumentYear: '', ConfirmationGroup: '',
       ConfirmationCount: '', ConfirmedAt: olderDate, ConfirmedBy: 'TEST',
-      QCStatus: 'PASS', QCResult: 'PASS', InspectionLot: '', LabelPrintedAt: '',
+      QCStatus: 'INSPECTED', QCResult: 'PASS', InspectionLot: '', LabelPrintedAt: '',
       UpdatedAt: now, QCResultNote: '', OverrideBy: '', OverrideReason: '', OverrideAt: '' },
     { PalletID: ids[1], ManufacturingOrder: 'ZZTEST-MO-001', Material: 'ZZTEST-FIFO',
       MaterialName: 'TEST FIFO Material', Batch: '', QtyPerPallet: 700, Unit: 'PC',
@@ -700,7 +700,7 @@ function TEST_seedFifoPallets_() {
       ScannedAt: newerDate, ScannedBy: 'TEST', ScanStatus: 'CONFIRMED',
       GRMaterialDocument: '', GRMaterialDocumentYear: '', ConfirmationGroup: '',
       ConfirmationCount: '', ConfirmedAt: newerDate, ConfirmedBy: 'TEST',
-      QCStatus: 'PASS', QCResult: 'PASS', InspectionLot: '', LabelPrintedAt: '',
+      QCStatus: 'INSPECTED', QCResult: 'PASS', InspectionLot: '', LabelPrintedAt: '',
       UpdatedAt: now, QCResultNote: '', OverrideBy: '', OverrideReason: '', OverrideAt: '' }
   ];
 
