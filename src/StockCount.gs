@@ -101,7 +101,7 @@ function recordCountScan(palletId, sloc, scannedBy) {
   try {
     palletId  = String(palletId || '').trim();
     sloc      = String(sloc || '').trim();
-    scannedBy = String(scannedBy || '').trim();
+    scannedBy = String(scannedBy || '').trim().toLowerCase();
 
     if (!palletId) return { error: 'PalletID ว่าง' };
     if (!sloc)     return { error: 'SLoc ว่าง' };

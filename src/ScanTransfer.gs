@@ -180,14 +180,23 @@ function getScanTransferDestOptions() {
  * NOTE: buildTransfer311Payload_ accepts SCAN_ISSUE (relaxed in 67f1921). LIVE
  * delegates to confirmTransfer311 → postTransfer311WithRetry_ (hardened path).
  *
+ * CreatedBy resolution: prefers the client-supplied createdByEmail (Scanner.html's
+ * self-declared operator identity — needed because the public/"Anyone" deployment
+ * cannot rely on Session.getActiveUser().getEmail()). Falls back to
+ * Session.getActiveUser().getEmail() when createdByEmail is empty/omitted, so
+ * existing callers that don't pass it (Desktop.html, ScanTransferTest.gs) are
+ * unaffected. Normalized (trim+lowercase) at the point of writing either way.
+ *
  * @param {string} palletId
  * @param {string} destSloc
  * @param {Object} [opts] - { stockFn } for test injection
+ * @param {string} [createdByEmail] - client-declared operator identity; falls
+ *   back to Session.getActiveUser().getEmail() when empty
  * @return {{ok:boolean, dryRun?:boolean, materialDocument?:string,
  *           materialDocumentYear?:string, txnId?:string,
  *           payloadPreview?:Object, error?:string}}
  */
-function scanTransferConfirm(palletId, destSloc, opts) {
+function scanTransferConfirm(palletId, destSloc, opts, createdByEmail) {
   try {
     palletId = String(palletId || '').trim();
     destSloc = String(destSloc || '').trim();
@@ -290,7 +299,12 @@ function scanTransferConfirm(palletId, destSloc, opts) {
       txnId = Utilities.getUuid();
 
       var now       = Utilities.formatDate(new Date(), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss");
-      var createdBy = Session.getActiveUser().getEmail();
+      // Defense in depth: normalize here regardless of source, since a client-
+      // supplied value (public deployment) can't be trusted to already be clean.
+      var createdBy = String(createdByEmail || '').trim().toLowerCase();
+      if (!createdBy) {
+        createdBy = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
+      }
 
       var sheetHdr = tlSh.getRange(1, 1, 1, tlSh.getLastColumn()).getValues()[0];
 

@@ -43,6 +43,63 @@
     .badge-dry     { background: #e67e22; color: #fff; }
     .badge-loading { background: #7f8c8d; color: #fff; }
 
+    /* ── Operator identity bar ── */
+    .operator-bar {
+      background: #eaf4fc;
+      border-bottom: 1px solid #b8dcf5;
+      padding: 7px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+      color: #1a4e8a;
+    }
+    .operator-bar .op-email { font-weight: bold; word-break: break-all; }
+    .operator-bar button {
+      background: transparent;
+      border: 1px solid #1a4e8a;
+      color: #1a4e8a;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    /* ── Identity prompt overlay ── */
+    .identity-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
+    }
+    .identity-card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 22px 20px;
+      max-width: 360px;
+      width: 100%;
+      box-shadow: 0 4px 18px rgba(0,0,0,.35);
+    }
+    .identity-card h3 { color: #1a4e8a; font-size: 17px; margin-bottom: 8px; }
+    .identity-card p  { color: #666; font-size: 13px; margin-bottom: 14px; line-height: 1.5; }
+    .identity-card input {
+      width: 100%;
+      padding: 11px 12px;
+      border: 2px solid #d5dde8;
+      border-radius: 8px;
+      font-size: 15px;
+      font-family: inherit;
+      margin-bottom: 8px;
+    }
+    .identity-card input:focus { outline: none; border-color: #1a4e8a; }
+
     /* ── Sections ── */
     .section {
       background: #fff;
@@ -296,6 +353,24 @@
   <div style="display:flex; align-items:center; gap:8px;">
     <div id="machine-badge" class="badge badge-loading" style="cursor:pointer; font-size:11px;" onclick="clearCurrentMachine()">🛠️ ยังไม่เลือกเครื่อง</div>
     <div id="sap-badge" class="badge badge-loading">⏳ โหลด...</div>
+  </div>
+</div>
+
+<!-- ════════════════════════════ OPERATOR IDENTITY ════════════════════════════ -->
+<div class="operator-bar hidden" id="operator-bar">
+  <span>👤 <span class="op-email" id="operator-email-display"></span></span>
+  <button type="button" onclick="changeOperatorEmail()">เปลี่ยนผู้ใช้</button>
+</div>
+
+<div class="identity-overlay hidden" id="identity-prompt-overlay">
+  <div class="identity-card">
+    <h3>👤 ชื่อ หรือ อีเมลของคุณ</h3>
+    <p>กรอกชื่อหรืออีเมลก่อนเริ่มใช้งานสแกนเนอร์ — ใช้บันทึกตัวตนผู้ปฏิบัติงานในทุกการสแกน (ไม่ต้องเป็นอีเมล Google ขององค์กร)</p>
+    <input type="email" id="identity-email-input" placeholder="เช่น สมชาย ใจดี หรือ somchai@email.com"
+           autocomplete="email" autocorrect="off" autocapitalize="off" spellcheck="false"
+           onkeydown="if(event.key==='Enter') saveOperatorEmail()">
+    <div id="identity-email-val" class="val-note hidden"></div>
+    <button type="button" class="btn btn-primary" onclick="saveOperatorEmail()">บันทึก</button>
   </div>
 </div>
 
@@ -735,9 +810,84 @@ var localCumEnabled      = false; // LOCAL_OP_CUMULATIVE_ENABLED, loaded via loa
 var maxRoundsPerOp       = 3;     // CFG.MAX_ROUNDS_PER_OP, loaded via loadSapStatus()
 
 // ============================================================
+// Operator identity — client-side, self-declared name or email (public
+// deployment has no reliable Session.getActiveUser().getEmail(); operators
+// self-declare once per device and it persists via localStorage). No server roster check.
+// ============================================================
+var OPERATOR_EMAIL_KEY = 'scannerOperatorEmail';
+
+/** Normalized (trim+lowercase) stored operator email, or '' if none set. */
+function getOperatorEmail() {
+  return (localStorage.getItem(OPERATOR_EMAIL_KEY) || '').trim().toLowerCase();
+}
+
+/** Freeform identifier check only — trimmed value must be at least 2 chars. No roster lookup. */
+function isValidEmailFormat(email) {
+  return String(email || '').trim().length >= 2;
+}
+
+/** Sets an input's value to the stored operator email, if the input exists. */
+function prefillIdentityField(id) {
+  var el = document.getElementById(id);
+  if (el) el.value = getOperatorEmail();
+}
+
+/** Prefill every identity-carrying field that persists across scans/panels. */
+function applyOperatorEmailToFields() {
+  prefillIdentityField('f-operator');
+  prefillIdentityField('qcm-qc-inspector');
+}
+
+function showOperatorBadge(email) {
+  document.getElementById('operator-email-display').textContent = email;
+  show('operator-bar');
+}
+
+function initOperatorIdentity() {
+  var email = getOperatorEmail();
+  if (email) {
+    showOperatorBadge(email);
+    hide('identity-prompt-overlay');
+    applyOperatorEmailToFields();
+  } else {
+    hide('operator-bar');
+    show('identity-prompt-overlay');
+  }
+}
+
+function saveOperatorEmail() {
+  var input  = document.getElementById('identity-email-input');
+  var noteEl = document.getElementById('identity-email-val');
+  var val    = input.value.trim().toLowerCase();
+
+  if (!isValidEmailFormat(val)) {
+    noteEl.textContent = 'กรุณากรอกชื่อ หรืออีเมลของคุณ (อย่างน้อย 2 ตัวอักษร)';
+    noteEl.classList.remove('hidden');
+    return;
+  }
+
+  localStorage.setItem(OPERATOR_EMAIL_KEY, val);
+  input.value = '';
+  noteEl.classList.add('hidden');
+  hide('identity-prompt-overlay');
+  showOperatorBadge(val);
+  applyOperatorEmailToFields();
+}
+
+/** Clears the stored identity and re-shows the entry prompt — no page reload needed. */
+function changeOperatorEmail() {
+  localStorage.removeItem(OPERATOR_EMAIL_KEY);
+  hide('operator-bar');
+  document.getElementById('identity-email-input').value = '';
+  document.getElementById('identity-email-val').classList.add('hidden');
+  show('identity-prompt-overlay');
+}
+
+// ============================================================
 // Init
 // ============================================================
 window.addEventListener('load', function () {
+  initOperatorIdentity();
   loadSapStatus();
   html5QrCode = new Html5Qrcode('qr-decode-region');
 
@@ -1988,7 +2138,7 @@ function doCountScan(palletId) {
     .withFailureHandler(function (err) {
       addCountToast('err', '❌ ' + (err.message || String(err)));
     })
-    .recordCountScan(palletId, countSloc, '');
+    .recordCountScan(palletId, countSloc, getOperatorEmail());
 }
 
 function addCountToast(type, text) {
@@ -2249,7 +2399,7 @@ function qcmRenderPdPanel() {
         '<div style="margin-top:10px;">' +
           '<div class="form-group" style="margin-bottom:8px;">' +
             '<label style="font-size:12px;">ผู้ตรวจสอบ PD *</label>' +
-            '<input type="text" id="qcm-pd-inspector-' + idx + '" placeholder="ชื่อผู้ตรวจสอบ PD" autocomplete="name" style="padding:8px 10px; font-size:14px;" oninput="clearValNote(\'qcm-pd-val-' + idx + '\')">' +
+            '<input type="text" id="qcm-pd-inspector-' + idx + '" placeholder="ชื่อผู้ตรวจสอบ PD" autocomplete="name" value="' + esc(getOperatorEmail()) + '" style="padding:8px 10px; font-size:14px;" oninput="clearValNote(\'qcm-pd-val-' + idx + '\')">' +
             '<div id="qcm-pd-val-' + idx + '" class="val-note hidden"></div>' +
           '</div>' +
           '<div style="display:flex; gap:8px; margin-bottom:8px;">' +
@@ -2376,7 +2526,7 @@ function qcmRenderQcPanel() {
   }
 
   qcmQcResult = null;
-  document.getElementById('qcm-qc-inspector').value = '';
+  prefillIdentityField('qcm-qc-inspector');
   document.getElementById('qcm-qc-note').value = '';
   hide('qcm-qc-note-group');
 
@@ -2638,7 +2788,7 @@ function submitScanTransfer() {
       clearMsg();
       showMsg('error', '❌ โอนย้ายไม่สำเร็จ: ' + (err.message || String(err)));
     })
-    .scanTransferConfirm(currentScanTransferInfo.palletId, destSloc);
+    .scanTransferConfirm(currentScanTransferInfo.palletId, destSloc, null, getOperatorEmail());
 }
 
 function onScanTransferResult(r) {
