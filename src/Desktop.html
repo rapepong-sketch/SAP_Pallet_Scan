@@ -1501,6 +1501,9 @@
     document.getElementById('qBtnFail').classList.toggle('active', result === 'FAIL');
     document.getElementById('qNoteLabel').textContent =
       result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุเพิ่มเติม (ถ้ามี)';
+
+    var res = document.getElementById('qResult');
+    res.style.display = 'none'; res.textContent = ''; res.className = '';
   }
 
   function showQcRecordMsg_(type, msg) {
@@ -1514,6 +1517,9 @@
     if (_savingQcRecord) return;
     if (!_qcRecordRow) return;
     if (!_qcResult) { showQcRecordMsg_('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
+
+    var res = document.getElementById('qResult');
+    res.style.display = 'none'; res.textContent = ''; res.className = '';
 
     var iVal = document.getElementById('qInspectorVal');
     iVal.style.display = 'none'; iVal.textContent = '';
