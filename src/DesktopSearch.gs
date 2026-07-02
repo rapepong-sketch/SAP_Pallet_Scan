@@ -21,6 +21,34 @@
  */
 
 // ============================================================================
+// Shared helper — MaterialMaster ProductGroup join
+// ============================================================================
+
+/**
+ * Build a Material → ProductGroup lookup map from the MaterialMaster sheet,
+ * by header name (never by index). Shared by searchPallets() and getQcWorklist_()
+ * so the join logic lives in exactly one place.
+ * @return {Object.<string,string>} materialCode → productGroup ('' when no MaterialMaster row)
+ * @private
+ */
+function _buildProductGroupMap_() {
+  var pgMap = {};
+  var pgSh  = getSpreadsheet_().getSheetByName('MaterialMaster');
+  if (pgSh && pgSh.getLastRow() > 1) {
+    var pgData = pgSh.getDataRange().getValues();
+    var pgHdr  = pgData[0];
+    var pgIdx  = {};
+    pgHdr.forEach(function(h, i) { pgIdx[h] = i; });
+    for (var pr = 1; pr < pgData.length; pr++) {
+      var pgMat = String(pgData[pr][pgIdx['Material']] || '').trim();
+      if (!pgMat) continue;
+      pgMap[pgMat] = String(pgData[pr][pgIdx['ProductGroup']] || '').trim();
+    }
+  }
+  return pgMap;
+}
+
+// ============================================================================
 // searchPallets — READ-ONLY, admin-gated, called via google.script.run
 // ============================================================================
 
@@ -71,20 +99,7 @@ function searchPallets(params) {
     ];
 
     // ProductGroup lookup map: materialCode → productGroup string.
-    // Built from MaterialMaster sheet by header name (never by index).
-    var pgMap = {};
-    var pgSh  = getSpreadsheet_().getSheetByName('MaterialMaster');
-    if (pgSh && pgSh.getLastRow() > 1) {
-      var pgData = pgSh.getDataRange().getValues();
-      var pgHdr  = pgData[0];
-      var pgIdx  = {};
-      pgHdr.forEach(function(h, i) { pgIdx[h] = i; });
-      for (var pr = 1; pr < pgData.length; pr++) {
-        var pgMat = String(pgData[pr][pgIdx['Material']] || '').trim();
-        if (!pgMat) continue;
-        pgMap[pgMat] = String(pgData[pr][pgIdx['ProductGroup']] || '').trim();
-      }
-    }
+    var pgMap = _buildProductGroupMap_();
 
     for (var r = 1; r < data.length; r++) {
       var row = data[r];
