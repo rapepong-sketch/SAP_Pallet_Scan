@@ -184,6 +184,21 @@
       font-size: 13px; font-family: inherit; width: 100%;
     }
     .modal-bucket-hint { grid-column: 1 / -1; font-size: 12px; color: #546e7a; }
+
+    /* ---- Optional PD entry section (confirm modal) ---- */
+    #mPdSection { margin: 4px 0 16px; padding-top: 12px; border-top: 1px solid #eceff1; }
+    #mPdSection .section-title { margin: 0 0 8px; }
+    .pd-toggle-row { display: flex; gap: 10px; margin-bottom: 10px; }
+    .btn-pd-toggle {
+      flex: 1; padding: 8px 16px; border: none; border-radius: 4px;
+      font-size: 13px; font-family: inherit; font-weight: 600;
+      cursor: pointer; color: #fff; opacity: .45;
+    }
+    .btn-pd-toggle.active { opacity: 1; }
+    .btn-pd-pass { background: #2e7d32; }
+    .btn-pd-fail { background: #c62828; }
+    .pd-val-note { grid-column: 1 / -1; font-size: 12px; color: #b71c1c; }
+
     .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
     .modal-actions button {
       padding: 8px 22px; border: none; border-radius: 4px;
@@ -349,6 +364,24 @@
       <div id="mRoundProgress" style="display:none; font-size:12px; color:#1565c0; margin-top:4px;"></div>
       <div id="mBucketHint" class="modal-bucket-hint"></div>
     </div>
+
+    <div id="mPdSection">
+      <div class="section-title">ผลตรวจ PD (สุ่มตรวจ — ไม่บังคับ)</div>
+      <div class="pd-toggle-row">
+        <button type="button" id="mPdBtnPass" class="btn-pd-toggle btn-pd-pass">✅ PASS</button>
+        <button type="button" id="mPdBtnFail" class="btn-pd-toggle btn-pd-fail">❌ FAIL</button>
+      </div>
+      <div id="mPdDetails" style="display:none">
+        <div class="modal-form" style="margin-bottom:0">
+          <label>ผู้ตรวจสอบ PD *</label>
+          <input type="text" id="mPdInspector" placeholder="ชื่อผู้ตรวจสอบ PD">
+          <div id="mPdInspectorVal" class="pd-val-note" style="display:none"></div>
+          <label id="mPdNoteLabel">หมายเหตุ</label>
+          <input type="text" id="mPdNote" placeholder="ระบุหมายเหตุ">
+        </div>
+      </div>
+    </div>
+
     <div class="modal-actions">
       <button id="mBtnCancel" type="button">ยกเลิก</button>
       <button id="mBtnSubmit" type="button">ยืนยัน</button>
@@ -748,8 +781,36 @@
   // ── Confirm production modal (Phase 6.2) ───────────────────────────────────
   var _confirmCtx = {};
 
+  // ── Optional PD entry (mirrors Scanner.html qcmSubmitPdInspection validation) ──
+  var selectedPdResult = null; // null | 'PASS' | 'FAIL'
+
+  function resetPdFields_() {
+    selectedPdResult = null;
+    document.getElementById('mPdBtnPass').classList.remove('active');
+    document.getElementById('mPdBtnFail').classList.remove('active');
+    document.getElementById('mPdDetails').style.display = 'none';
+    document.getElementById('mPdInspector').value = '';
+    document.getElementById('mPdNote').value = '';
+    document.getElementById('mPdNoteLabel').textContent = 'หมายเหตุ';
+    var val = document.getElementById('mPdInspectorVal');
+    val.style.display = 'none';
+    val.textContent = '';
+  }
+
+  function setPdResult_(result) {
+    selectedPdResult = result;
+    document.getElementById('mPdBtnPass').classList.toggle('active', result === 'PASS');
+    document.getElementById('mPdBtnFail').classList.toggle('active', result === 'FAIL');
+    document.getElementById('mPdDetails').style.display = '';
+    document.getElementById('mPdNoteLabel').textContent = result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุ (ถ้ามี)';
+  }
+
+  document.getElementById('mPdBtnPass').addEventListener('click', function () { setPdResult_('PASS'); });
+  document.getElementById('mPdBtnFail').addEventListener('click', function () { setPdResult_('FAIL'); });
+
   function openConfirmModal(pallet, op) {
     _confirmCtx = { pallet: pallet, op: op, logs: _detailLogs };
+    resetPdFields_();
     document.getElementById('mPalletId').textContent = pallet.PalletID;
     document.getElementById('mMO').textContent       = pallet.ManufacturingOrder;
     document.getElementById('mMaterial').textContent = pallet.Material + (pallet.MaterialName ? ' — ' + pallet.MaterialName : '');
@@ -818,6 +879,7 @@
   function closeConfirmModal() {
     document.getElementById('confirmModal').style.display = 'none';
     _confirmCtx = {};
+    resetPdFields_();
   }
 
   function recalcBucketHint_() {
@@ -931,6 +993,25 @@
       return;
     }
 
+    // PD entry is optional — validate only when the operator picked a result.
+    // Mirrors Scanner.html's qcmSubmitPdInspection validation exactly.
+    var pdInspectorVal = document.getElementById('mPdInspectorVal');
+    pdInspectorVal.style.display = 'none';
+    pdInspectorVal.textContent   = '';
+    var pdInspectorValue = document.getElementById('mPdInspector').value.trim();
+    var pdNoteValue      = document.getElementById('mPdNote').value.trim();
+    if (selectedPdResult) {
+      if (!pdInspectorValue) {
+        pdInspectorVal.textContent   = 'กรุณากรอกชื่อผู้ตรวจสอบ PD';
+        pdInspectorVal.style.display = '';
+        return;
+      }
+      if (selectedPdResult === 'FAIL' && !pdNoteValue) {
+        showModalMsg('error', 'กรุณาระบุสาเหตุที่ไม่ผ่าน');
+        return;
+      }
+    }
+
     var sub = document.getElementById('mBtnSubmit');
     sub.disabled    = true;
     sub.textContent = '⏳ กำลังบันทึก...';
@@ -945,6 +1026,28 @@
           return;
         }
         showModalMsg('success', '✅ ' + (res.message || 'บันทึกสำเร็จ'));
+
+        if (selectedPdResult) {
+          google.script.run
+            .withSuccessHandler(function (pdRes) {
+              if (!pdRes.success) {
+                showModalMsg('error', '✅ บันทึกยอดผลิตสำเร็จ แต่ PD ไม่สำเร็จ: ' + pdRes.message +
+                  ' — กรุณากรอก PD ใหม่ผ่านมือถือ');
+              }
+            })
+            .withFailureHandler(function (err) {
+              showModalMsg('error', '✅ บันทึกยอดผลิตสำเร็จ แต่ PD ไม่สำเร็จ: ' + err.message +
+                ' — กรุณากรอก PD ใหม่ผ่านมือถือ');
+            })
+            .savePdInspection({
+              palletId:    pallet.PalletID,
+              operationNo: op.opNo,
+              result:      selectedPdResult,
+              inspector:   pdInspectorValue,
+              note:        pdNoteValue
+            });
+        }
+
         setTimeout(function () {
           closeConfirmModal();
           loadDetail(pallet.PalletID);
