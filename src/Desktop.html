@@ -223,6 +223,28 @@
 
 <h1>ติดตามพาเลท — Desktop</h1>
 
+<!-- QC Worklist (Phase 6.6) — READ-ONLY, view-only, no write actions.
+     StorageLocation/ProductGroup/Material dropdowns reuse getCascadeData()
+     (same cascade helper AdminPrint.html uses), not a new lookup. -->
+<div id="qcWorklistSection" style="background:#fff;padding:12px 16px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.12);margin-bottom:14px">
+  <h2 style="font-size:16px;margin:0 0 10px;color:#1a237e">รายการรอตรวจสอบ QC</h2>
+  <div class="search-bar" style="margin-bottom:0">
+    <label>คลัง: *</label>
+    <select id="qwSloc">
+      <option value="">-- เลือกคลัง --</option>
+    </select>
+    <label>กลุ่มสินค้า:</label>
+    <select id="qwGroup" disabled>
+      <option value="">ทั้งหมด</option>
+    </select>
+    <label>วัสดุ:</label>
+    <select id="qwMaterial" disabled>
+      <option value="">ทั้งหมด</option>
+    </select>
+  </div>
+  <div id="qcWorklistArea" style="margin-top:10px"></div>
+</div>
+
 <!-- Search Bar -->
 <div class="search-bar">
   <label>ค้นด้วย:</label>
@@ -1098,6 +1120,140 @@
   document.getElementById('searchValue').addEventListener('keypress', function (e) {
     if (e.key === 'Enter') window.doSearch();
   });
+
+  // ── QC Worklist (Phase 6.6) — READ-ONLY, view-only ──────────────────────────
+  // StorageLocation/ProductGroup/Material dropdowns reuse getCascadeData(),
+  // the same cascade helper AdminPrint.html's 3-level dropdown already uses.
+  var qwCascadeData = null;
+
+  google.script.run
+    .withSuccessHandler(function (data) {
+      qwCascadeData = data;
+      var slocEl = document.getElementById('qwSloc');
+      (data.storageLocations || []).forEach(function (loc) {
+        var o = document.createElement('option');
+        o.value = loc;
+        o.textContent = loc;
+        slocEl.appendChild(o);
+      });
+    })
+    .withFailureHandler(function () { /* dropdown stays with default option only */ })
+    .getCascadeData();
+
+  document.getElementById('qwSloc').addEventListener('change', function () {
+    var loc      = this.value;
+    var groupEl  = document.getElementById('qwGroup');
+    var matEl    = document.getElementById('qwMaterial');
+
+    groupEl.innerHTML = '<option value="">ทั้งหมด</option>';
+    matEl.innerHTML   = '<option value="">ทั้งหมด</option>';
+    matEl.disabled     = true;
+
+    if (loc && qwCascadeData && qwCascadeData.byLocation[loc]) {
+      qwCascadeData.byLocation[loc].productGroups.forEach(function (g) {
+        var o = document.createElement('option');
+        o.value = g;
+        o.textContent = g;
+        groupEl.appendChild(o);
+      });
+      groupEl.disabled = false;
+    } else {
+      groupEl.disabled = true;
+    }
+
+    doQcWorklistSearch_();
+  });
+
+  document.getElementById('qwGroup').addEventListener('change', function () {
+    var loc   = document.getElementById('qwSloc').value;
+    var grp   = this.value;
+    var matEl = document.getElementById('qwMaterial');
+
+    matEl.innerHTML = '<option value="">ทั้งหมด</option>';
+
+    if (loc && grp && qwCascadeData && qwCascadeData.byLocation[loc] &&
+        qwCascadeData.byLocation[loc].byGroup[grp]) {
+      qwCascadeData.byLocation[loc].byGroup[grp].forEach(function (m) {
+        var o = document.createElement('option');
+        o.value = m.code;
+        o.textContent = m.code + ' — ' + (m.name || '');
+        matEl.appendChild(o);
+      });
+      matEl.disabled = false;
+    } else {
+      matEl.disabled = true;
+    }
+
+    doQcWorklistSearch_();
+  });
+
+  document.getElementById('qwMaterial').addEventListener('change', doQcWorklistSearch_);
+
+  function doQcWorklistSearch_() {
+    var loc  = document.getElementById('qwSloc').value;
+    var grp  = document.getElementById('qwGroup').value;
+    var mat  = document.getElementById('qwMaterial').value;
+    var area = document.getElementById('qcWorklistArea');
+
+    if (!loc) {
+      area.innerHTML = '';
+      return;
+    }
+
+    area.innerHTML = '<div class="loading">กำลังโหลด...</div>';
+
+    google.script.run
+      .withSuccessHandler(renderQcWorklist_)
+      .withFailureHandler(function (err) {
+        area.innerHTML = '<div class="notice-error">เกิดข้อผิดพลาด (getQcWorklist): ' + esc(String(err)) + '</div>';
+      })
+      .getQcWorklist(loc, grp, mat);
+  }
+
+  function renderQcWorklist_(result) {
+    var area = document.getElementById('qcWorklistArea');
+
+    if (!result || !result.ok) {
+      var msg = (result && result.error === 'NOT_ADMIN')
+        ? 'ไม่มีสิทธิ์เข้าใช้งาน (admin เท่านั้น)'
+        : 'เกิดข้อผิดพลาด: ' + esc((result && result.error) || 'unknown');
+      area.innerHTML = '<div class="notice-error">' + msg + '</div>';
+      return;
+    }
+
+    var rows = result.rows || [];
+    if (rows.length === 0) {
+      area.innerHTML = '<div class="loading" style="color:#90a4ae">ไม่มีพาเลทรอตรวจสอบ QC ในคลังที่เลือก</div>';
+      return;
+    }
+
+    var html = '<div class="tbl-wrap"><table class="results"><thead><tr>' +
+      '<th>รหัสพาเลท</th><th>วัสดุ</th><th>ชื่อวัสดุ</th><th>Batch</th>' +
+      '<th>กลุ่มสินค้า</th><th>ศูนย์งาน</th><th>จำนวน/พาเลท</th><th>วันที่ผลิต</th>' +
+      '</tr></thead><tbody>';
+
+    var lastGroup = null;
+    rows.forEach(function (row) {
+      if (row.ProductGroup !== lastGroup) {
+        lastGroup = row.ProductGroup;
+        html += '<tr><td colspan="8" style="background:#eceff1;font-weight:700;padding:6px 10px">' +
+          esc(lastGroup || '(ไม่ระบุกลุ่ม)') + '</td></tr>';
+      }
+      html += '<tr>' +
+        '<td><strong>' + esc(row.PalletID) + '</strong></td>' +
+        '<td>' + esc(row.Material) + '</td>' +
+        '<td>' + esc(row.MaterialName) + '</td>' +
+        '<td>' + esc(row.Batch) + '</td>' +
+        '<td>' + esc(row.ProductGroup) + '</td>' +
+        '<td>' + esc(row.WorkCenter) + '</td>' +
+        '<td style="text-align:right">' + (row.QtyPerPallet || '') + '</td>' +
+        '<td>' + esc(row.ProductionDate) + '</td>' +
+        '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    area.innerHTML = html;
+  }
 
 }());
 </script>
