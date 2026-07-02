@@ -29,10 +29,10 @@
 // ============================================================================
 
 var TEST_CONFIG = {
-  ORDER_ID:        'REPLACE_ME',  // 12-digit test MO, e.g. '0000012345'
-  ORDER_OPERATION: 'REPLACE_ME',  // 4-digit op, e.g. '0010'
-  ROUND1_QTY:      0,             // e.g. 4
-  ROUND2_QTY:      0,             // e.g. 6 (remainder — round1+round2 should equal test total)
+  ORDER_ID:        '1000036971',   // 12-digit test MO, e.g. '0000012345'
+  ORDER_OPERATION: '0010',         // 4-digit op, e.g. '0010'
+  ROUND1_QTY:      4,              // e.g. 4
+  ROUND2_QTY:      6,              // e.g. 6 (remainder — round1+round2 should equal test total)
   UNIT:            'PC',
   PALLET_ID:       'TESTPARTIAL'  // ConfirmationText token prefix
 };
@@ -89,6 +89,17 @@ function _gate0BuildPayload_(round) {
   var isFinal = (round === 2);
   var qty = (round === 1) ? c.ROUND1_QTY : c.ROUND2_QTY;
 
+  // OData V2 date literal for today at Bangkok midnight — same inline pattern
+  // used for POST payloads in Transfer311.gs (no shared formatSapDate_ helper
+  // exists in the codebase; Confirmation.gs's buildConfirmationPayload_ omits
+  // PostingDate and lets SAP default it, but this probe sets it explicitly).
+  var now = new Date();
+  var bangkokMs = now.getTime() +
+    (now.getTimezoneOffset() * 60000) + (7 * 3600000);
+  var bangkokMidnight = new Date(bangkokMs);
+  bangkokMidnight.setHours(0, 0, 0, 0);
+  var odataDate = '/Date(' + bangkokMidnight.getTime() + ')/';
+
   var payload = {
     OrderID:                   orderId,
     OrderOperation:            op,
@@ -97,6 +108,7 @@ function _gate0BuildPayload_(round) {
     ConfirmationScrapQuantity: '0',
     ConfirmationUnit:          c.UNIT || 'PC',
     Plant:                     CFG.PLANT,
+    PostingDate:               odataDate,
     IsFinalConfirmation:       isFinal,
     ConfirmationText:          buildPartialConfirmationText_(c.PALLET_ID, round)
   };
