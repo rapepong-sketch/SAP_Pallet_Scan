@@ -45,8 +45,10 @@ function doGet(e) {
 
   // --- Central Hub landing page (no auth gate — links only; each destination keeps its own gate) ---
   if (app === 'hub') {
-    return HtmlService.createHtmlOutputFromFile('Hub')
-      .setTitle('PJ Chonburi — Central Hub')
+    var tpl = HtmlService.createTemplateFromFile('Hub');
+    tpl.baseUrl = ScriptApp.getService().getUrl();
+    return tpl.evaluate()
+      .setTitle('PJ Chonburi – Central Hub')
       .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }

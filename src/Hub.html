@@ -8,19 +8,22 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Sarabun','Segoe UI',Arial,sans-serif;background:#f0f2f5;color:#1a1a2e;padding:20px 24px;font-size:16px}
 
-.hdr{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px}
-.hdr h1{font-size:1.4em;font-weight:700}
+.hdr{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:24px}
+.hdr h1{font-size:1.6em;font-weight:700}
 .hdr .email{color:#666;font-size:0.85em;margin-left:auto}
 
-.sec{background:#fff;border-radius:8px;border:1px solid #dee2e6;padding:18px 22px;margin-bottom:16px}
-.sec h3{font-size:1.1em;margin-bottom:12px}
+.sec{background:#fff;border-radius:10px;border:1px solid #dee2e6;padding:22px 24px;margin-bottom:24px}
+.sec h3{font-size:1.25em;font-weight:700;margin-bottom:16px;color:#1a1a2e}
 
-.link-list{display:flex;flex-direction:column;gap:8px}
-.link-item{display:block;padding:10px 16px;border-radius:6px;background:#e8f0fe;color:#1a1a2e;text-decoration:none;font-size:0.95em;font-weight:600;transition:background .15s}
-.link-item:hover{background:#d3e3fd}
+.link-list{display:flex;flex-direction:column;gap:10px}
+.link-item{display:flex;align-items:center;min-height:56px;padding:14px 20px;border-radius:8px;background:#e8f0fe;color:#1a1a2e;text-decoration:none;font-size:1.1em;font-weight:600;transition:background .15s,box-shadow .15s,transform .15s}
+.link-item:hover{background:#d3e3fd;box-shadow:0 2px 8px rgba(0,0,0,0.1);transform:translateY(-1px)}
+.link-item:active{transform:translateY(0);box-shadow:none}
+.link-icon{margin-right:12px;font-size:1.15em}
 
-.link-item.soon{background:#f0f2f5;color:#888;cursor:default;pointer-events:none}
-.soon-tag{font-size:.78em;font-weight:600;color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:3px;padding:1px 8px;margin-left:8px}
+.link-item.soon{background:#f0f2f5;color:#999;cursor:default;opacity:0.7}
+.link-item.soon:hover{background:#f0f2f5;box-shadow:none;transform:none}
+.soon-tag{font-size:.78em;font-weight:600;color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:3px;padding:1px 8px;margin-left:auto}
 </style>
 </head>
 <body>
@@ -33,30 +36,30 @@ body{font-family:'Sarabun','Segoe UI',Arial,sans-serif;background:#f0f2f5;color:
 <div class="sec">
   <h3>ปฏิบัติการ</h3>
   <div class="link-list">
-    <a class="link-item" href="?app=scan">สแกนพาเลท</a>
+    <a class="link-item" href="<?= baseUrl ?>?app=scan" target="_top"><span class="link-icon">📷</span>สแกนพาเลท</a>
   </div>
 </div>
 
 <div class="sec">
   <h3>ค้นหา / ยืนยันผลิต / QC</h3>
   <div class="link-list">
-    <a class="link-item" href="?app=desktop">เปิด Desktop</a>
+    <a class="link-item" href="<?= baseUrl ?>?app=desktop" target="_top"><span class="link-icon">🖥️</span>เปิด Desktop</a>
   </div>
 </div>
 
 <div class="sec">
   <h3>Admin</h3>
   <div class="link-list">
-    <a class="link-item" href="?app=print">พิมพ์ป้ายพาเลท</a>
-    <a class="link-item" href="?app=confirm">ยืนยันผลิต (Override)</a>
-    <a class="link-item" href="?app=slip">FIFO Transfer Slip</a>
+    <a class="link-item" href="<?= baseUrl ?>?app=print" target="_top"><span class="link-icon">🖨️</span>พิมพ์ป้ายพาเลท</a>
+    <a class="link-item" href="<?= baseUrl ?>?app=confirm" target="_top"><span class="link-icon">✅</span>ยืนยันผลิต (Override)</a>
+    <a class="link-item" href="<?= baseUrl ?>?app=slip" target="_top"><span class="link-icon">📋</span>FIFO Transfer Slip</a>
   </div>
 </div>
 
 <div class="sec">
   <h3>Dashboard</h3>
   <div class="link-list">
-    <span class="link-item soon">Dashboard<span class="soon-tag">เร็วๆ นี้</span></span>
+    <span class="link-item soon">📊 Dashboard<span class="soon-tag">เร็วๆ นี้</span></span>
   </div>
 </div>
 
