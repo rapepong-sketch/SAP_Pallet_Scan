@@ -1,18 +1,21 @@
 /**
- * DesktopSearch.gs — Phase 6.1 / 6.2c: Desktop Companion WebApp Search Backend
+ * DesktopSearch.gs — Phase 6.1 / 6.2c / 6.6: Desktop Companion WebApp Search Backend
  * ==============================================================================
  * Phase 6.1  — READ-ONLY pallet search for Desktop Companion WebApp.
  * Phase 6.2c — getMachinesForStepWorkCenter: department-based machine dropdown for Desktop confirm modal.
+ * Phase 6.6  — getQcWorklist: READ-ONLY QC worklist (pallets ready for inspection) by StorageLocation.
  * ZERO SAP writes. No feature flag.
  *
  * Public API (called via google.script.run from Desktop.html):
  *   searchPallets({mode, value})                — admin-gated full-text search on PalletMaster.
  *   getMachinesForStepWorkCenter(workCenter)     — admin-gated dept-based machine list for confirm modal.
  *   getMachinesForWorkCenter(workCenter)         — backward-compat wrapper → getMachinesForStepWorkCenter.
+ *   getQcWorklist(storageLocation, productGroup, material) — admin-gated wrapper → getQcWorklist_.
  *
  * Test suite:
  *   TEST_searchPallets_runAll()                  — self-cleaning hermetic 9-test runner.
  *   TEST_getMachinesForStepWorkCenter()          — read-only assertions against live MachineMaster.
+ *   TEST_getQcWorklist_()                        — self-cleaning hermetic test, returns true/false.
  *
  * Reuses: PM_SHEET, PM_HEADERS (PalletGen.gs), isAdminUser_() (WebApp.gs),
  *   getSpreadsheet_() (SheetSetup.gs), logEvent / logError (SapClient.gs),
@@ -740,4 +743,355 @@ function TEST_getMachinesForStepWorkCenter() {
     Logger.log((results[si].ok ? '  PASS' : '  FAIL') + ' — ' + results[si].name +
       (results[si].detail ? ' (' + results[si].detail + ')' : ''));
   }
+}
+
+// ============================================================================
+// getQcWorklist — READ-ONLY, admin-gated (Phase 6.6)
+// ============================================================================
+
+/**
+ * List PalletMaster rows ready for QC inspection (ScanStatus === 'PD_COMPLETE')
+ * in a given StorageLocation, optionally narrowed by ProductGroup and/or Material.
+ * READ-ONLY — no sheet writes. Internal — not admin-gated itself (see getQcWorklist()
+ * public wrapper); callable directly by tests.
+ *
+ * @param {string} storageLocation — required; exact match. Empty → no rows.
+ * @param {string} [productGroup]  — optional; exact match, joined via MaterialMaster.
+ * @param {string} [material]      — optional; exact match against Material.
+ * @return {Array<{PalletID:string, Material:string, MaterialName:string, Batch:string,
+ *   ProductGroup:string, WorkCenter:string, QtyPerPallet:number, ProductionDate:string,
+ *   StorageLocation:string}>} sorted by ProductGroup asc, then PalletID asc.
+ */
+function getQcWorklist_(storageLocation, productGroup, material) {
+  storageLocation = String(storageLocation || '').trim();
+  productGroup    = String(productGroup    || '').trim();
+  material        = String(material        || '').trim();
+
+  if (!storageLocation) return [];
+
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[h] = i; });
+
+  var pgMap = _buildProductGroupMap_();
+
+  var OUTPUT_FIELDS = [
+    'PalletID', 'Material', 'MaterialName', 'Batch', 'ProductGroup',
+    'WorkCenter', 'QtyPerPallet', 'ProductionDate', 'StorageLocation'
+  ];
+
+  var rows = [];
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r];
+
+    var sloc       = String(row[idx['StorageLocation']] || '').trim();
+    var scanStatus = String(row[idx['ScanStatus']]       || '').trim();
+    var mat        = String(row[idx['Material']]         || '').trim();
+
+    if (sloc !== storageLocation) continue;
+    if (scanStatus !== 'PD_COMPLETE') continue;
+
+    var pg = pgMap[mat] || '';
+    if (productGroup && pg !== productGroup) continue;
+    if (material && mat !== material) continue;
+
+    var obj = {};
+    OUTPUT_FIELDS.forEach(function(f) {
+      if (f === 'ProductGroup')    { obj[f] = pg;   return; }
+      if (f === 'Material')        { obj[f] = mat;  return; }
+      if (f === 'StorageLocation') { obj[f] = sloc; return; }
+
+      var raw = idx[f] !== undefined ? row[idx[f]] : '';
+
+      if (f === 'ProductionDate') {
+        // SERIALIZATION GUARD: never return a raw Date object
+        obj[f] = (raw instanceof Date)
+          ? Utilities.formatDate(raw, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+          : String(raw || '');
+
+      } else if (f === 'Batch') {
+        // SERIALIZATION GUARD: preserve leading zeros
+        obj[f] = String(raw || '');
+
+      } else if (f === 'WorkCenter') {
+        // Sheets auto-parses "0408-02" style WC codes as Date objects
+        obj[f] = (raw instanceof Date)
+          ? dateToWorkCenter_(raw)
+          : String(raw || '').trim();
+
+      } else if (f === 'QtyPerPallet') {
+        obj[f] = Number(raw) || 0;
+
+      } else {
+        obj[f] = String(raw || '');
+      }
+    });
+
+    rows.push(obj);
+  }
+
+  rows.sort(function(a, b) {
+    if (a.ProductGroup !== b.ProductGroup) return a.ProductGroup < b.ProductGroup ? -1 : 1;
+    if (a.PalletID     !== b.PalletID)     return a.PalletID     < b.PalletID     ? -1 : 1;
+    return 0;
+  });
+
+  // SERIALIZATION GUARD: JSON round-trip strips any residual non-serializable values
+  return JSON.parse(JSON.stringify(rows));
+}
+
+/**
+ * Public google.script.run wrapper for getQcWorklist_ — admin-gated (same guard
+ * as searchPallets / getMachinesForStepWorkCenter).
+ *
+ * @param {string} storageLocation
+ * @param {string} [productGroup]
+ * @param {string} [material]
+ * @return {{ ok:boolean, rows:Array, error?:string }}
+ */
+function getQcWorklist(storageLocation, productGroup, material) {
+  if (!isAdminUser_()) return { ok: false, error: 'NOT_ADMIN', rows: [] };
+  try {
+    var rows = getQcWorklist_(storageLocation, productGroup, material);
+    logEvent('QC_WORKLIST', 'PalletMaster', 'OK', 0,
+      'sloc=' + storageLocation + ' pg=' + (productGroup || '') +
+      ' mat=' + (material || '') + ' rows=' + rows.length);
+    return { ok: true, rows: rows };
+  } catch (e) {
+    logError('getQcWorklist', 'PalletMaster', e.message,
+      JSON.stringify({ storageLocation: storageLocation, productGroup: productGroup, material: material }));
+    return { ok: false, error: e.message, rows: [] };
+  }
+}
+
+// ============================================================================
+// TEST — getQcWorklist_ (Phase 6.6) — self-cleaning, hermetic, returns boolean
+// ============================================================================
+
+var QW_SLOC       = 'ZZTEST-QCWL-SLOC';
+var QW_SLOC_OTHER = 'ZZTEST-QCWL-SLOC-OTHER';
+var QW_PG_A       = 'ZZTEST-QCWL-GRP-A';
+var QW_PG_B       = 'ZZTEST-QCWL-GRP-B';
+var QW_MAT_A      = 'ZZTEST-QCWL-MAT-A';
+var QW_MAT_B      = 'ZZTEST-QCWL-MAT-B';
+var QW_BATCH      = '0000512345';
+
+var QW_PID_A0 = 'PL-TEST-QCWL-A0'; // PD_COMPLETE, target SLOC, MAT_A/GRP_A
+var QW_PID_A1 = 'PL-TEST-QCWL-A1'; // PD_COMPLETE, target SLOC, MAT_A/GRP_A (Date ProductionDate)
+var QW_PID_B1 = 'PL-TEST-QCWL-B1'; // PD_COMPLETE, target SLOC, MAT_B/GRP_B
+var QW_PID_C1 = 'PL-TEST-QCWL-C1'; // QC_COMPLETE, target SLOC — already inspected, must NOT appear
+var QW_PID_D1 = 'PL-TEST-QCWL-D1'; // SCANNED, target SLOC — not yet all-ops-done, must NOT appear
+var QW_PID_E1 = 'PL-TEST-QCWL-E1'; // PD_COMPLETE, OTHER SLOC — wrong location, must NOT appear
+
+/**
+ * Seed 6 PalletMaster fixture rows + 2 MaterialMaster fixture rows for getQcWorklist_ tests.
+ * @private
+ */
+function _seedQcWorklistFixtures_() {
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh) throw new Error('_seedQcWorklistFixtures_: PalletMaster sheet missing');
+
+  var batchColIdx = PM_HEADERS.indexOf('Batch');
+
+  var fixtures = [
+    { PalletID: QW_PID_A0, Material: QW_MAT_A, MaterialName: 'QCWL Test A',
+      QtyPerPallet: 10, Unit: 'PC', WorkCenter: 'WC-TEST', ProductionDate: '',
+      StorageLocation: QW_SLOC, Status: 'PRINTED', ScanStatus: 'PD_COMPLETE', QCStatus: '' },
+    { PalletID: QW_PID_A1, Material: QW_MAT_A, MaterialName: 'QCWL Test A',
+      QtyPerPallet: 20, Unit: 'PC', WorkCenter: 'WC-TEST', ProductionDate: new Date(2026, 5, 20),
+      StorageLocation: QW_SLOC, Status: 'PRINTED', ScanStatus: 'PD_COMPLETE', QCStatus: '' },
+    { PalletID: QW_PID_B1, Material: QW_MAT_B, MaterialName: 'QCWL Test B',
+      QtyPerPallet: 30, Unit: 'PC', WorkCenter: 'WC-TEST', ProductionDate: '',
+      StorageLocation: QW_SLOC, Status: 'PRINTED', ScanStatus: 'PD_COMPLETE', QCStatus: '' },
+    { PalletID: QW_PID_C1, Material: QW_MAT_A, MaterialName: 'QCWL Test A',
+      QtyPerPallet: 40, Unit: 'PC', WorkCenter: 'WC-TEST', ProductionDate: '',
+      StorageLocation: QW_SLOC, Status: 'PRINTED', ScanStatus: 'QC_COMPLETE', QCStatus: 'INSPECTED' },
+    { PalletID: QW_PID_D1, Material: QW_MAT_A, MaterialName: 'QCWL Test A',
+      QtyPerPallet: 50, Unit: 'PC', WorkCenter: 'WC-TEST', ProductionDate: '',
+      StorageLocation: QW_SLOC, Status: 'PRINTED', ScanStatus: 'SCANNED', QCStatus: '' },
+    { PalletID: QW_PID_E1, Material: QW_MAT_A, MaterialName: 'QCWL Test A',
+      QtyPerPallet: 60, Unit: 'PC', WorkCenter: 'WC-TEST', ProductionDate: '',
+      StorageLocation: QW_SLOC_OTHER, Status: 'PRINTED', ScanStatus: 'PD_COMPLETE', QCStatus: '' }
+  ];
+
+  fixtures.forEach(function(f) {
+    var row = PM_HEADERS.map(function(h) {
+      return f.hasOwnProperty(h) ? f[h] : '';
+    });
+    sh.appendRow(row);
+    var newRow = sh.getLastRow();
+    // Format-then-value: setNumberFormat BEFORE setValue preserves leading zeros
+    if (batchColIdx >= 0) {
+      sh.getRange(newRow, batchColIdx + 1)
+        .setNumberFormat('@')
+        .setValue(String(QW_BATCH));
+    }
+  });
+
+  var mmSh = getSpreadsheet_().getSheetByName('MaterialMaster');
+  if (!mmSh) throw new Error('_seedQcWorklistFixtures_: MaterialMaster sheet missing');
+  [[QW_MAT_A, QW_PG_A], [QW_MAT_B, QW_PG_B]].forEach(function(pair) {
+    var row = MM_HEADERS.map(function(h) {
+      if (h === 'Material')     return pair[0];
+      if (h === 'ProductGroup') return pair[1];
+      return '';
+    });
+    mmSh.appendRow(row);
+  });
+
+  SpreadsheetApp.flush();
+}
+
+/**
+ * Delete all PalletMaster rows whose PalletID starts with 'PL-TEST-QCWL-',
+ * and the QW_MAT_A / QW_MAT_B rows from MaterialMaster. Scans bottom-up.
+ * @private
+ */
+function _cleanQcWorklistFixtures_() {
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (sh && sh.getLastRow() >= 2) {
+    var data   = sh.getDataRange().getValues();
+    var pidCol = data[0].indexOf('PalletID');
+    if (pidCol >= 0) {
+      for (var r = data.length - 1; r >= 1; r--) {
+        if (String(data[r][pidCol] || '').indexOf('PL-TEST-QCWL-') === 0) {
+          sh.deleteRow(r + 1);
+        }
+      }
+    }
+  }
+
+  var mmSh = getSpreadsheet_().getSheetByName('MaterialMaster');
+  if (mmSh && mmSh.getLastRow() >= 2) {
+    var mmData = mmSh.getDataRange().getValues();
+    var matCol = mmData[0].indexOf('Material');
+    if (matCol >= 0) {
+      for (var mr = mmData.length - 1; mr >= 1; mr--) {
+        var m = String(mmData[mr][matCol] || '').trim();
+        if (m === QW_MAT_A || m === QW_MAT_B) mmSh.deleteRow(mr + 1);
+      }
+    }
+  }
+
+  SpreadsheetApp.flush();
+}
+
+/**
+ * TEST_getQcWorklist_: self-cleaning, hermetic. Returns true only if every
+ * assertion passes; returns false (never throws past this point) otherwise.
+ * @return {boolean}
+ */
+function TEST_getQcWorklist_() {
+  var pass = true;
+
+  function assertEq(name, actual, expected) {
+    var ok = JSON.stringify(actual) === JSON.stringify(expected);
+    if (!ok) {
+      pass = false;
+      Logger.log('❌ ' + name + ': expected ' + JSON.stringify(expected) + ' got ' + JSON.stringify(actual));
+    } else {
+      Logger.log('PASS  ' + name);
+    }
+    return ok;
+  }
+
+  function pids(rows) { return rows.map(function(r) { return r.PalletID; }); }
+
+  _cleanQcWorklistFixtures_(); // pre-clean any stale rows from a prior interrupted run
+
+  try {
+    _seedQcWorklistFixtures_();
+
+    try {
+      // (1) No filters — target SLOC only: A0, A1, B1 in ProductGroup-then-PalletID order.
+      //     C1 (QC_COMPLETE), D1 (SCANNED), E1 (other SLOC) must all be excluded.
+      var r1 = getQcWorklist_(QW_SLOC);
+      assertEq('T1 no-filter row set/order', pids(r1), [QW_PID_A0, QW_PID_A1, QW_PID_B1]);
+
+      // (2) productGroup=GRP_A — only A0, A1.
+      var r2 = getQcWorklist_(QW_SLOC, QW_PG_A);
+      assertEq('T2 productGroup=GRP_A', pids(r2), [QW_PID_A0, QW_PID_A1]);
+
+      // (3) productGroup=GRP_B — only B1.
+      var r3 = getQcWorklist_(QW_SLOC, QW_PG_B);
+      assertEq('T3 productGroup=GRP_B', pids(r3), [QW_PID_B1]);
+
+      // (4) material=MAT_B — only B1.
+      var r4 = getQcWorklist_(QW_SLOC, '', QW_MAT_B);
+      assertEq('T4 material=MAT_B', pids(r4), [QW_PID_B1]);
+
+      // (5) Contradictory filters (GRP_A + MAT_B) — empty (AND, not OR).
+      var r5 = getQcWorklist_(QW_SLOC, QW_PG_A, QW_MAT_B);
+      assertEq('T5 contradictory filters', pids(r5), []);
+
+      // (6) Different StorageLocation — only E1.
+      var r6 = getQcWorklist_(QW_SLOC_OTHER);
+      assertEq('T6 other StorageLocation', pids(r6), [QW_PID_E1]);
+
+      // (7) Missing storageLocation — empty, no throw.
+      var r7 = getQcWorklist_('');
+      assertEq('T7 missing storageLocation', pids(r7), []);
+
+      // (8) Field shape: exactly the 9 documented fields, no extras.
+      var expectedFields = ['PalletID', 'Material', 'MaterialName', 'Batch', 'ProductGroup',
+        'WorkCenter', 'QtyPerPallet', 'ProductionDate', 'StorageLocation'];
+      if (r1.length > 0) {
+        var actualFields = Object.keys(r1[0]).sort();
+        assertEq('T8 field shape', actualFields, expectedFields.slice().sort());
+      } else {
+        pass = false;
+        Logger.log('❌ T8 field shape: r1 unexpectedly empty, cannot check shape');
+      }
+
+      // (9) ProductGroup values correct per row.
+      var byId = {};
+      r1.forEach(function(row) { byId[row.PalletID] = row; });
+      assertEq('T9 A0 ProductGroup', byId[QW_PID_A0] ? byId[QW_PID_A0].ProductGroup : null, QW_PG_A);
+      assertEq('T9 A1 ProductGroup', byId[QW_PID_A1] ? byId[QW_PID_A1].ProductGroup : null, QW_PG_A);
+      assertEq('T9 B1 ProductGroup', byId[QW_PID_B1] ? byId[QW_PID_B1].ProductGroup : null, QW_PG_B);
+
+      // (10) Batch leading zeros preserved.
+      assertEq('T10 Batch leading zeros', byId[QW_PID_A0] ? byId[QW_PID_A0].Batch : null, QW_BATCH);
+
+      // (11) ProductionDate never a raw Date — A1 was seeded with a real Date object.
+      if (byId[QW_PID_A1]) {
+        var dtOk = typeof byId[QW_PID_A1].ProductionDate === 'string';
+        if (!dtOk) { pass = false; Logger.log('❌ T11 ProductionDate typeof=' + typeof byId[QW_PID_A1].ProductionDate); }
+        else Logger.log('PASS  T11 ProductionDate is string');
+      } else {
+        pass = false;
+        Logger.log('❌ T11: ' + QW_PID_A1 + ' not found in results');
+      }
+
+      // (12) JSON round-trip safe.
+      try {
+        var rt = JSON.parse(JSON.stringify(r1));
+        assertEq('T12 JSON round-trip row count', rt.length, r1.length);
+      } catch (jsonErr) {
+        pass = false;
+        Logger.log('❌ T12 JSON.stringify threw: ' + jsonErr.message);
+      }
+
+    } catch (innerErr) {
+      pass = false;
+      Logger.log('❌ TEST_getQcWorklist_ EXCEPTION during assertions: ' + innerErr.message);
+    }
+
+  } catch (seedErr) {
+    pass = false;
+    Logger.log('❌ TEST_getQcWorklist_ EXCEPTION during seeding: ' + seedErr.message);
+  } finally {
+    _cleanQcWorklistFixtures_();
+  }
+
+  Logger.log('========================================');
+  Logger.log('TEST_getQcWorklist_: ' + (pass ? '✓ ALL PASS' : '✗ FAILURES DETECTED'));
+  Logger.log('========================================');
+  logEvent('TEST', 'TEST_getQcWorklist_', pass ? 'ALL_PASS' : 'FAILURES', 0, '');
+
+  return pass;
 }
