@@ -13,6 +13,16 @@
     }
     h1 { margin: 0 0 14px; font-size: 18px; color: #1a237e; }
 
+    /* ---- Tab navigation ---- */
+    .tab-bar { display: flex; gap: 4px; margin-bottom: 14px; }
+    .tab-btn {
+      padding: 9px 22px; background: #e3e8ee; color: #37474f;
+      border: none; border-radius: 6px 6px 0 0; font-size: 14px; font-family: inherit;
+      font-weight: 600; cursor: pointer;
+    }
+    .tab-btn:hover { background: #cfd8dc; }
+    .tab-btn.active { background: #1565c0; color: #fff; }
+
     /* ---- Search bar ---- */
     .search-bar {
       display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
@@ -223,28 +233,13 @@
 
 <h1>ติดตามพาเลท — Desktop</h1>
 
-<!-- QC Worklist (Phase 6.6) — READ-ONLY, view-only, no write actions.
-     StorageLocation/ProductGroup/Material dropdowns reuse getCascadeData()
-     (same cascade helper AdminPrint.html uses), not a new lookup. -->
-<div id="qcWorklistSection" style="background:#fff;padding:12px 16px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.12);margin-bottom:14px">
-  <h2 style="font-size:16px;margin:0 0 10px;color:#1a237e">รายการรอตรวจสอบ QC</h2>
-  <div class="search-bar" style="margin-bottom:0">
-    <label>คลัง: *</label>
-    <select id="qwSloc">
-      <option value="">-- เลือกคลัง --</option>
-    </select>
-    <label>กลุ่มสินค้า:</label>
-    <select id="qwGroup" disabled>
-      <option value="">ทั้งหมด</option>
-    </select>
-    <label>วัสดุ:</label>
-    <select id="qwMaterial" disabled>
-      <option value="">ทั้งหมด</option>
-    </select>
-  </div>
-  <div id="qcWorklistArea" style="margin-top:10px"></div>
+<!-- Tab navigation -->
+<div class="tab-bar">
+  <button type="button" class="tab-btn active" id="tabBtnSearch" onclick="switchDesktopTab('search')">ค้นหาพาเลท</button>
+  <button type="button" class="tab-btn" id="tabBtnQc" onclick="switchDesktopTab('qc')">ตรวจสอบ QC</button>
 </div>
 
+<div id="viewSearch">
 <!-- Search Bar -->
 <div class="search-bar">
   <label>ค้นด้วย:</label>
@@ -280,6 +275,31 @@
   <h2 id="detailTitle">รายละเอียดพาเลท</h2>
   <span class="readonly-note">Desktop mode — ยืนยันการผลิตได้ แต่ไม่มีการสแกน QR ยืนยันตัวพาเลทจริง</span>
   <div id="detailContent"></div>
+</div>
+</div>
+
+<div id="viewQc" style="display:none">
+<!-- QC Worklist (Phase 6.6) — READ-ONLY, view-only, no write actions.
+     StorageLocation/ProductGroup/Material dropdowns reuse getCascadeData()
+     (same cascade helper AdminPrint.html uses), not a new lookup. -->
+<div id="qcWorklistSection" style="background:#fff;padding:12px 16px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.12);margin-bottom:14px">
+  <h2 style="font-size:16px;margin:0 0 10px;color:#1a237e">รายการรอตรวจสอบ QC</h2>
+  <div class="search-bar" style="margin-bottom:0">
+    <label>คลัง: *</label>
+    <select id="qwSloc">
+      <option value="">-- เลือกคลัง --</option>
+    </select>
+    <label>กลุ่มสินค้า:</label>
+    <select id="qwGroup" disabled>
+      <option value="">ทั้งหมด</option>
+    </select>
+    <label>วัสดุ:</label>
+    <select id="qwMaterial" disabled>
+      <option value="">ทั้งหมด</option>
+    </select>
+  </div>
+  <div id="qcWorklistArea" style="margin-top:10px"></div>
+</div>
 </div>
 
 <!-- Confirm production modal (Phase 6.2) -->
@@ -1120,6 +1140,15 @@
   document.getElementById('searchValue').addEventListener('keypress', function (e) {
     if (e.key === 'Enter') window.doSearch();
   });
+
+  // ── Tab navigation — pure visibility toggle, no re-fetch ────────────────────
+  window.switchDesktopTab = function (tabName) {
+    var showSearch = tabName === 'search';
+    document.getElementById('viewSearch').style.display = showSearch ? '' : 'none';
+    document.getElementById('viewQc').style.display      = showSearch ? 'none' : '';
+    document.getElementById('tabBtnSearch').classList.toggle('active', showSearch);
+    document.getElementById('tabBtnQc').classList.toggle('active', !showSearch);
+  };
 
   // ── QC Worklist (Phase 6.6) — READ-ONLY, view-only ──────────────────────────
   // StorageLocation/ProductGroup/Material dropdowns reuse getCascadeData(),
