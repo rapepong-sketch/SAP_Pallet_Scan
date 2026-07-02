@@ -242,6 +242,24 @@
     #tBtnSubmit:hover:not(:disabled) { background: #004d40; }
     #tBtnSubmit:disabled { background: #90a4ae; cursor: default; }
     .trf-dest-hint { font-size: 12px; min-height: 16px; margin-top: 4px; }
+
+    /* ---- QC Record modal ---- */
+    #qcRecordModal {
+      display: none; position: fixed; inset: 0; z-index: 1000;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,.45);
+    }
+    .btn-qc-record {
+      padding: 4px 12px; background: #1565c0; color: #fff;
+      border: none; border-radius: 4px; font-size: 12px; font-family: inherit;
+      cursor: pointer; white-space: nowrap;
+    }
+    .btn-qc-record:hover { background: #0d47a1; }
+    #qBtnCancel { background: #eceff1; color: #37474f; }
+    #qBtnCancel:hover { background: #cfd8dc; }
+    #qBtnSubmit { background: #1565c0; color: #fff; }
+    #qBtnSubmit:hover:not(:disabled) { background: #0d47a1; }
+    #qBtnSubmit:disabled { background: #90a4ae; cursor: default; }
   </style>
 </head>
 <body>
@@ -423,6 +441,36 @@
   </div>
 </div>
 
+<!-- QC Record modal (QC worklist "บันทึกผล") -->
+<div id="qcRecordModal">
+  <div class="modal-box">
+    <h3>บันทึกผลตรวจสอบ QC</h3>
+    <div class="modal-info">
+      <div>รหัสพาเลท: <strong id="qPalletId"></strong></div>
+      <div>วัสดุ: <strong id="qMaterial"></strong></div>
+      <div>ชื่อวัสดุ: <strong id="qMaterialName"></strong></div>
+      <div>Batch: <strong id="qBatch"></strong></div>
+    </div>
+    <div class="pd-toggle-row">
+      <button type="button" id="qBtnPass" class="btn-pd-toggle btn-pd-pass">✅ PASS</button>
+      <button type="button" id="qBtnFail" class="btn-pd-toggle btn-pd-fail">❌ FAIL</button>
+    </div>
+    <div class="modal-form" style="margin-bottom:0">
+      <label>ผู้ตรวจสอบ QC *</label>
+      <input type="text" id="qInspector" placeholder="ชื่อผู้ตรวจสอบ QC">
+      <div id="qInspectorVal" class="pd-val-note" style="display:none"></div>
+      <label id="qNoteLabel">หมายเหตุ</label>
+      <input type="text" id="qNote" placeholder="ระบุสาเหตุ/หมายเหตุ">
+      <div id="qNoteVal" class="pd-val-note" style="display:none"></div>
+    </div>
+    <div class="modal-actions" style="margin-top:16px;">
+      <button id="qBtnCancel" type="button">ยกเลิก</button>
+      <button id="qBtnSubmit" type="button">ยืนยัน</button>
+    </div>
+    <div id="qResult" style="display:none"></div>
+  </div>
+</div>
+
 <script>
 (function () {
   'use strict';
@@ -435,6 +483,7 @@
   var _activeUserEmail = '';
   var localCumEnabled = false; // LOCAL_OP_CUMULATIVE_ENABLED, loaded via getSapStatus()
   var maxRoundsPerOp  = 3;     // CFG.MAX_ROUNDS_PER_OP, loaded via getSapStatus()
+  var qwRows = []; // current QC worklist rows — kept in sync so a successful save can remove a row without a re-query
 
   google.script.run
     .withSuccessHandler(function (email) { _activeUserEmail = email || ''; })
@@ -1343,9 +1392,8 @@
   }
 
   function renderQcWorklist_(result) {
-    var area = document.getElementById('qcWorklistArea');
-
     if (!result || !result.ok) {
+      var area = document.getElementById('qcWorklistArea');
       var msg = (result && result.error === 'NOT_ADMIN')
         ? 'ไม่มีสิทธิ์เข้าใช้งาน (admin เท่านั้น)'
         : 'เกิดข้อผิดพลาด: ' + esc((result && result.error) || 'unknown');
@@ -1353,22 +1401,30 @@
       return;
     }
 
-    var rows = result.rows || [];
-    if (rows.length === 0) {
+    qwRows = result.rows || [];
+    renderQcTable_();
+  }
+
+  // Re-render the worklist table from qwRows only — used on first load and
+  // after a successful save removes a row, without a server re-query.
+  function renderQcTable_() {
+    var area = document.getElementById('qcWorklistArea');
+
+    if (qwRows.length === 0) {
       area.innerHTML = '<div class="loading" style="color:#90a4ae">ไม่มีพาเลทรอตรวจสอบ QC ในคลังที่เลือก</div>';
       return;
     }
 
     var html = '<div class="tbl-wrap"><table class="results"><thead><tr>' +
       '<th>รหัสพาเลท</th><th>วัสดุ</th><th>ชื่อวัสดุ</th><th>Batch</th>' +
-      '<th>กลุ่มสินค้า</th><th>ศูนย์งาน</th><th>จำนวน/พาเลท</th><th>วันที่ผลิต</th>' +
+      '<th>กลุ่มสินค้า</th><th>ศูนย์งาน</th><th>จำนวน/พาเลท</th><th>วันที่ผลิต</th><th>การดำเนินการ</th>' +
       '</tr></thead><tbody>';
 
     var lastGroup = null;
-    rows.forEach(function (row) {
+    qwRows.forEach(function (row) {
       if (row.ProductGroup !== lastGroup) {
         lastGroup = row.ProductGroup;
-        html += '<tr><td colspan="8" style="background:#eceff1;font-weight:700;padding:6px 10px">' +
+        html += '<tr><td colspan="9" style="background:#eceff1;font-weight:700;padding:6px 10px">' +
           esc(lastGroup || '(ไม่ระบุกลุ่ม)') + '</td></tr>';
       }
       html += '<tr>' +
@@ -1380,12 +1436,144 @@
         '<td>' + esc(row.WorkCenter) + '</td>' +
         '<td style="text-align:right">' + (row.QtyPerPallet || '') + '</td>' +
         '<td>' + esc(row.ProductionDate) + '</td>' +
+        '<td><button type="button" class="btn-qc-record" data-palletid="' + esc(row.PalletID) + '">บันทึกผล</button></td>' +
         '</tr>';
     });
 
     html += '</tbody></table></div>';
     area.innerHTML = html;
+
+    area.querySelectorAll('.btn-qc-record').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var palletId = btn.getAttribute('data-palletid');
+        var row = qwRows.find(function (r) { return r.PalletID === palletId; });
+        if (row) openQcRecordModal_(row);
+      });
+    });
   }
+
+  // ── QC Record modal (QC worklist "บันทึกผล") — validation copy mirrors
+  // Scanner.html's qcmSubmitQcResult() exactly. ─────────────────────────────
+  var _qcRecordRow    = null; // worklist row being recorded
+  var _qcResult       = null; // null | 'PASS' | 'FAIL'
+  var _savingQcRecord = false;
+
+  function openQcRecordModal_(row) {
+    _qcRecordRow    = row;
+    _qcResult       = null;
+    _savingQcRecord = false;
+
+    document.getElementById('qPalletId').textContent     = row.PalletID;
+    document.getElementById('qMaterial').textContent     = row.Material;
+    document.getElementById('qMaterialName').textContent = row.MaterialName || '—';
+    document.getElementById('qBatch').textContent        = row.Batch || '—';
+
+    document.getElementById('qBtnPass').classList.remove('active');
+    document.getElementById('qBtnFail').classList.remove('active');
+    document.getElementById('qInspector').value = '';
+    document.getElementById('qNote').value = '';
+    document.getElementById('qNoteLabel').textContent = 'หมายเหตุ';
+
+    var iVal = document.getElementById('qInspectorVal');
+    iVal.style.display = 'none'; iVal.textContent = '';
+    var nVal = document.getElementById('qNoteVal');
+    nVal.style.display = 'none'; nVal.textContent = '';
+
+    var res = document.getElementById('qResult');
+    res.style.display = 'none'; res.textContent = ''; res.className = '';
+
+    var sub = document.getElementById('qBtnSubmit');
+    sub.disabled    = false;
+    sub.textContent = 'ยืนยัน';
+
+    document.getElementById('qcRecordModal').style.display = 'flex';
+  }
+
+  function closeQcRecordModal_() {
+    document.getElementById('qcRecordModal').style.display = 'none';
+    _qcRecordRow = null;
+    _qcResult    = null;
+  }
+
+  function setQcRecordResult_(result) {
+    _qcResult = result;
+    document.getElementById('qBtnPass').classList.toggle('active', result === 'PASS');
+    document.getElementById('qBtnFail').classList.toggle('active', result === 'FAIL');
+    document.getElementById('qNoteLabel').textContent =
+      result === 'FAIL' ? 'หมายเหตุ (บังคับเมื่อ FAIL) *' : 'หมายเหตุเพิ่มเติม (ถ้ามี)';
+  }
+
+  function showQcRecordMsg_(type, msg) {
+    var el = document.getElementById('qResult');
+    el.className     = type === 'error' ? 'modal-result-error' : 'modal-result-success';
+    el.textContent   = msg;
+    el.style.display = 'block';
+  }
+
+  function submitQcRecord_() {
+    if (_savingQcRecord) return;
+    if (!_qcRecordRow) return;
+    if (!_qcResult) { showQcRecordMsg_('error', 'กรุณาเลือกผล PASS หรือ FAIL'); return; }
+
+    var iVal = document.getElementById('qInspectorVal');
+    iVal.style.display = 'none'; iVal.textContent = '';
+    var nVal = document.getElementById('qNoteVal');
+    nVal.style.display = 'none'; nVal.textContent = '';
+
+    var inspector = document.getElementById('qInspector').value.trim();
+    var note      = document.getElementById('qNote').value.trim();
+
+    var valid = true;
+    if (!inspector) {
+      iVal.textContent   = 'กรุณากรอกชื่อผู้ตรวจสอบ QC';
+      iVal.style.display = '';
+      valid = false;
+    }
+    if (_qcResult === 'FAIL' && !note) {
+      nVal.textContent   = 'กรุณาระบุหมายเหตุเมื่อผล QC = FAIL';
+      nVal.style.display = '';
+      valid = false;
+    }
+    if (!valid) return;
+
+    var row = _qcRecordRow;
+    _savingQcRecord = true;
+    var sub = document.getElementById('qBtnSubmit');
+    sub.disabled    = true;
+    sub.textContent = '⏳ กำลังบันทึก...';
+    document.getElementById('qResult').style.display = 'none';
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        _savingQcRecord = false;
+        sub.disabled    = false;
+        sub.textContent = 'ยืนยัน';
+        if (!res.success) {
+          showQcRecordMsg_('error', '❌ ' + (res.message || 'บันทึก QC ไม่สำเร็จ'));
+          return;
+        }
+        qwRows = qwRows.filter(function (r) { return r.PalletID !== row.PalletID; });
+        closeQcRecordModal_();
+        renderQcTable_();
+      })
+      .withFailureHandler(function (err) {
+        _savingQcRecord = false;
+        sub.disabled    = false;
+        sub.textContent = 'ยืนยัน';
+        showQcRecordMsg_('error', '❌ บันทึก QC ไม่สำเร็จ: ' + (err.message || String(err)));
+      })
+      .saveQcResult({
+        palletId:  row.PalletID,
+        result:    _qcResult,
+        inspector: inspector,
+        note:      note
+      });
+  }
+
+  document.getElementById('qBtnPass').addEventListener('click', function () { setQcRecordResult_('PASS'); });
+  document.getElementById('qBtnFail').addEventListener('click', function () { setQcRecordResult_('FAIL'); });
+  document.getElementById('qBtnCancel').addEventListener('click', closeQcRecordModal_);
+  document.getElementById('qBtnSubmit').addEventListener('click', submitQcRecord_);
 
 }());
 </script>
