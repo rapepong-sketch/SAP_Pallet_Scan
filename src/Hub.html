@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>PJ Chonburi — Central Hub</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Sarabun','Segoe UI',Arial,sans-serif;background:#f0f2f5;color:#1a1a2e;padding:20px 24px;font-size:16px}
+
+.hdr{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px}
+.hdr h1{font-size:1.4em;font-weight:700}
+.hdr .email{color:#666;font-size:0.85em;margin-left:auto}
+
+.sec{background:#fff;border-radius:8px;border:1px solid #dee2e6;padding:18px 22px;margin-bottom:16px}
+.sec h3{font-size:1.1em;margin-bottom:12px}
+
+.link-list{display:flex;flex-direction:column;gap:8px}
+.link-item{display:block;padding:10px 16px;border-radius:6px;background:#e8f0fe;color:#1a1a2e;text-decoration:none;font-size:0.95em;font-weight:600;transition:background .15s}
+.link-item:hover{background:#d3e3fd}
+
+.link-item.soon{background:#f0f2f5;color:#888;cursor:default;pointer-events:none}
+.soon-tag{font-size:.78em;font-weight:600;color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:3px;padding:1px 8px;margin-left:8px}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <h1>PJ Chonburi &mdash; Central Hub</h1>
+  <span class="email" id="userEmail"></span>
+</div>
+
+<div class="sec">
+  <h3>ปฏิบัติการ</h3>
+  <div class="link-list">
+    <a class="link-item" href="?app=scan">สแกนพาเลท</a>
+  </div>
+</div>
+
+<div class="sec">
+  <h3>ค้นหา / ยืนยันผลิต / QC</h3>
+  <div class="link-list">
+    <a class="link-item" href="?app=desktop">เปิด Desktop</a>
+  </div>
+</div>
+
+<div class="sec">
+  <h3>Admin</h3>
+  <div class="link-list">
+    <a class="link-item" href="?app=print">พิมพ์ป้ายพาเลท</a>
+    <a class="link-item" href="?app=confirm">ยืนยันผลิต (Override)</a>
+    <a class="link-item" href="?app=slip">FIFO Transfer Slip</a>
+  </div>
+</div>
+
+<div class="sec">
+  <h3>Dashboard</h3>
+  <div class="link-list">
+    <span class="link-item soon">Dashboard<span class="soon-tag">เร็วๆ นี้</span></span>
+  </div>
+</div>
+
+<script>
+google.script.run.withSuccessHandler(function(e) {
+  document.getElementById('userEmail').textContent = (e || '(unknown)');
+}).getActiveUserEmail();
+</script>
+</body>
+</html>

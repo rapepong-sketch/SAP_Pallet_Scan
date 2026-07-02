@@ -43,6 +43,14 @@ function doGet(e) {
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
 
+  // --- Central Hub landing page (no auth gate — links only; each destination keeps its own gate) ---
+  if (app === 'hub') {
+    return HtmlService.createHtmlOutputFromFile('Hub')
+      .setTitle('PJ Chonburi — Central Hub')
+      .addMetaTag('viewport', 'width=device-width, initial-scale=1, maximum-scale=1')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
+
   // --- Desktop Companion WebApp (Phase 6.1, admin only, READ-ONLY) ---
   if (app === 'desktop') {
     if (!isAdminUser_()) {
