@@ -51,6 +51,9 @@ function onOpen() {
     .addItem('🟢 เปิด Local Op Cumulative Confirm', 'flagEnableLocalOpCumulative')
     .addItem('🔴 ปิด Local Op Cumulative Confirm',  'flagDisableLocalOpCumulative')
     .addSeparator()
+    .addItem('🟢 เปิด Auto-Exclude เมื่อ Order ถูกลบ', 'flagEnableAutoExcludeOnOrderDeleted')
+    .addItem('🔴 ปิด Auto-Exclude เมื่อ Order ถูกลบ',  'flagDisableAutoExcludeOnOrderDeleted')
+    .addSeparator()
     .addItem('📊 ดูสถานะ flag',                'flagShowStatus')
     .addItem('↩️ รีเซ็ตเป็น default ปลอดภัย', 'flagSetDefaults');
 
@@ -66,43 +69,38 @@ function onOpen() {
     .addSubMenu(larkMenu)
     .addSubMenu(flagMenu);
 
-  // ── 🧪 Diagnostic / Test ────────────────────────────────────────────────
-  const diagMenu = ui.createMenu('🧪 Diagnostic / Test')
+  // ── 🧪 Test Suites ──────────────────────────────────────────────────────
+  // Combined runners + reusable test fixtures — safe to re-run repeatedly
+  // during ongoing development. Absorbs the former standalone "🧪 Local Op
+  // Cumulative Tests" and "🧪 Edge Case Fixture" top-level menus.
+  const testSuitesMenu = ui.createMenu('🧪 Test Suites')
+    .addItem('🧪 Phase 4.5: Run all tests',              'TEST_phase45_all_')
+    .addItem('🧪 T4: Run 311 Retry/DL Test Suite',        'TEST_t311_runAll')
+    .addItem('🧪 Batch Resolution Test Suite',            'TEST_resolveBatch_runAll')
+    .addItem('🧪 [Test] Scan-Transfer (run all)',         'TEST_scanTransfer_runAll')
+    .addItem('🧪 Run all (Local Op Cumulative)',          'TEST_localOpCumulative_runAll')
+    .addItem('🧪 Pallet Exclusion Test Suite (run all)',  'TEST_palletExclusion_runAll')
+    .addSeparator()
+    .addItem('🧪 [Test] Yield Bucket Payload',            'testBuildYieldBucketPayload')
+    .addItem('🧪 [Test] Auto-cache FinalOp',               'TEST_autoCacheFinalOp')
+    .addItem('🧪 [Test] Yield/QC Report',                  'TEST_yieldQcReport_')
+    .addItem('🧪 [Test] Confirm Fallback (legacy)',       'TEST_confirmFallbackLegacy')
+    .addSeparator()
+    .addItem('➕ Create Edge Case Fixture',                'TEST_createEdgeCaseFixture')
+    .addItem('🗑️ Delete Edge Case Fixture (cleanup)',     'TEST_deleteEdgeCaseFixture');
+
+  // ── 🔍 Diagnostics ──────────────────────────────────────────────────────
+  // Reusable, whole-sheet-scanning diagnostics — not tied to one hardcoded
+  // historical PalletID / MaterialDocument (those live in 🗄️ Archive).
+  // Absorbs "Find Open Period" from the former standalone "🧪 Gate 0 Probe"
+  // top-level menu.
+  const diagnosticsMenu = ui.createMenu('🔍 Diagnostics')
     .addItem('🔍 [Diag] Yield Bucket Diagnostic',       'runYieldBucketDiagnostic')
     .addItem('🔧 [Admin] Debug PM Schema',               'debugPalletMasterSchema')
-    .addSeparator()
-    .addItem('🧪 [Test] Yield Bucket Payload',           'testBuildYieldBucketPayload')
-    .addItem('🧪 [Test] Confirm Fallback (legacy)',      'TEST_confirmFallbackLegacy')
-    .addItem('🧪 [Test] Auto-cache FinalOp',              'TEST_autoCacheFinalOp')
-    .addSeparator()
-    .addItem('🧪 Phase 4.5: Run all tests',              'TEST_phase45_all_')
-    .addSeparator()
-    .addItem('🧪 [Test] Yield/QC Report',                 'TEST_yieldQcReport_')
-    .addSeparator()
-    .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter')
-    .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates')
-    .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof')
-    .addItem('🔍 Verify 311 Stock Settle (RO)',              'PROBE_verify311StockSettle')
-    .addItem('🔍 Probe D/C Direction 842/843 (RO)',          'PROBE_dcDirection311')
-    .addItem('⚠️ FIX 311 Housekeeping Restore (WRITES)',    'TEST_transfer311HousekeepingRestore')
-    .addItem('🔍 Probe MatDoc Cancellation Mechanism (RO)', 'PROBE_materialDocCancellation')
-    .addItem('⚠️ TEST 311 Cancel-by-Ref Proof (WRITES)',    'TEST_transfer311CancelProof')
-    .addItem('⚠️ FIX Cancel Dangling Doc (WRITES)',         'TEST_cancelDanglingDoc')
-    .addSeparator()
-    .addItem('🧪 T4: Run 311 Retry/DL Test Suite',          'TEST_t311_runAll')
-    .addItem('🔍 DIAG Batch for First-Live (RO)',            'DIAG_checkBatchForFirstLive')
-    .addItem('🔍 DIAG GR-Doc Batch Proof (RO)',              'DIAG_grDocBatchProof')
-    .addItem('🔍 DIAG Tier-3 Batch Resolve (RO)',            'DIAG_tier3BatchResolve')
-    .addItem('🔍 DIAG Verify Batch Leading Zeros (RO)',     'DIAG_verifyBatchLeadingZeros')
-    .addSeparator()
-    .addItem('🔍 PROBE Pallet Batch Stock (RO)',            'PROBE_palletBatchStock')
-    .addItem('🔍 DIAG FIFO Stock Filter (RO)',              'DIAG_fifoStockFilter')
-    .addSeparator()
-    .addItem('🔍 Backfill PM.Batch (DRY RUN)',              'BACKFILL_palletMasterBatch_dryRun')
-    .addItem('⚠️ Backfill PM.Batch (APPLY)',                'BACKFILL_palletMasterBatch_apply')
-    .addSeparator()
-    .addItem('🧪 Batch Resolution Test Suite',               'TEST_resolveBatch_runAll')
-    .addItem('🧪 [Test] Scan-Transfer (run all)',            'TEST_scanTransfer_runAll');
+    .addItem('🔍 [Diag] Override Candidate Cap (RO)',    'MENU_diagOverrideCandidateCap')
+    .addItem('🔍 DIAG Verify Batch Leading Zeros (RO)', 'DIAG_verifyBatchLeadingZeros')
+    .addItem('🔍 DIAG FIFO Stock Filter (RO)',          'DIAG_fifoStockFilter')
+    .addItem('🔍 Find Open Period (RO)',                'TEST_findOpenPostingPeriod');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
@@ -111,11 +109,6 @@ function onOpen() {
     .addItem('🔧 Backfill MaterialName',                 'backfillMaterialName')
     .addItem('🔧 Backfill WorkCenter',                   'backfillWorkCenter')
     .addSeparator()
-    .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',  'runYieldBucketMigration')
-    .addItem('🔄 Migrate: Add OL Bucket Columns',       'runOperationLogMigration')
-    .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets')
-    .addItem('🔄 Migrate: FinalOp Leading Zeros',       'migrateFinalOpLeadingZeros')
-    .addItem('🔒 Migrate: Add QCInspector column',      'runQCInspectorMigration')
     .addItem('🔧 Backfill OL RoundNumber/IsFinalRound', 'runBackfillOperationLogRoundColumns')
     .addSeparator()
     .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets')
@@ -124,9 +117,7 @@ function onOpen() {
     .addSeparator()
     .addItem('🚫 [Admin] Exclude Pallet',               'MENU_excludePallet')
     .addItem('✅ [Admin] Include Pallet (Undo Exclude)', 'MENU_includePallet')
-    .addItem('🔍 [Diag] Override Candidate Cap (RO)',    'MENU_diagOverrideCandidateCap')
     .addSeparator()
-    .addItem('⚠️ Reverse First-Live Doc 4900216057 (WRITES)', 'REVERSE_firstLiveDoc')
     .addItem('🔄 Reverse Transfer 311 (manual)',               'MENU_reverseTransfer311')
     .addSeparator()
     .addItem('🩺 ตรวจ Confirm Drift (ตอนนี้)',        'runConfirmDriftDaily')
@@ -141,20 +132,56 @@ function onOpen() {
     .addItem('🔄 Refresh สถานะ Runbook',           'refreshRunbookStatus')
     .addItem('🔁 Stamp Redeploy',                  'stampRedeploy');
 
+  // ── 🗄️ Archive ──────────────────────────────────────────────────────────
+  // Completed schema migrations (idempotent, safe but no longer needed) and
+  // historical Transfer 311 rollout proofs (one-off, hardcoded to specific
+  // docs/pallets/batches). Kept clickable for audit/rerun-if-ever-needed,
+  // but separated from daily-use menus. Absorbs the "Run partial-
+  // confirmation probe" item from the former standalone "🧪 Gate 0 Probe"
+  // top-level menu.
+  const archiveMenu = ui.createMenu('🗄️ Archive')
+    // -- Schema Migrations (completed, idempotent) --
+    .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',  'runYieldBucketMigration')
+    .addItem('🔄 Migrate: Add OL Bucket Columns',       'runOperationLogMigration')
+    .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets')
+    .addItem('🔄 Migrate: FinalOp Leading Zeros',       'migrateFinalOpLeadingZeros')
+    .addItem('🔒 Migrate: Add QCInspector column',      'runQCInspectorMigration')
+    .addSeparator()
+    // -- Transfer 311 Rollout Proofs (completed, historical) --
+    .addItem('🔍 Backfill PM.Batch (DRY RUN)',              'BACKFILL_palletMasterBatch_dryRun')
+    .addItem('⚠️ Backfill PM.Batch (APPLY)',                'BACKFILL_palletMasterBatch_apply')
+    .addItem('⚠️ Reverse First-Live Doc 4900216057 (WRITES)', 'REVERSE_firstLiveDoc')
+    .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter')
+    .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates')
+    .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof')
+    .addItem('🔍 Verify 311 Stock Settle (RO)',              'PROBE_verify311StockSettle')
+    .addItem('🔍 Probe D/C Direction 842/843 (RO)',          'PROBE_dcDirection311')
+    .addItem('⚠️ FIX 311 Housekeeping Restore (WRITES)',    'TEST_transfer311HousekeepingRestore')
+    .addItem('🔍 Probe MatDoc Cancellation Mechanism (RO)', 'PROBE_materialDocCancellation')
+    .addItem('⚠️ TEST 311 Cancel-by-Ref Proof (WRITES)',    'TEST_transfer311CancelProof')
+    .addItem('⚠️ FIX Cancel Dangling Doc (WRITES)',         'TEST_cancelDanglingDoc')
+    .addItem('🔍 DIAG Batch for First-Live (RO)',            'DIAG_checkBatchForFirstLive')
+    .addItem('🔍 DIAG GR-Doc Batch Proof (RO)',              'DIAG_grDocBatchProof')
+    .addItem('🔍 DIAG Tier-3 Batch Resolve (RO)',            'DIAG_tier3BatchResolve')
+    .addItem('🔍 PROBE Pallet Batch Stock (RO)',            'PROBE_palletBatchStock')
+    .addItem('⚠️ Run partial-confirmation probe (LIVE POST to TEST MO)', 'TEST_probePartialConfirmation');
+
   // ── Top-level menu ──────────────────────────────────────────────────────
   ui.createMenu('🏭 Pallet Tracker')
     .addSubMenu(dailyMenu)
     .addSubMenu(settingsMenu)
-    .addSubMenu(diagMenu)
     .addSubMenu(adminMenu)
     .addSubMenu(sysMenu)
     .addToUi();
 
-  refreshRunbookOnOpen_();
+  // Separate top-level menu-bar entries (siblings of 🏭 Pallet Tracker) —
+  // replaces the former standalone Gate 0 Probe / Local Op Cumulative Tests /
+  // Edge Case Fixture menus, consolidated by purpose instead of by feature.
+  testSuitesMenu.addToUi();
+  diagnosticsMenu.addToUi();
+  archiveMenu.addToUi();
 
-  addGate0ProbeMenu_(); // Phase 6.5 Gate 0 — separate probe menu, defined in Gate0Probe.gs
-  addLocalOpCumulativeTestsMenu_(); // Local per-operation cumulative confirmation tests — LocalOpCumulativeTests.gs
-  addEdgeCaseFixtureMenu_(); // Self-cleaning edge-case fixture for Local Op Cumulative — EdgeCaseFixture.gs
+  refreshRunbookOnOpen_();
 }
 
 let _ss_ = null;
