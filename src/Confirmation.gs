@@ -21,6 +21,24 @@
  *  - logEvent()                 (SapClient.gs)        — EventLog writer
  */
 
+// ============================================================================
+// Phase 3.5 Gate 7 -- Auto-Exclude on Order Deleted (SAP RU/057 et al.)
+// ============================================================================
+
+/** SAP OData error codes indicating the production order was deleted in SAP. */
+var ORDER_DELETED_SAP_ERROR_CODES_ = ['RU/057'];
+
+/**
+ * Extract the SAP OData error `code` field from a UrlFetchApp error message
+ * (which embeds the raw JSON error body, e.g. `... {"code":"RU/057",...}`).
+ * @param {string} errMessage
+ * @return {string} the code value, or '' if not found/not JSON
+ */
+function _extractSapErrorCode_(errMessage) {
+  var m = String(errMessage || '').match(/"code"\s*:\s*"([^"]+)"/);
+  return m ? m[1] : '';
+}
+
 /**
  * Normalize an operation value to a 4-digit zero-padded string (e.g. "30" → "0030").
  * @param {string|number} v — raw operation from cache (may be numeric or string)
@@ -350,7 +368,22 @@ function postConfirmationWithRetry_(payload, palletId, testOverrides) {
         ' attempt=' + attempt + '/' + MAX + ' class=' + cls.type +
         ' code=' + cls.code + ' ' + String(e.message || '').slice(0, 200));
 
-      if (cls.type === 'BUSINESS') throw e;
+      if (cls.type === 'BUSINESS') {
+        if (isAutoExcludeOnOrderDeletedEnabled_()) {
+          var sapCode = _extractSapErrorCode_(String(e.message || ''));
+          if (sapCode && ORDER_DELETED_SAP_ERROR_CODES_.indexOf(sapCode) !== -1) {
+            try {
+              excludePallet_(palletId,
+                'Auto: SAP ' + sapCode + ' - ' + String(e.message || '').slice(0, 200),
+                'SYSTEM_AUTO');
+              logEvent('CONFIRM', 'AUTO_EXCLUDE', palletId + ' code=' + sapCode);
+            } catch (exErr) {
+              logEvent('CONFIRM', 'AUTO_EXCLUDE_FAILED', palletId + ' ' + exErr.message);
+            }
+          }
+        }
+        throw e;
+      }
 
       lastOutcome = cls.type;
       if (attempt < MAX) {
@@ -3136,6 +3169,239 @@ function TEST_replayDeadLetterWriteback_() {
   Logger.log('──────────────────────────────────────────');
 
   logEvent(fn, 'DeadLetterReplayWriteback', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions');
+
+  return pass;
+}
+
+// ============================================================================
+// Phase 3.5 Gate 7 — TEST: Auto-Exclude on Order Deleted (SAP RU/057 et al.)
+// ============================================================================
+
+/**
+ * Self-cleaning test for the auto-exclude-on-order-deleted hook inside
+ * postConfirmationWithRetry_() (the `if (cls.type === 'BUSINESS')` branch).
+ * Exercises the hook via the function's own testOverrides (readbackFn/postFn)
+ * — never reassigns the global postConfirmationWithRetry_ itself, since this
+ * suite tests that function's internals directly rather than a caller of it.
+ * Fixture PalletID uses 'PL-ZZEXCL-' prefix (see PalletExclusionTests.gs
+ * header) — 'PL-TEST-' is hard-filtered from candidate lists.
+ * Each sub-assertion returns its own pass/fail boolean (hardened false-green
+ * pattern) — a thrown exception is caught and also counted as FAIL.
+ * @return {boolean} true only if every assertion passed
+ */
+function TEST_autoExcludeOnOrderDeleted_() {
+  var fn = 'TEST_autoExcludeOnOrderDeleted_';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+    return ok;
+  }
+
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var pmHdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  pmHdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var PID     = 'PL-ZZEXCL-AUTOX-L01';
+  var MO      = '0000097001'; // all-digit — avoids leading-zero coercion gotcha
+  var flagKey = CFG.FLAG_KEYS.AUTO_EXCLUDE_ON_ORDER_DELETED;
+  var props   = PropertiesService.getScriptProperties();
+  var origExcludePallet = excludePallet_;
+
+  var payload = {
+    OrderID: MO, OrderOperation: '0010', Sequence: '0',
+    ConfirmationYieldQuantity: '10', ConfirmationScrapQuantity: '0',
+    ConfirmationUnit: 'PC', Plant: CFG.PLANT, IsFinalConfirmation: true,
+    FinalConfirmationType: 'X', ConfirmationText: PID
+  };
+
+  var noopReadback = function() { return { found: false }; };
+  var postFnRu057 = function() {
+    throw new Error('SAP Confirmation POST failed HTTP 400: ' +
+      '{"error":{"code":"RU/057","message":{"value":"Order permanently deleted"}}}');
+  };
+
+  function seedPmRow() {
+    var row = new Array(pmHdr.length).fill('');
+    row[pmIdx['PalletID']]           = PID;
+    row[pmIdx['ManufacturingOrder']] = MO;
+    row[pmIdx['Material']]           = 'ZZTEST-MAT';
+    row[pmIdx['QtyPerPallet']]       = 10;
+    row[pmIdx['Unit']]               = 'PC';
+    row[pmIdx['ScanStatus']]         = 'QC_COMPLETE';
+    pmSh.appendRow(row);
+    SpreadsheetApp.flush();
+  }
+
+  function readExclusion() {
+    var data = pmSh.getDataRange().getValues();
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][pmIdx['PalletID']] || '').trim() === PID) {
+        return {
+          status: String(data[r][pmIdx['ExclusionStatus']] || '').trim(),
+          by:     String(data[r][pmIdx['ExcludedBy']]      || '').trim(),
+          reason: String(data[r][pmIdx['ExclusionReason']] || '').trim()
+        };
+      }
+    }
+    return null;
+  }
+
+  function resetExclusion() {
+    updatePalletScanFields_(PID, {
+      ExclusionStatus: '', ExclusionReason: '', ExcludedAt: '', ExcludedBy: ''
+    });
+    SpreadsheetApp.flush();
+  }
+
+  try {
+    seedPmRow();
+
+    // ---- (a) flag OFF (default) — RU/057 business error must NOT auto-exclude ----
+    props.setProperty(flagKey, 'false');
+    var threwA = false, errA = null;
+    try {
+      postConfirmationWithRetry_(payload, PID, { readbackFn: noopReadback, postFn: postFnRu057 });
+    } catch (eA) { threwA = true; errA = eA; }
+
+    assert('(a1) flag OFF: postConfirmationWithRetry_ still throws', threwA);
+    assert('(a2) flag OFF: thrown error is the original SAP error',
+      threwA && /RU\/057/.test(String(errA && errA.message)), 'got=' + (errA && errA.message));
+    var exA = readExclusion();
+    assert('(a3) flag OFF: ExclusionStatus NOT set to EXCLUDED',
+      exA && exA.status !== 'EXCLUDED', 'got=' + (exA && exA.status));
+
+    // ---- (b) flag ON — RU/057 business error MUST auto-exclude, then still throw ----
+    props.setProperty(flagKey, 'true');
+    var threwB = false, errB = null;
+    try {
+      postConfirmationWithRetry_(payload, PID, { readbackFn: noopReadback, postFn: postFnRu057 });
+    } catch (eB) { threwB = true; errB = eB; }
+
+    assert('(b1) flag ON: postConfirmationWithRetry_ still throws (caller sees SAP error)', threwB);
+    assert('(b2) flag ON: thrown error is the original SAP error',
+      threwB && /RU\/057/.test(String(errB && errB.message)), 'got=' + (errB && errB.message));
+    var exB = readExclusion();
+    assert('(b3) flag ON: ExclusionStatus = EXCLUDED',
+      exB && exB.status === 'EXCLUDED', 'got=' + (exB && exB.status));
+    assert('(b4) flag ON: ExcludedBy = SYSTEM_AUTO',
+      exB && exB.by === 'SYSTEM_AUTO', 'got=' + (exB && exB.by));
+    assert('(b5) flag ON: ExclusionReason contains RU/057',
+      exB && /RU\/057/.test(exB.reason), 'got=' + (exB && exB.reason));
+
+    resetExclusion();
+
+    // ---- (c) flag ON, BUSINESS error WITHOUT RU/057 — must NOT auto-exclude ----
+    var postFnOtherCode = function() {
+      throw new Error('SAP Confirmation POST failed HTTP 400: ' +
+        '{"error":{"code":"ZX/999","message":{"value":"some other business error"}}}');
+    };
+    var threwC = false, errC = null;
+    try {
+      postConfirmationWithRetry_(payload, PID, { readbackFn: noopReadback, postFn: postFnOtherCode });
+    } catch (eC) { threwC = true; errC = eC; }
+
+    assert('(c1) flag ON, non-matching code: still throws', threwC);
+    assert('(c2) flag ON, non-matching code: thrown error is original',
+      threwC && /ZX\/999/.test(String(errC && errC.message)), 'got=' + (errC && errC.message));
+    var exC = readExclusion();
+    assert('(c3) flag ON, non-matching code: ExclusionStatus NOT changed',
+      exC && exC.status !== 'EXCLUDED', 'got=' + (exC && exC.status));
+
+    // ---- (d) flag ON, malformed/non-JSON error message — hook must not misbehave ----
+    var postFnMalformed = function() {
+      throw new Error('SAP Confirmation POST failed HTTP 400: Bad Request (plain text, no JSON body)');
+    };
+    var threwD = false, errD = null, hookThrewUnexpectedD = false;
+    try {
+      postConfirmationWithRetry_(payload, PID, { readbackFn: noopReadback, postFn: postFnMalformed });
+    } catch (eD) {
+      threwD = true; errD = eD;
+      // The only acceptable thrown error here is the original SAP error — the
+      // hook itself must never be the source of a *different* exception.
+      if (!/Bad Request/.test(String(eD.message))) hookThrewUnexpectedD = true;
+    }
+
+    assert('(d1) flag ON, malformed body: still throws the original error', threwD);
+    assert('(d2) flag ON, malformed body: no unexpected exception surfaces from the hook',
+      !hookThrewUnexpectedD, 'got=' + (errD && errD.message));
+    var exD = readExclusion();
+    assert('(d3) flag ON, malformed body: ExclusionStatus NOT changed',
+      exD && exD.status !== 'EXCLUDED', 'got=' + (exD && exD.status));
+
+    // ---- (e) flag ON, RU/057 present, excludePallet_ itself throws — original SAP
+    // error must still surface (try/catch around excludePallet_ must swallow) ----
+    excludePallet_ = function() { throw new Error('simulated excludePallet_ failure'); };
+    var threwE = false, errE = null;
+    try {
+      postConfirmationWithRetry_(payload, PID, { readbackFn: noopReadback, postFn: postFnRu057 });
+    } catch (eE) { threwE = true; errE = eE; }
+    excludePallet_ = origExcludePallet;
+
+    assert('(e1) flag ON, excludePallet_ throws: postConfirmationWithRetry_ still throws', threwE);
+    assert('(e2) flag ON, excludePallet_ throws: thrown error is the ORIGINAL SAP error, not the stub error',
+      threwE && /RU\/057/.test(String(errE && errE.message)) &&
+      !/simulated excludePallet_ failure/.test(String(errE && errE.message)),
+      'got=' + (errE && errE.message));
+    var exE = readExclusion();
+    assert('(e3) flag ON, excludePallet_ throws: ExclusionStatus NOT changed (write never completed)',
+      exE && exE.status !== 'EXCLUDED', 'got=' + (exE && exE.status));
+
+    // ---- (e-alt) flag ON, RU/057, real excludePallet_ pointed at a NONEXISTENT
+    // palletId — confirm excludePallet_'s actual not-found behavior is a plain
+    // {success:false} return (no throw), and postConfirmationWithRetry_ still
+    // throws the original SAP error regardless ----
+    var NONEXISTENT_PID = 'PL-ZZEXCL-NOPE-L99';
+    var probeResult = excludePallet_(NONEXISTENT_PID, 'probe', 'TEST_runner');
+    assert('(e-alt-probe) excludePallet_ on a not-found pallet returns {success:false} WITHOUT throwing',
+      probeResult && probeResult.success === false, JSON.stringify(probeResult));
+
+    var threwEAlt = false, errEAlt = null;
+    try {
+      postConfirmationWithRetry_(payload, NONEXISTENT_PID, { readbackFn: noopReadback, postFn: postFnRu057 });
+    } catch (eEAlt) { threwEAlt = true; errEAlt = eEAlt; }
+
+    assert('(e-alt) flag ON, nonexistent palletId: postConfirmationWithRetry_ still throws the original SAP error',
+      threwEAlt && /RU\/057/.test(String(errEAlt && errEAlt.message)), 'got=' + (errEAlt && errEAlt.message));
+
+  } catch (ex) {
+    pass = false;
+    Logger.log('❌ EXCEPTION: ' + ex.message);
+  } finally {
+    excludePallet_ = origExcludePallet;
+    props.setProperty(flagKey, 'false'); // never leak ON into other tests/production
+
+    var pmCleanup = pmSh.getDataRange().getValues();
+    for (var pr = pmCleanup.length - 1; pr >= 1; pr--) {
+      if (/^PL-ZZEXCL-(AUTOX|NOPE)-/i.test(String(pmCleanup[pr][pmIdx['PalletID']] || '').trim())) {
+        pmSh.deleteRow(pr + 1);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent(fn, 'AutoExcludeOnOrderDeleted', pass ? 'PASS' : 'FAIL', elapsed,
     results.length + ' assertions');
 
   return pass;

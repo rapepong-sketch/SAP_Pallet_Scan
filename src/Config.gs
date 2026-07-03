@@ -63,7 +63,14 @@ const CFG = {
     // work; kept under a distinct key/name on purpose to avoid any confusion
     // between the two. Defaults to false (unset) — 6.2-REV exact-match-only
     // behavior stays in force everywhere until Kor explicitly flips this on.
-    LOCAL_OP_CUMULATIVE: 'LOCAL_OP_CUMULATIVE_ENABLED' // 'false'(default) | 'true'
+    LOCAL_OP_CUMULATIVE: 'LOCAL_OP_CUMULATIVE_ENABLED', // 'false'(default) | 'true'
+    // When SAP rejects a confirmation POST with error code RU/057 (order
+    // deleted) or another code listed in ORDER_DELETED_SAP_ERROR_CODES_
+    // (Confirmation.gs), the pallet is automatically flagged
+    // ExclusionStatus=EXCLUDED instead of being left to retry forever.
+    // Defaults to false — must be explicitly enabled via menu after TEST_
+    // passes.
+    AUTO_EXCLUDE_ON_ORDER_DELETED: 'AUTO_EXCLUDE_ON_ORDER_DELETED_ENABLED' // 'false'(default) | 'true'
   },
 
   // ---- Local per-operation cumulative confirmation (OperationLog-only) ----

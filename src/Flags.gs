@@ -44,6 +44,17 @@ function isLocalOpCumulativeEnabled_() {
     .getProperty(CFG.FLAG_KEYS.LOCAL_OP_CUMULATIVE) === 'true'; // unset → safe default false
 }
 
+/**
+ * @return {boolean} true = auto-exclude a pallet whose confirmation POST was
+ * rejected by SAP with an order-deleted error code (RU/057 or another code
+ * in ORDER_DELETED_SAP_ERROR_CODES_, Confirmation.gs). Defaults to false
+ * (safe) when the property has never been set.
+ */
+function isAutoExcludeOnOrderDeletedEnabled_() {
+  return PropertiesService.getScriptProperties()
+    .getProperty(CFG.FLAG_KEYS.AUTO_EXCLUDE_ON_ORDER_DELETED) === 'true';
+}
+
 // ============================================================================
 // Setters — bound to menu items; every setter ends with an alert()
 // ============================================================================
@@ -111,6 +122,28 @@ function flagDisableLocalOpCumulative() {
   SpreadsheetApp.getUi().alert(
     '🔴 LOCAL_OP_CUMULATIVE_ENABLED = false\n\n' +
     'กลับสู่พฤติกรรมเดิม (6.2-REV) — ต้องบันทึกครบจำนวนต่อขั้นตอนในครั้งเดียว'
+  );
+}
+
+/** 🟢 เปิด Auto-Exclude เมื่อ Order ถูกลบ (SAP RU/057 → auto-exclude pallet) */
+function flagEnableAutoExcludeOnOrderDeleted() {
+  PropertiesService.getScriptProperties()
+    .setProperty(CFG.FLAG_KEYS.AUTO_EXCLUDE_ON_ORDER_DELETED, 'true');
+  logEvent('FLAG', CFG.FLAG_KEYS.AUTO_EXCLUDE_ON_ORDER_DELETED, 'SET_TRUE', 0, 'via menu');
+  SpreadsheetApp.getUi().alert(
+    '✅ AUTO_EXCLUDE_ON_ORDER_DELETED = true\n\n' +
+    'พาเลทจะถูก exclude อัตโนมัติเมื่อ SAP ตอบกลับ Order ถูกลบ (RU/057)'
+  );
+}
+
+/** 🔴 ปิด Auto-Exclude เมื่อ Order ถูกลบ */
+function flagDisableAutoExcludeOnOrderDeleted() {
+  PropertiesService.getScriptProperties()
+    .setProperty(CFG.FLAG_KEYS.AUTO_EXCLUDE_ON_ORDER_DELETED, 'false');
+  logEvent('FLAG', CFG.FLAG_KEYS.AUTO_EXCLUDE_ON_ORDER_DELETED, 'SET_FALSE', 0, 'via menu');
+  SpreadsheetApp.getUi().alert(
+    '🔴 AUTO_EXCLUDE_ON_ORDER_DELETED = false\n\n' +
+    'กลับสู่พฤติกรรมเดิม — ไม่ auto-exclude เมื่อ Order ถูกลบ (RU/057)'
   );
 }
 
