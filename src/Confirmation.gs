@@ -1731,6 +1731,33 @@ function replayDeadLetter_(dlid) {
     }
 
     if (result.ok) {
+      // ---- Readback MaterialDocument (best-effort — mirrors confirmPallet()) ----
+      var matDoc = { materialDocument: '', materialDocumentYear: '' };
+      try {
+        matDoc = readMaterialDocument_(
+          result.confirmationGroup, result.confirmationCount, result.session
+        );
+      } catch (matDocErr) {
+        logEvent('DEADLETTER', 'REPLAY_MATDOC_ERR',
+          dlid + ' ' + palletId + ' ' + matDocErr.message);
+      }
+
+      // ---- Writeback to PalletMaster — must not block DeadLetter bookkeeping below ----
+      try {
+        updatePalletScanFields_(palletId, {
+          ConfirmationGroup:      result.confirmationGroup,
+          ConfirmationCount:      result.confirmationCount,
+          GRMaterialDocument:     matDoc.materialDocument,
+          GRMaterialDocumentYear: matDoc.materialDocumentYear,
+          ConfirmedAt:            now,
+          ConfirmedBy:            getActiveUserSafe_(),
+          ScanStatus:             'CONFIRMED'
+        });
+      } catch (pmErr) {
+        logEvent('DEADLETTER', 'REPLAY_PM_WRITE_ERR',
+          dlid + ' ' + palletId + ' ' + pmErr.message);
+      }
+
       sh.getRange(rowNum, idx['ReplayStatus'] + 1).setValue('REPLAYED_OK');
       sh.getRange(rowNum, idx['ReplayedAt'] + 1).setValue(now);
       sh.getRange(rowNum, idx['ReplayNote'] + 1).setValue(
@@ -2711,4 +2738,391 @@ function TEST_batchWriteLeadingZeros() {
 
   Logger.log(pass ? '✅ ' + fn + ' PASSED: ' + detail : '❌ ' + fn + ' FAILED: ' + detail);
   logEvent(fn, TEST_PID, pass ? 'PASS' : 'FAIL', Date.now() - t0, detail);
+}
+
+// ============================================================================
+// TEST — replayDeadLetter_() fresh-POST-success PalletMaster writeback fix
+// ============================================================================
+
+/**
+ * Self-cleaning suite for the replayDeadLetter_() PalletMaster writeback fix.
+ * Mocks postConfirmationWithRetry_(), readMaterialDocument_(), and
+ * notifyDeadLetterLark_() (no live SAP or Lark calls). Tracks
+ * updatePalletScanFields_() call count via a wrapper to prove which branches
+ * write to PalletMaster and which don't.
+ * Covers:
+ *   (A)  healed branch — regression guard, zero direct PM writes from
+ *        replayDeadLetter_ itself (writeback already happens inside
+ *        postConfirmationWithRetry_ -> _healConfirmedPallet_, not tested here).
+ *   (B)  fresh-POST-success + successful matDoc readback — full writeback,
+ *        plus a direct idempotency check on repeat updatePalletScanFields_.
+ *   (C1) fresh-POST-success + matDoc readback returns empty (soft-fail shape).
+ *   (C2) fresh-POST-success + matDoc readback THROWS (hard failure) — must
+ *        not leak into replayDeadLetter_'s outer catch.
+ *   (D1) flag-blocked branch — untouched, zero PM writes.
+ *   (D2) still-open/failed branch — untouched, zero PM writes.
+ * Returns true iff all assertions pass. Deletes all PL-ZZDLWB-* fixture rows
+ * from PalletMaster and DeadLetter in a finally block regardless of outcome.
+ */
+function TEST_replayDeadLetterWriteback_() {
+  var fn = 'TEST_replayDeadLetterWriteback_';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+    return ok;
+  }
+
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var pmHdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  pmHdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var dlSh = ensureDeadLetterSheet_();
+  var dlIdx = {};
+  dlSh.getRange(1, 1, 1, dlSh.getLastColumn()).getValues()[0]
+    .forEach(function(h, i) { dlIdx[String(h).trim()] = i; });
+
+  var TEST_MO = '0000091234'; // all-digit — avoids leading-zero coercion gotcha
+
+  var origPost         = postConfirmationWithRetry_;
+  var origReadMat       = readMaterialDocument_;
+  var origUpdateFields  = updatePalletScanFields_;
+  var origLarkNotify    = notifyDeadLetterLark_;
+
+  var pmWriteCalls = 0;
+  var trackingUpdateFields = function(palletId, fields) {
+    pmWriteCalls++;
+    return origUpdateFields(palletId, fields);
+  };
+
+  function seedPmRow(pid) {
+    var newRow = [];
+    for (var i = 0; i < pmHdr.length; i++) newRow.push('');
+    newRow[pmIdx['PalletID']]           = pid;
+    newRow[pmIdx['ManufacturingOrder']] = TEST_MO;
+    newRow[pmIdx['Material']]           = 'ZZTEST-MAT';
+    newRow[pmIdx['QtyPerPallet']]       = 100;
+    newRow[pmIdx['Unit']]               = 'PC';
+    newRow[pmIdx['ScanStatus']]         = 'QC_COMPLETE';
+    pmSh.appendRow(newRow);
+  }
+
+  function seedDlRow(pid) {
+    captureDeadLetter_({
+      path: 'CONFIRM', palletId: pid, mo: TEST_MO, paddedMO: TEST_MO,
+      outcome: 'UNKNOWN_STATE', attempts: 3, lastErrorClass: 'TIMEOUT_UNKNOWN',
+      lastErrorMsg: 'test fixture', payload: { OrderID: TEST_MO, ConfirmationText: pid },
+      token: pid
+    });
+    SpreadsheetApp.flush();
+    var data = dlSh.getDataRange().getValues();
+    for (var r = data.length - 1; r >= 1; r--) {
+      if (String(data[r][dlIdx['PalletID']] || '').trim() === pid) {
+        return String(data[r][dlIdx['DLID']] || '').trim();
+      }
+    }
+    return null;
+  }
+
+  function readPmRow(pid) {
+    var data = pmSh.getDataRange().getValues();
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][pmIdx['PalletID']] || '').trim() === pid) return data[r];
+    }
+    return null;
+  }
+
+  function readDlRow(dlid) {
+    var data = dlSh.getDataRange().getValues();
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][dlIdx['DLID']] || '').trim() === dlid) return data[r];
+    }
+    return null;
+  }
+
+  try {
+    notifyDeadLetterLark_ = function() { /* no-op — no live Lark send during test */ };
+    updatePalletScanFields_ = trackingUpdateFields;
+
+    // ---- (A) healed branch — regression guard ----
+    var pidA = 'PL-ZZDLWB-A-L01';
+    seedPmRow(pidA);
+    var dlidA = seedDlRow(pidA);
+    SpreadsheetApp.flush();
+
+    postConfirmationWithRetry_ = function() {
+      return { ok: true, healed: true, confirmationGroup: 'ZZHEAL1', confirmationCount: '1' };
+    };
+    pmWriteCalls = 0;
+
+    var rA = replayDeadLetter_(dlidA);
+    SpreadsheetApp.flush();
+
+    assert('(A1) healed branch returns REPLAYED_HEALED',
+      rA.status === 'REPLAYED_HEALED', 'got=' + rA.status);
+    assert('(A2) healed branch makes ZERO direct PalletMaster writes from replayDeadLetter_ itself',
+      pmWriteCalls === 0, 'calls=' + pmWriteCalls);
+    var dlRowA = readDlRow(dlidA);
+    assert('(A3) DeadLetter ReplayStatus = REPLAYED_HEALED',
+      dlRowA && String(dlRowA[dlIdx['ReplayStatus']]).trim() === 'REPLAYED_HEALED',
+      'got=' + (dlRowA ? dlRowA[dlIdx['ReplayStatus']] : 'ROW_MISSING'));
+
+    // ---- (B) fresh-POST-success + successful matDoc readback ----
+    var pidB = 'PL-ZZDLWB-B-L01';
+    seedPmRow(pidB);
+    var dlidB = seedDlRow(pidB);
+    SpreadsheetApp.flush();
+
+    var beforeB = new Date();
+    postConfirmationWithRetry_ = function() {
+      return { ok: true, confirmationGroup: 'ZZFRESH1', confirmationCount: '1', session: {} };
+    };
+    readMaterialDocument_ = function() {
+      return { materialDocument: '4900266001', materialDocumentYear: '2026' };
+    };
+    pmWriteCalls = 0;
+
+    var rB = replayDeadLetter_(dlidB);
+    SpreadsheetApp.flush();
+    var afterB = new Date();
+
+    assert('(B1) replay returns REPLAYED_OK', rB.status === 'REPLAYED_OK', 'got=' + rB.status);
+    assert('(B2) exactly one PalletMaster write call', pmWriteCalls === 1, 'calls=' + pmWriteCalls);
+    var pmRowB = readPmRow(pidB);
+    if (assert('(B3) PalletMaster row found', !!pmRowB)) {
+      assert('(B4) GRMaterialDocument written',
+        String(pmRowB[pmIdx['GRMaterialDocument']]).trim() === '4900266001',
+        'got=' + pmRowB[pmIdx['GRMaterialDocument']]);
+      assert('(B5) GRMaterialDocumentYear written',
+        String(pmRowB[pmIdx['GRMaterialDocumentYear']]).trim() === '2026',
+        'got=' + pmRowB[pmIdx['GRMaterialDocumentYear']]);
+      assert('(B6) ConfirmationGroup written',
+        String(pmRowB[pmIdx['ConfirmationGroup']]).trim() === 'ZZFRESH1',
+        'got=' + pmRowB[pmIdx['ConfirmationGroup']]);
+      assert('(B7) ConfirmationCount written',
+        String(pmRowB[pmIdx['ConfirmationCount']]).trim() === '1',
+        'got=' + pmRowB[pmIdx['ConfirmationCount']]);
+      assert('(B8) ScanStatus = CONFIRMED',
+        String(pmRowB[pmIdx['ScanStatus']]).trim() === 'CONFIRMED',
+        'got=' + pmRowB[pmIdx['ScanStatus']]);
+      var confirmedAtB = pmRowB[pmIdx['ConfirmedAt']];
+      var confirmedAtBDate = (confirmedAtB instanceof Date) ? confirmedAtB : new Date(confirmedAtB);
+      assert('(B9) ConfirmedAt is a recent Date (within this test run window)',
+        confirmedAtBDate instanceof Date && !isNaN(confirmedAtBDate) &&
+        confirmedAtBDate >= beforeB && confirmedAtBDate <= afterB,
+        'got=' + confirmedAtB);
+      assert('(B10) ConfirmedBy = getActiveUserSafe_()',
+        String(pmRowB[pmIdx['ConfirmedBy']]).trim() === String(getActiveUserSafe_()),
+        'got=' + pmRowB[pmIdx['ConfirmedBy']]);
+
+      // ---- (B11/B12) Idempotency: repeat updatePalletScanFields_ with same values ----
+      origUpdateFields(pidB, {
+        ConfirmationGroup: 'ZZFRESH1', ConfirmationCount: '1',
+        GRMaterialDocument: '4900266001', GRMaterialDocumentYear: '2026',
+        ConfirmedAt: confirmedAtB, ConfirmedBy: getActiveUserSafe_(),
+        ScanStatus: 'CONFIRMED'
+      });
+      SpreadsheetApp.flush();
+      var pmDataIdem = pmSh.getDataRange().getValues();
+      var idemRowCount = 0, pmRowB2 = null;
+      for (var ir = 1; ir < pmDataIdem.length; ir++) {
+        if (String(pmDataIdem[ir][pmIdx['PalletID']] || '').trim() === pidB) {
+          idemRowCount++; pmRowB2 = pmDataIdem[ir];
+        }
+      }
+      assert('(B11) idempotent re-write: exactly one PalletMaster row still exists',
+        idemRowCount === 1, 'count=' + idemRowCount);
+      assert('(B12) idempotent re-write: values unchanged',
+        pmRowB2 && String(pmRowB2[pmIdx['GRMaterialDocument']]).trim() === '4900266001' &&
+        String(pmRowB2[pmIdx['ScanStatus']]).trim() === 'CONFIRMED',
+        'grDoc=' + (pmRowB2 && pmRowB2[pmIdx['GRMaterialDocument']]) +
+        ' status=' + (pmRowB2 && pmRowB2[pmIdx['ScanStatus']]));
+    }
+    var dlRowB = readDlRow(dlidB);
+    assert('(B13) DeadLetter ReplayStatus = REPLAYED_OK',
+      dlRowB && String(dlRowB[dlIdx['ReplayStatus']]).trim() === 'REPLAYED_OK',
+      'got=' + (dlRowB ? dlRowB[dlIdx['ReplayStatus']] : 'ROW_MISSING'));
+
+    // ---- (C1) fresh-POST-success + matDoc readback returns soft-fail empty shape ----
+    var pidC1 = 'PL-ZZDLWB-C1-L01';
+    seedPmRow(pidC1);
+    var dlidC1 = seedDlRow(pidC1);
+    SpreadsheetApp.flush();
+
+    postConfirmationWithRetry_ = function() {
+      return { ok: true, confirmationGroup: 'ZZFRESH2', confirmationCount: '1', session: {} };
+    };
+    readMaterialDocument_ = function() {
+      return { materialDocument: '', materialDocumentYear: '' };
+    };
+
+    var rC1 = replayDeadLetter_(dlidC1);
+    SpreadsheetApp.flush();
+
+    assert('(C1a) replay returns REPLAYED_OK despite empty matDoc',
+      rC1.status === 'REPLAYED_OK', 'got=' + rC1.status);
+    var pmRowC1 = readPmRow(pidC1);
+    if (assert('(C1b) PalletMaster row found', !!pmRowC1)) {
+      assert('(C1c) ScanStatus = CONFIRMED (partial writeback happens)',
+        String(pmRowC1[pmIdx['ScanStatus']]).trim() === 'CONFIRMED',
+        'got=' + pmRowC1[pmIdx['ScanStatus']]);
+      assert('(C1d) ConfirmationGroup written',
+        String(pmRowC1[pmIdx['ConfirmationGroup']]).trim() === 'ZZFRESH2',
+        'got=' + pmRowC1[pmIdx['ConfirmationGroup']]);
+      assert('(C1e) ConfirmationCount written',
+        String(pmRowC1[pmIdx['ConfirmationCount']]).trim() === '1',
+        'got=' + pmRowC1[pmIdx['ConfirmationCount']]);
+      assert('(C1f) GRMaterialDocument left empty',
+        String(pmRowC1[pmIdx['GRMaterialDocument']] || '').trim() === '',
+        'got=' + pmRowC1[pmIdx['GRMaterialDocument']]);
+      assert('(C1g) ConfirmedAt written', !!pmRowC1[pmIdx['ConfirmedAt']]);
+    }
+    var dlRowC1 = readDlRow(dlidC1);
+    assert('(C1h) DeadLetter ReplayStatus = REPLAYED_OK (SAP POST success is source of truth)',
+      dlRowC1 && String(dlRowC1[dlIdx['ReplayStatus']]).trim() === 'REPLAYED_OK',
+      'got=' + (dlRowC1 ? dlRowC1[dlIdx['ReplayStatus']] : 'ROW_MISSING'));
+
+    // ---- (C2) fresh-POST-success + matDoc readback THROWS (hard failure) ----
+    var pidC2 = 'PL-ZZDLWB-C2-L01';
+    seedPmRow(pidC2);
+    var dlidC2 = seedDlRow(pidC2);
+    SpreadsheetApp.flush();
+
+    postConfirmationWithRetry_ = function() {
+      return { ok: true, confirmationGroup: 'ZZFRESH3', confirmationCount: '1', session: {} };
+    };
+    readMaterialDocument_ = function() {
+      throw new Error('simulated network/JSON failure');
+    };
+
+    var rC2, threwC2 = false;
+    try {
+      rC2 = replayDeadLetter_(dlidC2);
+    } catch (c2err) {
+      threwC2 = true;
+    }
+
+    assert('(C2a) replayDeadLetter_ does NOT propagate the matDoc exception',
+      !threwC2, 'threw=' + threwC2);
+    assert('(C2b) replay returns REPLAYED_OK despite matDoc exception',
+      !!rC2 && rC2.status === 'REPLAYED_OK', 'got=' + (rC2 ? rC2.status : 'undefined'));
+    var pmRowC2 = readPmRow(pidC2);
+    if (assert('(C2c) PalletMaster row found', !!pmRowC2)) {
+      assert('(C2d) ScanStatus = CONFIRMED despite matDoc exception',
+        String(pmRowC2[pmIdx['ScanStatus']]).trim() === 'CONFIRMED',
+        'got=' + pmRowC2[pmIdx['ScanStatus']]);
+      assert('(C2e) ConfirmationGroup written despite matDoc exception',
+        String(pmRowC2[pmIdx['ConfirmationGroup']]).trim() === 'ZZFRESH3',
+        'got=' + pmRowC2[pmIdx['ConfirmationGroup']]);
+      assert('(C2f) GRMaterialDocument left empty (fallback shape used)',
+        String(pmRowC2[pmIdx['GRMaterialDocument']] || '').trim() === '',
+        'got=' + pmRowC2[pmIdx['GRMaterialDocument']]);
+    }
+    var dlRowC2 = readDlRow(dlidC2);
+    assert('(C2g) DeadLetter ReplayStatus = REPLAYED_OK',
+      dlRowC2 && String(dlRowC2[dlIdx['ReplayStatus']]).trim() === 'REPLAYED_OK',
+      'got=' + (dlRowC2 ? dlRowC2[dlIdx['ReplayStatus']] : 'ROW_MISSING'));
+
+    // ---- (D1) flag-blocked branch — untouched ----
+    var pidD1 = 'PL-ZZDLWB-D1-L01';
+    seedPmRow(pidD1);
+    var dlidD1 = seedDlRow(pidD1);
+    SpreadsheetApp.flush();
+
+    postConfirmationWithRetry_ = function() { return { skipped: true }; };
+    pmWriteCalls = 0;
+
+    var rD1 = replayDeadLetter_(dlidD1);
+    SpreadsheetApp.flush();
+
+    assert('(D1a) flag-blocked returns FLAG_BLOCKED', rD1.status === 'FLAG_BLOCKED', 'got=' + rD1.status);
+    assert('(D1b) flag-blocked branch makes ZERO PalletMaster writes',
+      pmWriteCalls === 0, 'calls=' + pmWriteCalls);
+    var pmRowD1 = readPmRow(pidD1);
+    assert('(D1c) PalletMaster ScanStatus unchanged (still QC_COMPLETE)',
+      pmRowD1 && String(pmRowD1[pmIdx['ScanStatus']]).trim() === 'QC_COMPLETE',
+      'got=' + (pmRowD1 ? pmRowD1[pmIdx['ScanStatus']] : 'ROW_MISSING'));
+    var dlRowD1 = readDlRow(dlidD1);
+    assert('(D1d) DeadLetter ReplayStatus NOT changed (stays OPEN, matches pre-fix behavior)',
+      dlRowD1 && String(dlRowD1[dlIdx['ReplayStatus']]).trim() === 'OPEN',
+      'got=' + (dlRowD1 ? dlRowD1[dlIdx['ReplayStatus']] : 'ROW_MISSING'));
+
+    // ---- (D2) still-open/failed branch — untouched ----
+    var pidD2 = 'PL-ZZDLWB-D2-L01';
+    seedPmRow(pidD2);
+    var dlidD2 = seedDlRow(pidD2);
+    SpreadsheetApp.flush();
+
+    postConfirmationWithRetry_ = function() {
+      return { ok: false, unknownState: true, error: 'simulated unknown state' };
+    };
+    pmWriteCalls = 0;
+
+    var rD2 = replayDeadLetter_(dlidD2);
+    SpreadsheetApp.flush();
+
+    assert('(D2a) still-open returns STILL_OPEN', rD2.status === 'STILL_OPEN', 'got=' + rD2.status);
+    assert('(D2b) still-open branch makes ZERO PalletMaster writes',
+      pmWriteCalls === 0, 'calls=' + pmWriteCalls);
+    var pmRowD2 = readPmRow(pidD2);
+    assert('(D2c) PalletMaster ScanStatus unchanged (still QC_COMPLETE)',
+      pmRowD2 && String(pmRowD2[pmIdx['ScanStatus']]).trim() === 'QC_COMPLETE',
+      'got=' + (pmRowD2 ? pmRowD2[pmIdx['ScanStatus']] : 'ROW_MISSING'));
+    var dlRowD2 = readDlRow(dlidD2);
+    assert('(D2d) DeadLetter ReplayStatus NOT changed (stays OPEN, matches pre-fix behavior)',
+      dlRowD2 && String(dlRowD2[dlIdx['ReplayStatus']]).trim() === 'OPEN',
+      'got=' + (dlRowD2 ? dlRowD2[dlIdx['ReplayStatus']] : 'ROW_MISSING'));
+    assert('(D2e) DeadLetter LastErrorMsg written',
+      dlRowD2 && String(dlRowD2[dlIdx['LastErrorMsg']] || '').indexOf('simulated unknown state') >= 0,
+      'got=' + (dlRowD2 ? dlRowD2[dlIdx['LastErrorMsg']] : 'ROW_MISSING'));
+
+  } catch (ex) {
+    pass = false;
+    Logger.log('❌ EXCEPTION: ' + ex.message);
+  } finally {
+    postConfirmationWithRetry_ = origPost;
+    readMaterialDocument_      = origReadMat;
+    updatePalletScanFields_    = origUpdateFields;
+    notifyDeadLetterLark_      = origLarkNotify;
+
+    // ---- Cleanup: remove all PL-ZZDLWB-* fixture rows from both sheets ----
+    var pmCleanup = pmSh.getDataRange().getValues();
+    for (var pr = pmCleanup.length - 1; pr >= 1; pr--) {
+      if (/^PL-ZZDLWB-/i.test(String(pmCleanup[pr][pmIdx['PalletID']] || '').trim())) {
+        pmSh.deleteRow(pr + 1);
+      }
+    }
+    var dlCleanup = dlSh.getDataRange().getValues();
+    for (var dr = dlCleanup.length - 1; dr >= 1; dr--) {
+      if (/^PL-ZZDLWB-/i.test(String(dlCleanup[dr][dlIdx['PalletID']] || '').trim())) {
+        dlSh.deleteRow(dr + 1);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent(fn, 'DeadLetterReplayWriteback', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions');
+
+  return pass;
 }
