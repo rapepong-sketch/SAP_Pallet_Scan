@@ -10,11 +10,12 @@
 
 var PM_SHEET = 'PalletMaster';
 /**
- * 41-col layout — identical to CFG.HEADERS.PALLET_MASTER.
+ * 45-col layout — identical to CFG.HEADERS.PALLET_MASTER.
  * Indices 22-26 are Phase 3 SAP writeback columns added in the 28→33 migration.
  * Indices 33-35 are Phase 3.5 override audit columns.
  * Indices 36-39 are Phase 3.5 Gate 2 yield-bucket columns.
  * Index 40 is Phase 4.5 Gate 3a QCInspector column.
+ * Indices 41-44 are Phase 3.5 Gate 6 pallet-exclusion columns (PalletExclusion.gs).
  * buildPalletRow_() maps by name, so callers that don't set the new keys
  * automatically get '' for those columns.
  */
@@ -59,7 +60,11 @@ var PM_HEADERS = [
   'RepairQty',               // 37 — Phase 3.5 yield bucket
   'DefectQty',               // 38 — Phase 3.5 yield bucket
   'AwaitConvQty',            // 39 — Phase 3.5 yield bucket
-  'QCInspector'              // 40 — Phase 4.5 Gate 3a
+  'QCInspector',             // 40 — Phase 4.5 Gate 3a
+  'ExclusionStatus',         // 41 — Phase 3.5 Gate 6 pallet exclusion
+  'ExclusionReason',         // 42 — Phase 3.5 Gate 6 pallet exclusion
+  'ExcludedAt',              // 43 — Phase 3.5 Gate 6 pallet exclusion
+  'ExcludedBy'               // 44 — Phase 3.5 Gate 6 pallet exclusion
 ];
 
 /**

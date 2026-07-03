@@ -137,7 +137,8 @@ const CFG = {
       'LabelPrintedAt', 'UpdatedAt', 'QCResultNote',
       'OverrideBy', 'OverrideReason', 'OverrideAt',
       'GoodQty', 'RepairQty', 'DefectQty', 'AwaitConvQty',
-      'QCInspector'
+      'QCInspector',
+      'ExclusionStatus', 'ExclusionReason', 'ExcludedAt', 'ExcludedBy'
     ],
 
     MOQ_CONFIG: [

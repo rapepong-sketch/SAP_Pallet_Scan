@@ -672,6 +672,9 @@ function listConfirmablePallets() {
 
     var pid = String(row[idx['PalletID']] || '').trim();
     if (/^PL-TEST-/i.test(pid)) continue;
+    // Phase 3.5 Gate 6: skip pallets flagged EXCLUDED (PalletExclusion.gs)
+    if (idx['ExclusionStatus'] !== undefined &&
+      String(row[idx['ExclusionStatus']] || '').trim() === 'EXCLUDED') continue;
 
     var mo  = String(row[idx['ManufacturingOrder']] || '').trim();
     var qty = Number(row[idx['QtyPerPallet']]) || 0;
@@ -1583,6 +1586,17 @@ var DL_HEADERS_ = [
   'PayloadJSON', 'Token', 'ConfirmedByState',
   'ReplayStatus', 'ReplayedAt', 'ReplayNote'
 ];
+
+/**
+ * Valid ReplayStatus values (documented here as the single source of truth —
+ * the column has no data-validation rule enforcing this list):
+ *   'OPEN'               — default on capture; replayDeadLetter_() only acts on rows in this state
+ *   'REPLAYED_HEALED'    — replay found the confirmation already in SAP via readback
+ *   'REPLAYED_OK'        — replay POSTed successfully
+ *   'RESOLVED_EXCLUDED'  — Phase 3.5 Gate 6: pallet was excluded via excludePallet_()
+ *                          (PalletExclusion.gs) — row closed out administratively,
+ *                          never touched by replayDeadLetter_()
+ */
 
 function ensureDeadLetterSheet_() {
   var ss = getSpreadsheet_();

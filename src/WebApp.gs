@@ -772,9 +772,9 @@ function getOpsForMo_(mo) {
     const hdr  = data[0];
     const idx  = {};
     hdr.forEach((h, i) => { idx[h] = i; });
-    const moStr = String(mo).trim();
+    const moKey = _normMo_(mo);
     for (let r = 1; r < data.length; r++) {
-      if (String(data[r][idx['ManufacturingOrder']] || '').trim() !== moStr) continue;
+      if (_normMo_(data[r][idx['ManufacturingOrder']]) !== moKey) continue;
       // Try OperationsJSON first (Phase 2.5 lazy-fetch cache)
       const jsonCol = idx['OperationsJSON'];
       if (jsonCol !== undefined) {
@@ -851,13 +851,12 @@ function listOverrideCandidates() {
       var poFoCol = poHdr.indexOf('FinalOperation');
       if (poMoCol !== -1 && poFoCol !== -1) {
         for (var p = 1; p < poData.length; p++) {
-          var poMo = String(poData[p][poMoCol] || '').trim();
+          var poMoKey = _normMo_(poData[p][poMoCol]);
           var poFo = String(poData[p][poFoCol] || '').trim();
-          if (poMo) foMap[poMo] = poFo;
+          if (poMoKey) foMap[poMoKey] = poFo;
         }
       }
     }
-
     var pallets = [];
     for (var r = 1; r < data.length; r++) {
       var row = data[r];
@@ -866,11 +865,15 @@ function listOverrideCandidates() {
       if (String(row[idx['QCStatus']] || '').trim() !== 'INSPECTED') continue;
       if (String(row[idx['QCResult']] || '').trim() !== 'PASS') continue;
       if (/^PL-TEST-/i.test(String(row[idx['PalletID']] || '').trim())) continue;
+      // Phase 3.5 Gate 6: skip pallets flagged EXCLUDED (PalletExclusion.gs)
+      if (idx['ExclusionStatus'] !== undefined &&
+        String(row[idx['ExclusionStatus']] || '').trim() === 'EXCLUDED') continue;
 
-      var mo = String(row[idx['ManufacturingOrder']] || '').trim();
+      var mo    = String(row[idx['ManufacturingOrder']] || '').trim();
+      var moKey = _normMo_(mo);
 
       // Skip if MO not in ProductionOrders or FinalOperation empty
-      if (!foMap.hasOwnProperty(mo) || !foMap[mo]) continue;
+      if (!foMap.hasOwnProperty(moKey) || !foMap[moKey]) continue;
 
       var wc = row[idx['WorkCenter']];
 
@@ -884,7 +887,7 @@ function listOverrideCandidates() {
         Unit:               String(row[idx['Unit']] || '').trim(),
         WorkCenter:         (wc instanceof Date) ? dateToWorkCenter_(wc) : String(wc || '').trim(),
         ScanStatus:         String(row[idx['ScanStatus']] || '').trim(),
-        FinalOperation:     foMap[mo],
+        FinalOperation:     foMap[moKey],
         StorageLocation:    idx['StorageLocation'] !== undefined ? String(row[idx['StorageLocation']] || '').trim() : ''
       });
 

@@ -122,6 +122,10 @@ function onOpen() {
     .addSeparator()
     .addItem('🔁 [Admin] Replay DeadLetter (by DLID)',  'replayDeadLetterDialog')
     .addSeparator()
+    .addItem('🚫 [Admin] Exclude Pallet',               'MENU_excludePallet')
+    .addItem('✅ [Admin] Include Pallet (Undo Exclude)', 'MENU_includePallet')
+    .addItem('🔍 [Diag] Override Candidate Cap (RO)',    'MENU_diagOverrideCandidateCap')
+    .addSeparator()
     .addItem('⚠️ Reverse First-Live Doc 4900216057 (WRITES)', 'REVERSE_firstLiveDoc')
     .addItem('🔄 Reverse Transfer 311 (manual)',               'MENU_reverseTransfer311')
     .addSeparator()
@@ -231,4 +235,59 @@ function seedConfigSheet_() {
     ['SCRIPT_VERSION', 'Phase 1 v1.0',      'Foundation: setup + SapClient + pullProductionOrders']
   ];
   sh.getRange(2, 1, rows.length, 3).setValues(rows);
+}
+
+// ============================================================================
+// Phase 3.5 Gate 6 — Pallet Exclusion menu wrappers (backend: PalletExclusion.gs)
+// ============================================================================
+
+/**
+ * Menu entry: prompt for PalletID + Reason, then exclude via excludePallet_().
+ * No isAdminUser_() check here — access control for this menu item currently
+ * relies on Sheet-level sharing permissions (same as other 🔒 Admin items),
+ * not an in-code admin allowlist.
+ */
+function MENU_excludePallet() {
+  var ui = SpreadsheetApp.getUi();
+
+  var pidResp = ui.prompt('🚫 Exclude Pallet', 'ใส่ PalletID ที่ต้องการ exclude:', ui.ButtonSet.OK_CANCEL);
+  if (pidResp.getSelectedButton() !== ui.Button.OK) return;
+  var palletId = pidResp.getResponseText().trim();
+  if (!palletId) { ui.alert('กรุณาใส่ PalletID'); return; }
+
+  var reasonResp = ui.prompt('🚫 Exclude Pallet', 'เหตุผล (Reason):', ui.ButtonSet.OK_CANCEL);
+  if (reasonResp.getSelectedButton() !== ui.Button.OK) return;
+  var reason = reasonResp.getResponseText().trim();
+
+  var actor = Session.getActiveUser().getEmail() || 'unknown';
+  var result = excludePallet_(palletId, reason, actor);
+
+  if (result.success) {
+    ui.alert('✅ Excluded', palletId + '\nDeadLetter rows resolved: ' + result.deadLetterRowsResolved,
+      ui.ButtonSet.OK);
+  } else {
+    ui.alert('❌ Failed', result.message || 'Unknown error', ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Menu entry: prompt for PalletID, then re-include via includePallet_().
+ * DeadLetter RESOLVED_EXCLUDED rows are left untouched (permanent audit trail).
+ */
+function MENU_includePallet() {
+  var ui = SpreadsheetApp.getUi();
+
+  var pidResp = ui.prompt('✅ Include Pallet', 'ใส่ PalletID ที่ต้องการ include กลับ:', ui.ButtonSet.OK_CANCEL);
+  if (pidResp.getSelectedButton() !== ui.Button.OK) return;
+  var palletId = pidResp.getResponseText().trim();
+  if (!palletId) { ui.alert('กรุณาใส่ PalletID'); return; }
+
+  var actor = Session.getActiveUser().getEmail() || 'unknown';
+  var result = includePallet_(palletId, actor);
+
+  if (result.success) {
+    ui.alert('✅ Included', palletId + ' กลับเข้าสู่ระบบแล้ว', ui.ButtonSet.OK);
+  } else {
+    ui.alert('❌ Failed', result.message || 'Unknown error', ui.ButtonSet.OK);
+  }
 }

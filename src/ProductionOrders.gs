@@ -597,6 +597,23 @@ function fetchOperationsForMO_(mo) {
 }
 
 /**
+ * Canonical form of a ManufacturingOrder for COMPARISON purposes only — never
+ * for display or SAP payloads. Google Sheets silently re-coerces an all-digit
+ * string cell (e.g. '0000098002') back to Number format on readback, which
+ * strips leading zeros; write-side fixes (format+flush+setValue) cannot
+ * reliably prevent this at the platform level. Stripping leading zeros here
+ * makes '98002' and '0000098002' compare equal regardless of which form
+ * Sheets happens to have coerced a given cell to.
+ * @param {string|number} v
+ * @return {string}
+ */
+function _normMo_(v) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return '';
+  return s.replace(/^0+(?=\d)/, '');
+}
+
+/**
  * Read the cached final operation number for a MO from the ProductionOrders
  * sheet (fast sheet read, no SAP call). Phase 3 Step 2 uses this to build the
  * SAP confirmation payload without re-deriving the routing every scan.
@@ -617,8 +634,9 @@ function getFinalOperationCached_(mo) {
     const foCol = hdr.indexOf('FinalOperation');
     if (moCol === -1 || foCol === -1) return '';
     const data = sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).getValues();
+    const moKey = _normMo_(mo);
     for (let i = 0; i < data.length; i++) {
-      if (String(data[i][moCol] || '').trim() === mo) {
+      if (_normMo_(data[i][moCol]) === moKey) {
         return _normOpNo_(data[i][foCol]);
       }
     }
@@ -650,8 +668,9 @@ function cacheFinalOperation_(mo, finalOpNo) {
     const foCol = hdr.indexOf('FinalOperation');
     if (moCol === -1 || foCol === -1) return;
     const keys = sh.getRange(2, moCol + 1, lastRow - 1, 1).getValues();
+    const moKey = _normMo_(mo);
     for (let i = 0; i < keys.length; i++) {
-      if (String(keys[i][0] || '').trim() === mo) {
+      if (_normMo_(keys[i][0]) === moKey) {
         const cell = sh.getRange(i + 2, foCol + 1);
         if (_normOpNo_(cell.getValue()) !== finalOpNo) {
           cell.setNumberFormat('@').setValue(finalOpNo);
