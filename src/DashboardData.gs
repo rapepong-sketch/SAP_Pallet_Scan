@@ -178,6 +178,160 @@ function _readPmUpdatedAtByPallet_() {
 }
 
 // ============================================================================
+// Transfer (issue/receive) + GR movements for TODAY, grouped by StorageLocation
+// ============================================================================
+// Transfer side: TransferLog.Status === 'TRANSFERRED' AND UpdatedAt on dateStr
+// is a SAFE combined filter — every success path (live POST, SAP-readback heal,
+// retry-wrapper success) sets both Status and UpdatedAt together in the same
+// write; failed/retried attempts never set Status='TRANSFERRED', so they're
+// naturally excluded without any extra bookkeeping.
+//
+// GR side: PalletMaster has NO reliable "GR posted at this moment" field.
+// ConfirmedAt is the closest proxy but is known to diverge from
+// GRMaterialDocument in two paths (backfillMaterialDocument, dead-letter
+// heal/replay) — grReceivedBySlocApprox is therefore approximate, same
+// labeling/treatment as qcCompletedTodayApprox above, not authoritative.
+// KNOWN GAP (not fixed here): a dead letter that is successfully replayed
+// WITHOUT going through the heal path never writes GRMaterialDocument/
+// ConfirmedAt back to PalletMaster at all, so that GR event is invisible to
+// this approximate count.
+
+/**
+ * Raw TransferLog rows needed for today's issue/receive-by-StorageLocation
+ * aggregation. No existing helper in the codebase filters on
+ * Status==='TRANSFERRED' AND UpdatedAt (TransferReport.gs's getIssuedForDay_
+ * uses a different filter — TxnType==='SPLIT_ISSUE' + CreatedAt — which mixes
+ * in still-open ISSUED rows), so this is a small dedicated read, same
+ * rationale as _readPmUpdatedAtByPallet_() above.
+ * @return {Array<{status:string, updatedAt:*, sourceSloc:string, destSloc:string, issueQty:number}>}
+ */
+function _readTlRowsForSlocAgg_() {
+  var sh = getSpreadsheet_().getSheetByName(TL_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var rows = [];
+  for (var r = 1; r < data.length; r++) {
+    rows.push({
+      status:     String(data[r][idx['Status']] || '').trim(),
+      updatedAt:  data[r][idx['UpdatedAt']],
+      sourceSloc: String(data[r][idx['SourceSLoc']] || '').trim(),
+      destSloc:   String(data[r][idx['DestSLoc']] || '').trim(),
+      issueQty:   Number(data[r][idx['IssueQty']]) || 0
+    });
+  }
+  return rows;
+}
+
+/**
+ * Pure aggregator (no sheet I/O) — groups TRANSFERRED-today TransferLog rows
+ * by SourceSLoc (issued) and DestSLoc (received). Testable directly with
+ * synthetic rows, same pattern as _buildDashboardAggregates_.
+ * @param {string} dateStr — 'yyyy-MM-dd', Asia/Bangkok
+ * @param {Array} tlRows — _readTlRowsForSlocAgg_() shape
+ * @return {{transferIssuedBySloc:Array, transferReceivedBySloc:Array}}
+ */
+function _buildTransferSlocAggregates_(dateStr, tlRows) {
+  var issuedMap = {};
+  var receivedMap = {};
+
+  tlRows.forEach(function(row) {
+    if (row.status !== 'TRANSFERRED') return;
+    if (_fmtOlDate_(row.updatedAt) !== dateStr) return;
+
+    if (row.sourceSloc) {
+      if (!issuedMap[row.sourceSloc]) {
+        issuedMap[row.sourceSloc] = { sloc: row.sourceSloc, palletCount: 0, qty: 0 };
+      }
+      issuedMap[row.sourceSloc].palletCount++;
+      issuedMap[row.sourceSloc].qty += row.issueQty;
+    }
+    if (row.destSloc) {
+      if (!receivedMap[row.destSloc]) {
+        receivedMap[row.destSloc] = { sloc: row.destSloc, palletCount: 0, qty: 0 };
+      }
+      receivedMap[row.destSloc].palletCount++;
+      receivedMap[row.destSloc].qty += row.issueQty;
+    }
+  });
+
+  function toSortedArr(map) {
+    return Object.keys(map).map(function(k) { return map[k]; }).sort(function(a, b) {
+      return a.sloc < b.sloc ? -1 : (a.sloc > b.sloc ? 1 : 0);
+    });
+  }
+
+  return {
+    transferIssuedBySloc:   toSortedArr(issuedMap),
+    transferReceivedBySloc: toSortedArr(receivedMap)
+  };
+}
+
+/**
+ * PalletID → {storageLocation, grMaterialDocument, confirmedAt}, read directly
+ * since readPmRows_() doesn't carry StorageLocation/GRMaterialDocument/
+ * ConfirmedAt. Same rationale + PL-TEST exclusion as _readPmUpdatedAtByPallet_()
+ * above — callers restrict to palletIds already present in pmRows (from
+ * readPmRows_()) rather than trusting this raw scan's row set independently.
+ * @return {Object.<string,{storageLocation:string, grMaterialDocument:string, confirmedAt:*}>}
+ */
+function _readPmGrFieldsByPallet_() {
+  var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!sh || sh.getLastRow() < 2) return {};
+
+  var data = sh.getDataRange().getValues();
+  var hdr  = data[0];
+  var idx  = {};
+  hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+
+  var map = {};
+  for (var r = 1; r < data.length; r++) {
+    var pid = String(data[r][idx['PalletID']] || '').trim();
+    if (!pid || /^PL-TEST/i.test(pid)) continue;
+
+    map[pid] = {
+      storageLocation:    idx['StorageLocation']    !== undefined ? String(data[r][idx['StorageLocation']] || '').trim() : '',
+      grMaterialDocument: idx['GRMaterialDocument']  !== undefined ? String(data[r][idx['GRMaterialDocument']] || '').trim() : '',
+      confirmedAt:        idx['ConfirmedAt']         !== undefined ? data[r][idx['ConfirmedAt']] : ''
+    };
+  }
+  return map;
+}
+
+/**
+ * Pure aggregator (no sheet I/O) — GR'd-today pallets (GRMaterialDocument
+ * non-empty AND ConfirmedAt on dateStr) grouped by StorageLocation. Empty/
+ * missing StorageLocation lands in the visible 'ไม่ทราบคลัง' bucket, same
+ * pattern as _resolveDepartment_'s 'ไม่ทราบแผนก' bucket — not dropped.
+ * Testable directly with synthetic pmRows + grFieldsByPallet.
+ * @param {string} dateStr — 'yyyy-MM-dd', Asia/Bangkok
+ * @param {Array} pmRows — readPmRows_() shape (only palletId is used)
+ * @param {Object} grFieldsByPallet — _readPmGrFieldsByPallet_() shape
+ * @return {Array<{sloc:string, palletCount:number}>}
+ */
+function _buildGrSlocAggregates_(dateStr, pmRows, grFieldsByPallet) {
+  var map = {};
+
+  pmRows.forEach(function(pm) {
+    var gr = grFieldsByPallet[pm.palletId];
+    if (!gr || !gr.grMaterialDocument) return;
+    if (_fmtOlDate_(gr.confirmedAt) !== dateStr) return;
+
+    var sloc = gr.storageLocation || 'ไม่ทราบคลัง';
+    if (!map[sloc]) map[sloc] = { sloc: sloc, palletCount: 0 };
+    map[sloc].palletCount++;
+  });
+
+  return Object.keys(map).map(function(k) { return map[k]; }).sort(function(a, b) {
+    return a.sloc < b.sloc ? -1 : (a.sloc > b.sloc ? 1 : 0);
+  });
+}
+
+// ============================================================================
 // System-level counters (no department breakdown)
 // ============================================================================
 
@@ -337,7 +491,9 @@ function _buildDashboardAggregates_(dateStr, olRows, pmRows, lastOpByPallet, pmU
  * @param {string} [dateStr] — 'yyyy-MM-dd'; defaults to today (Asia/Bangkok)
  * @return {{date:string, departments:Array, qcByDepartment:Array,
  *   qcCompletedTodayApprox:number, pendingQcCount:number,
- *   pendingTransferCount:number, deadLetterOpenCount:number}|
+ *   pendingTransferCount:number, deadLetterOpenCount:number,
+ *   transferIssuedBySloc:Array, transferReceivedBySloc:Array,
+ *   grReceivedBySlocApprox:Array, transferGrNote:string}|
  *   {error:true, message:string}}
  */
 function getDashboardData_(dateStr) {
@@ -385,6 +541,26 @@ function getDashboardData_(dateStr) {
       cache.put(QC_BY_DEPT_CACHE_KEY_, JSON.stringify(qcByDepartment), QC_BY_DEPT_CACHE_TTL_SEC_);
     }
 
+    // ---- transferIssuedBySloc[] / transferReceivedBySloc[] / grReceivedBySlocApprox[] —
+    // today's "รับเข้า-จ่ายออก" section. Never cached (real-time "today" data, same
+    // cadence as departments[]). A failure here must not break the rest of the
+    // dashboard — falls back to empty arrays + a non-fatal note, not a top-level error.
+    var transferIssuedBySloc = [];
+    var transferReceivedBySloc = [];
+    var grReceivedBySlocApprox = [];
+    var transferGrNote = '';
+    try {
+      var tlRows = _readTlRowsForSlocAgg_();
+      var grFieldsByPallet = _readPmGrFieldsByPallet_();
+      var transferAgg = _buildTransferSlocAggregates_(dateStr, tlRows);
+      transferIssuedBySloc = transferAgg.transferIssuedBySloc;
+      transferReceivedBySloc = transferAgg.transferReceivedBySloc;
+      grReceivedBySlocApprox = _buildGrSlocAggregates_(dateStr, pmRows, grFieldsByPallet);
+    } catch (eTransferGr) {
+      logError('getDashboardData_', 'Dashboard', 'transfer/GR section: ' + eTransferGr.message, 'dateStr=' + dateStr);
+      transferGrNote = 'ไม่สามารถโหลดข้อมูลรับเข้า/จ่ายออกได้: ' + eTransferGr.message;
+    }
+
     return {
       date: dateStr,
       departments: agg.departments,
@@ -392,7 +568,11 @@ function getDashboardData_(dateStr) {
       qcCompletedTodayApprox: agg.qcCompletedTodayApprox,
       pendingQcCount: _countPendingQc_(),
       pendingTransferCount: _countPendingTransfer_(),
-      deadLetterOpenCount: _countDeadLetterOpen_()
+      deadLetterOpenCount: _countDeadLetterOpen_(),
+      transferIssuedBySloc: transferIssuedBySloc,
+      transferReceivedBySloc: transferReceivedBySloc,
+      grReceivedBySlocApprox: grReceivedBySlocApprox,
+      transferGrNote: transferGrNote
     };
 
   } catch (e) {
@@ -623,6 +803,69 @@ function TEST_dashboardData_() {
     }
 
     // ============================================================
+    // (9) TRANSFERRED transfer today → appears in BOTH transferIssuedBySloc
+    //     (under SourceSLoc) and transferReceivedBySloc (under DestSLoc),
+    //     with correct qty. Pure-function test (_buildTransferSlocAggregates_),
+    //     synthetic rows only — no sheet write needed.
+    // ============================================================
+    var tlF = [
+      { status: 'TRANSFERRED', updatedAt: _dashMkBkkDate_(TODAY, '13:00:00'),
+        sourceSloc: 'PL-TEST-DASH-SLOC-X', destSloc: 'PL-TEST-DASH-SLOC-Y', issueQty: 50 }
+    ];
+    var aggF = _buildTransferSlocAggregates_(TODAY, tlF);
+    var issuedX = aggF.transferIssuedBySloc.filter(function(x) { return x.sloc === 'PL-TEST-DASH-SLOC-X'; })[0];
+    var recvY   = aggF.transferReceivedBySloc.filter(function(x) { return x.sloc === 'PL-TEST-DASH-SLOC-Y'; })[0];
+    assert('(9) TRANSFERRED row appears in transferIssuedBySloc under SourceSLoc', !!issuedX && issuedX.qty === 50,
+      issuedX ? 'qty=' + issuedX.qty : 'no entry');
+    assert('(9) TRANSFERRED row appears in transferReceivedBySloc under DestSLoc', !!recvY && recvY.qty === 50,
+      recvY ? 'qty=' + recvY.qty : 'no entry');
+
+    // ============================================================
+    // (10) Status=ISSUED (not TRANSFERRED) today, UpdatedAt bumped by a
+    //      simulated failed retry → excluded from BOTH lists (proves the
+    //      Status+UpdatedAt combined filter, not UpdatedAt alone).
+    // ============================================================
+    var tlG = [
+      { status: 'ISSUED', updatedAt: _dashMkBkkDate_(TODAY, '14:00:00'),
+        sourceSloc: 'PL-TEST-DASH-SLOC-Z', destSloc: 'PL-TEST-DASH-SLOC-W', issueQty: 30 }
+    ];
+    var aggG = _buildTransferSlocAggregates_(TODAY, tlG);
+    var issuedZ = aggG.transferIssuedBySloc.filter(function(x) { return x.sloc === 'PL-TEST-DASH-SLOC-Z'; })[0];
+    var recvW   = aggG.transferReceivedBySloc.filter(function(x) { return x.sloc === 'PL-TEST-DASH-SLOC-W'; })[0];
+    assert('(10) Status=ISSUED excluded from transferIssuedBySloc despite today UpdatedAt', !issuedZ,
+      issuedZ ? JSON.stringify(issuedZ) : 'correctly absent');
+    assert('(10) Status=ISSUED excluded from transferReceivedBySloc despite today UpdatedAt', !recvW,
+      recvW ? JSON.stringify(recvW) : 'correctly absent');
+
+    // ============================================================
+    // (11) GR'd pallet (GRMaterialDocument non-empty) confirmed today →
+    //      appears in grReceivedBySlocApprox under its StorageLocation.
+    //      Pure-function test (_buildGrSlocAggregates_), synthetic pmRows +
+    //      grFieldsByPallet only — no sheet write needed.
+    // ============================================================
+    var PID_GR1 = 'PL-TEST-DASH-GR-1';
+    var pmRowsH = [{ palletId: PID_GR1 }];
+    var grFieldsH = {};
+    grFieldsH[PID_GR1] = { storageLocation: 'PW30', grMaterialDocument: '5000012345', confirmedAt: _dashMkBkkDate_(TODAY, '08:00:00') };
+    var aggH = _buildGrSlocAggregates_(TODAY, pmRowsH, grFieldsH);
+    var slocPW30 = aggH.filter(function(x) { return x.sloc === 'PW30'; })[0];
+    assert('(11) GR\'d pallet appears in grReceivedBySlocApprox under its StorageLocation',
+      !!slocPW30 && slocPW30.palletCount === 1, slocPW30 ? JSON.stringify(slocPW30) : 'no entry');
+
+    // ============================================================
+    // (12) GR'd pallet with empty StorageLocation → lands in 'ไม่ทราบคลัง'
+    //      bucket, not dropped.
+    // ============================================================
+    var PID_GR2 = 'PL-TEST-DASH-GR-2';
+    var pmRowsI = [{ palletId: PID_GR2 }];
+    var grFieldsI = {};
+    grFieldsI[PID_GR2] = { storageLocation: '', grMaterialDocument: '5000012346', confirmedAt: _dashMkBkkDate_(TODAY, '08:30:00') };
+    var aggI = _buildGrSlocAggregates_(TODAY, pmRowsI, grFieldsI);
+    var slocUnknown = aggI.filter(function(x) { return x.sloc === 'ไม่ทราบคลัง'; })[0];
+    assert('(12) empty StorageLocation lands in ไม่ทราบคลัง bucket, not dropped',
+      !!slocUnknown && slocUnknown.palletCount === 1, slocUnknown ? JSON.stringify(slocUnknown) : 'no entry');
+
+    // ============================================================
     // Smoke — live call against production data, structural shape only
     // ============================================================
     var live = getDashboardData_();
@@ -632,6 +875,9 @@ function TEST_dashboardData_() {
       assert('(smoke) date === today', live.date === TODAY, 'got=' + live.date);
       assert('(smoke) departments is array', Array.isArray(live.departments));
       assert('(smoke) qcByDepartment is array', Array.isArray(live.qcByDepartment));
+      assert('(smoke) transferIssuedBySloc is array', Array.isArray(live.transferIssuedBySloc));
+      assert('(smoke) transferReceivedBySloc is array', Array.isArray(live.transferReceivedBySloc));
+      assert('(smoke) grReceivedBySlocApprox is array', Array.isArray(live.grReceivedBySlocApprox));
       assert('(smoke) JSON serializable', (function() {
         try { JSON.stringify(live); return true; } catch (e) { return false; }
       })());

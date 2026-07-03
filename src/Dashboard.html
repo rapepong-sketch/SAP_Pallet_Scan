@@ -45,6 +45,14 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .fail{color:#c62828;font-weight:700}
 .pending{color:#888}
 
+.two-col{display:flex;gap:20px;flex-wrap:wrap}
+.two-col>div{flex:1 1 320px;min-width:280px}
+.subsec-title{font-size:1em;font-weight:700;margin-bottom:10px;color:#1a1a2e}
+.type-badge{display:inline-block;font-size:0.78em;font-weight:600;padding:2px 8px;border-radius:12px;white-space:nowrap}
+.type-transfer{background:#e8f0fe;color:#1a56b0}
+.type-gr{background:#fff3cd;color:#856404}
+.note-box{background:#fff3cd;color:#856404;border-radius:8px;padding:10px 14px;font-size:0.88em;margin-bottom:14px}
+
 .refresh-btn{background:#1a73e8;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:0.95em;font-weight:600;font-family:inherit;cursor:pointer;transition:background .15s}
 .refresh-btn:hover{background:#1558b0}
 .refresh-btn:disabled{background:#aac2ea;cursor:default}
@@ -92,6 +100,22 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   <div class="sec">
     <h3>ผลผลิตตามแผนก (วันนี้)</h3>
     <div id="deptTableWrap"></div>
+  </div>
+
+  <div class="sec">
+    <h3>รับเข้า / จ่ายออกวันนี้</h3>
+    <div id="transferGrNoteWrap"></div>
+    <div id="transferGrEmptyWrap"></div>
+    <div class="two-col" id="transferGrTables">
+      <div>
+        <h4 class="subsec-title">จ่ายออก</h4>
+        <div id="issuedTableWrap"></div>
+      </div>
+      <div>
+        <h4 class="subsec-title">รับเข้า</h4>
+        <div id="receivedTableWrap"></div>
+      </div>
+    </div>
   </div>
 
   <div class="sec">
@@ -160,6 +184,54 @@ function renderQcTable(qcByDepartment) {
     '</tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
+function renderIssuedTable(rows) {
+  rows = Array.isArray(rows) ? rows : [];
+  if (!rows.length) {
+    return '<div class="empty">ไม่มีรายการจ่ายออกวันนี้</div>';
+  }
+  var sorted = rows.slice().sort(function(a, b) {
+    return String(a.sloc || '').localeCompare(String(b.sloc || ''));
+  });
+  var body = sorted.map(function(r) {
+    return '<tr>' +
+      '<td>' + esc(r.sloc || '-') + '</td>' +
+      '<td class="num">' + (r.palletCount || 0) + '</td>' +
+      '<td class="num">' + (r.qty || 0) + '</td>' +
+      '</tr>';
+  }).join('');
+  return '<table><thead><tr><th>คลัง</th><th class="num">พาเลท</th><th class="num">จำนวน</th></tr></thead><tbody>' + body + '</tbody></table>';
+}
+
+function renderReceivedTable(transferReceivedBySloc, grReceivedBySlocApprox) {
+  var tRows = (Array.isArray(transferReceivedBySloc) ? transferReceivedBySloc : []).map(function(r) {
+    return { sloc: r.sloc, palletCount: r.palletCount || 0, qty: r.qty || 0, type: 'transfer' };
+  });
+  var gRows = (Array.isArray(grReceivedBySlocApprox) ? grReceivedBySlocApprox : []).map(function(r) {
+    return { sloc: r.sloc, palletCount: r.palletCount || 0, qty: null, type: 'gr' };
+  });
+  var merged = tRows.concat(gRows);
+  if (!merged.length) {
+    return '<div class="empty">ไม่มีรายการรับเข้าวันนี้</div>';
+  }
+  merged.sort(function(a, b) {
+    var s = String(a.sloc || '').localeCompare(String(b.sloc || ''));
+    if (s !== 0) return s;
+    return a.type === b.type ? 0 : (a.type === 'transfer' ? -1 : 1);
+  });
+  var body = merged.map(function(r) {
+    var badge = r.type === 'transfer'
+      ? '<span class="type-badge type-transfer">โอนย้าย</span>'
+      : '<span class="type-badge type-gr">GR (ประมาณการ)</span>';
+    return '<tr>' +
+      '<td>' + esc(r.sloc || '-') + '</td>' +
+      '<td class="num">' + (r.palletCount || 0) + '</td>' +
+      '<td class="num">' + (r.qty === null ? '-' : r.qty) + '</td>' +
+      '<td>' + badge + '</td>' +
+      '</tr>';
+  }).join('');
+  return '<table><thead><tr><th>คลัง</th><th class="num">พาเลท</th><th class="num">จำนวน</th><th>ประเภท</th></tr></thead><tbody>' + body + '</tbody></table>';
+}
+
 function showError(message) {
   document.getElementById('loadingBox').style.display = 'none';
   document.getElementById('content').style.display = 'none';
@@ -188,6 +260,27 @@ function renderData(resp) {
 
     document.getElementById('deptTableWrap').innerHTML = renderDeptTable(resp.departments);
     document.getElementById('qcTableWrap').innerHTML = renderQcTable(resp.qcByDepartment);
+
+    var issuedRows = Array.isArray(resp.transferIssuedBySloc) ? resp.transferIssuedBySloc : [];
+    var receivedTRows = Array.isArray(resp.transferReceivedBySloc) ? resp.transferReceivedBySloc : [];
+    var receivedGRows = Array.isArray(resp.grReceivedBySlocApprox) ? resp.grReceivedBySlocApprox : [];
+    var transferGrAllEmpty = issuedRows.length === 0 && receivedTRows.length === 0 && receivedGRows.length === 0;
+
+    var transferGrTablesEl = document.getElementById('transferGrTables');
+    var transferGrEmptyEl = document.getElementById('transferGrEmptyWrap');
+    if (transferGrAllEmpty) {
+      transferGrTablesEl.style.display = 'none';
+      transferGrEmptyEl.innerHTML = '<div class="empty">ยังไม่มีรายการรับเข้า/จ่ายออกวันนี้</div>';
+    } else {
+      transferGrTablesEl.style.display = '';
+      transferGrEmptyEl.innerHTML = '';
+      document.getElementById('issuedTableWrap').innerHTML = renderIssuedTable(issuedRows);
+      document.getElementById('receivedTableWrap').innerHTML = renderReceivedTable(receivedTRows, receivedGRows);
+    }
+
+    document.getElementById('transferGrNoteWrap').innerHTML = resp.transferGrNote
+      ? '<div class="note-box">' + esc(resp.transferGrNote) + '</div>'
+      : '';
 
     document.getElementById('loadingBox').style.display = 'none';
     document.getElementById('errorBox').style.display = 'none';
