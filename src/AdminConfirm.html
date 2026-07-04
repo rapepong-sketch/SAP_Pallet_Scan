@@ -98,6 +98,9 @@
     .tab-btn-override { color: #999; }
     .tab-btn-override:hover { color: #dc3545; }
     .tab-btn-override.active { color: #dc3545; border-bottom-color: #dc3545; }
+    .tab-btn-backfill { color: #999; }
+    .tab-btn-backfill:hover { color: #dc3545; }
+    .tab-btn-backfill.active { color: #dc3545; border-bottom-color: #dc3545; }
 
     /* Override warning banner */
     .override-warn { background: #f8d7da; border: 1px solid #dc3545; border-radius: 6px; padding: 12px 16px; margin-bottom: 14px; font-size: 0.88em; color: #721c24; font-weight: 600; line-height: 1.5; }
@@ -144,6 +147,7 @@
   <div class="tab-nav">
     <button class="tab-btn active" id="tabBtnConfirm" onclick="switchTab('confirm')">ยืนยันผลผลิต</button>
     <button class="tab-btn tab-btn-override" id="tabBtnOverride" onclick="switchTab('override')">Override Confirm</button>
+    <button class="tab-btn tab-btn-backfill" id="tabBtnBackfill" onclick="switchTab('backfill')">🧩 Admin Backfill</button>
   </div>
 
   <!-- ===== TAB 1: Confirm ===== -->
@@ -290,6 +294,77 @@
 
   </div><!-- /viewOverride -->
 
+  <!-- ===== TAB 3: Admin Backfill ===== -->
+  <div id="viewBackfill" style="display:none">
+
+    <div class="override-warn">
+      ⚠️ Admin Backfill — ยืนยันว่า operation ที่ขาดเกิดขึ้นจริงแทนการสแกนจริง ใช้เฉพาะกรณีมีหลักฐานว่างานผลิตเสร็จจริง ทุกการ backfill จะถูกบันทึก audit (ใคร/เมื่อไหร่/เหตุผล/operation ที่ backfill)
+    </div>
+
+    <span class="badge" id="modeBadgeBackfill">...</span>
+
+    <div class="error-banner" id="backfillErrorBanner"></div>
+
+    <div class="toolbar">
+      <button class="btn btn-secondary" id="btnBackfillRefresh" onclick="loadBackfillList()">โหลดรายการรอ backfill</button>
+      <span class="summary" id="backfillSummary"></span>
+    </div>
+
+    <div class="filter-bar" id="backfillFilterBar" style="display:none">
+      <label>คลัง:</label>
+      <select id="fltBackfillStorage" onchange="onBackfillStorageFilterChange()">
+        <option value="">ทุกคลัง</option>
+      </select>
+      <label>Material:</label>
+      <select id="fltBackfillMaterial" onchange="applyBackfillFilters()">
+        <option value="">ทุก Material</option>
+      </select>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="chkAllBackfill" onchange="toggleAllBackfill(this.checked)"></th>
+            <th>PalletID</th>
+            <th>MO</th>
+            <th>Material</th>
+            <th>จำนวน</th>
+            <th>WorkCenter</th>
+            <th>สถานะสแกน</th>
+            <th>Operation ที่ขาด</th>
+          </tr>
+        </thead>
+        <tbody id="backfillTableBody">
+          <tr><td colspan="8" class="empty">กดปุ่ม "โหลดรายการรอ backfill" เพื่อดูพาเลท</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="reason-wrap">
+      <label for="backfillReason">เหตุผล backfill (บังคับ, อย่างน้อย 5 ตัวอักษร)</label>
+      <textarea id="backfillReason" placeholder="ระบุเหตุผลที่ต้อง backfill..." oninput="onBackfillReasonInput()"></textarea>
+      <div class="char-counter" id="backfillCharCounter">0 ตัวอักษร</div>
+    </div>
+
+    <div class="action-bar">
+      <button class="btn btn-danger" id="btnBackfillSubmit" disabled onclick="openBackfillModal()">Backfill รายการที่เลือก (0)</button>
+      <span class="cap-warn" id="backfillCapWarn" style="display:none">เลือกได้สูงสุด 5 ใบต่อครั้ง</span>
+    </div>
+
+    <div class="progress-bar" id="backfillProgressBar">
+      <span class="spinner"></span>
+      <span>กำลังส่ง backfill...</span>
+    </div>
+
+    <div class="result-panel" id="backfillResultPanel">
+      <h3>ผลการ Backfill</h3>
+      <div class="result-counts" id="backfillResultCounts"></div>
+      <div class="result-detail" id="backfillResultDetail"></div>
+    </div>
+
+  </div><!-- /viewBackfill -->
+
   <!-- Override confirmation modal -->
   <div class="modal-overlay" id="overrideModalOverlay" onclick="closeOverrideModalOutside(event)">
     <div class="modal" id="overrideModal">
@@ -305,6 +380,28 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeOverrideModal()">ยกเลิก</button>
         <button class="btn btn-danger" id="btnOverrideConfirmSend" onclick="doOverrideConfirm()">ยืนยัน Override</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backfill confirmation modal -->
+  <div class="modal-overlay" id="backfillModalOverlay" onclick="closeBackfillModalOutside(event)">
+    <div class="modal" id="backfillModal">
+      <h2 style="color:#dc3545">ยืนยัน Admin Backfill</h2>
+      <div id="backfillModalLiveWarn" class="live-warn" style="display:none">
+        ⚠️ GR + backflush จะเกิดจริงใน SAP (LIVE MODE)
+      </div>
+      <div class="live-warn" style="background:#f8d7da;border-color:#dc3545;color:#721c24;">
+        ⚠️ การ backfill จะยืนยัน QC PASS แทนการตรวจสอบจริง — ต้องมั่นใจว่าตรวจนับของจริงแล้วก่อนกดยืนยัน
+      </div>
+      <div id="backfillModalMode" style="margin-bottom:10px; font-size:0.88em;"></div>
+      <div style="font-size:0.88em; margin-bottom:6px;">รายการที่เลือก (<span id="backfillModalCount">0</span> ใบ):</div>
+      <ul id="backfillModalList"></ul>
+      <div style="font-size:0.88em; margin-bottom:6px; margin-top:10px;"><b>เหตุผล:</b></div>
+      <div id="backfillModalReason" style="font-size:0.88em; background:#fff3cd; border-radius:4px; padding:8px 10px; margin-bottom:14px; white-space:pre-wrap;"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeBackfillModal()">ยกเลิก</button>
+        <button class="btn btn-danger" id="btnBackfillConfirmSend" onclick="doBackfillConfirm()">ยืนยัน Backfill</button>
       </div>
     </div>
   </div>
@@ -626,12 +723,20 @@
 
   // ==== Tab switching ====
   function switchTab(name) {
-    var isConfirm = name === 'confirm';
-    document.getElementById('viewConfirm').style.display = isConfirm ? '' : 'none';
-    document.getElementById('viewOverride').style.display = isConfirm ? 'none' : '';
+    var isConfirm  = name === 'confirm';
+    var isOverride = name === 'override';
+    var isBackfill = name === 'backfill';
+
+    document.getElementById('viewConfirm').style.display  = isConfirm  ? '' : 'none';
+    document.getElementById('viewOverride').style.display = isOverride ? '' : 'none';
+    document.getElementById('viewBackfill').style.display = isBackfill ? '' : 'none';
+
     document.getElementById('tabBtnConfirm').classList.toggle('active', isConfirm);
-    document.getElementById('tabBtnOverride').classList.toggle('active', !isConfirm);
-    if (!isConfirm) renderOverrideBadge();
+    document.getElementById('tabBtnOverride').classList.toggle('active', isOverride);
+    document.getElementById('tabBtnBackfill').classList.toggle('active', isBackfill);
+
+    if (isOverride) renderOverrideBadge();
+    if (isBackfill) renderBackfillBadge();
   }
 
   // ==== Override: badge (reuse flagState) ====
@@ -1095,6 +1200,416 @@
 
   function hideOverrideError() {
     document.getElementById('overrideErrorBanner').classList.remove('visible');
+  }
+
+  // ==== Backfill: badge (reuse flagState) ====
+  function renderBackfillBadge() {
+    var el = document.getElementById('modeBadgeBackfill');
+    if (!flagState.sapWriteEnabled) {
+      el.className = 'badge badge-off';
+      el.textContent = 'SAP ปิด';
+    } else if (flagState.dryRun) {
+      el.className = 'badge badge-dryrun';
+      el.textContent = 'DRY-RUN (ทดสอบ — ไม่ส่งจริง)';
+    } else {
+      el.className = 'badge badge-live';
+      el.textContent = 'LIVE (ส่งเข้า SAP จริง)';
+    }
+  }
+
+  // ==== Backfill: load candidate list ====
+  var backfillAllPallets = [];
+  var backfillCheckedSet = new Set();
+  var backfillLocked = false;
+
+  function loadBackfillList() {
+    if (backfillLocked) return;
+    var btn = document.getElementById('btnBackfillRefresh');
+    btn.disabled = true;
+    btn.textContent = 'กำลังโหลด...';
+    hideBackfillError();
+    hideBackfillResult();
+
+    google.script.run
+      .withSuccessHandler(renderBackfillList)
+      .withFailureHandler(showBackfillError)
+      .listBackfillCandidates();
+  }
+
+  function renderBackfillList(resp) {
+    var btn = document.getElementById('btnBackfillRefresh');
+    btn.disabled = false;
+    btn.textContent = 'โหลดรายการรอ backfill';
+
+    if (!resp || !resp.success) {
+      showBackfillError(resp && resp.message ? { message: resp.message } : { message: 'ไม่สามารถโหลดรายการได้' });
+      return;
+    }
+
+    backfillAllPallets = resp.pallets || [];
+    backfillCheckedSet = new Set();
+
+    if (!backfillAllPallets.length) {
+      document.getElementById('backfillFilterBar').style.display = 'none';
+      document.getElementById('backfillTableBody').innerHTML = '<tr><td colspan="8" class="empty">ไม่มีพาเลทรอ backfill</td></tr>';
+      document.getElementById('chkAllBackfill').checked = false;
+      document.getElementById('backfillSummary').textContent = '';
+      updateBackfillSubmitBtn();
+      return;
+    }
+
+    document.getElementById('backfillFilterBar').style.display = '';
+    document.getElementById('fltBackfillStorage').value = '';
+    populateBackfillStorageFilter();
+    applyBackfillFilters();
+    document.getElementById('backfillSummary').innerHTML = 'พาเลทรอ backfill: <b>' + backfillAllPallets.length + '</b>';
+  }
+
+  // ==== Backfill: filter helpers ====
+  function populateBackfillStorageFilter() {
+    var sel = document.getElementById('fltBackfillStorage');
+    var locs = {};
+    for (var i = 0; i < backfillAllPallets.length; i++) {
+      var loc = backfillAllPallets[i].StorageLocation || '';
+      locs[loc] = true;
+    }
+    var sorted = Object.keys(locs).sort(function(a, b) {
+      if (a === '' && b !== '') return 1;
+      if (b === '' && a !== '') return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    var html = '<option value="">ทุกคลัง</option>';
+    for (var i = 0; i < sorted.length; i++) {
+      var v = sorted[i];
+      var optVal = v === '' ? '__EMPTY__' : v;
+      html += '<option value="' + esc(optVal) + '">' + esc(v || '(ไม่ระบุคลัง)') + '</option>';
+    }
+    sel.innerHTML = html;
+    populateBackfillMaterialFilter();
+  }
+
+  function populateBackfillMaterialFilter() {
+    var storageVal = document.getElementById('fltBackfillStorage').value;
+    var sel = document.getElementById('fltBackfillMaterial');
+    var mats = {};
+    for (var i = 0; i < backfillAllPallets.length; i++) {
+      var p = backfillAllPallets[i];
+      var loc = p.StorageLocation || '';
+      var match = storageVal === '' || (storageVal === '__EMPTY__' ? loc === '' : loc === storageVal);
+      if (match) {
+        var key = p.Material || '';
+        if (!mats[key]) mats[key] = p.MaterialName || '';
+      }
+    }
+    var sorted = Object.keys(mats).sort();
+    var html = '<option value="">ทุก Material</option>';
+    for (var i = 0; i < sorted.length; i++) {
+      var m = sorted[i];
+      var label = m + (mats[m] ? ' / ' + mats[m] : '');
+      html += '<option value="' + esc(m) + '">' + esc(label) + '</option>';
+    }
+    sel.innerHTML = html;
+  }
+
+  function onBackfillStorageFilterChange() {
+    populateBackfillMaterialFilter();
+    applyBackfillFilters();
+  }
+
+  function applyBackfillFilters() {
+    var storageVal = document.getElementById('fltBackfillStorage').value;
+    var materialVal = document.getElementById('fltBackfillMaterial').value;
+    var filtered = [];
+    for (var i = 0; i < backfillAllPallets.length; i++) {
+      var p = backfillAllPallets[i];
+      var loc = p.StorageLocation || '';
+      if (storageVal !== '' && (storageVal === '__EMPTY__' ? loc !== '' : loc !== storageVal)) continue;
+      if (materialVal !== '' && p.Material !== materialVal) continue;
+      filtered.push(p);
+    }
+    renderGroupedBackfill(filtered);
+    updateBackfillSubmitBtn();
+  }
+
+  function renderGroupedBackfill(filtered) {
+    var tbody = document.getElementById('backfillTableBody');
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">ไม่มีพาเลทตรงเงื่อนไข</td></tr>';
+      document.getElementById('chkAllBackfill').checked = false;
+      return;
+    }
+    var groups = {};
+    var order = [];
+    for (var i = 0; i < filtered.length; i++) {
+      var loc = filtered[i].StorageLocation || '';
+      if (!groups[loc]) { groups[loc] = []; order.push(loc); }
+      groups[loc].push(filtered[i]);
+    }
+    order.sort(function(a, b) {
+      if (a === '' && b !== '') return 1;
+      if (b === '' && a !== '') return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+
+    var html = '';
+    for (var g = 0; g < order.length; g++) {
+      var loc = order[g];
+      var items = groups[loc];
+      var gid = 'grp_' + g;
+      html += '<tr class="group-header">' +
+        '<td><input type="checkbox" class="group-chk-backfill" data-group="' + gid + '" onchange="toggleBackfillGroup(this)"></td>' +
+        '<td colspan="7">' + esc(loc || '(ไม่ระบุคลัง)') + '<span class="group-count"> (' + items.length + ' พาเลท)</span></td></tr>';
+      for (var i = 0; i < items.length; i++) {
+        var p = items[i];
+        var chk = backfillCheckedSet.has(p.PalletID) ? ' checked' : '';
+        html += '<tr data-group="' + gid + '">' +
+          '<td><input type="checkbox" class="backfill-chk" value="' + esc(p.PalletID) + '"' + chk + ' onchange="onBackfillChkChange(this)"></td>' +
+          '<td>' + esc(p.PalletID) + '</td>' +
+          '<td>' + esc(p.ManufacturingOrder) + '</td>' +
+          '<td>' + esc(p.Material) + (p.MaterialName ? ' / ' + esc(p.MaterialName) : '') + '</td>' +
+          '<td>' + p.QtyPerPallet + ' ' + esc(p.Unit || '') + '</td>' +
+          '<td>' + esc(p.WorkCenter || '-') + '</td>' +
+          '<td>' + esc(p.ScanStatus || '-') + '</td>' +
+          '<td>' + esc((p.MissingOps || []).join(', ')) + '</td></tr>';
+      }
+    }
+    tbody.innerHTML = html;
+    syncBackfillGroupCheckboxes();
+    syncBackfillGlobalCheckbox();
+  }
+
+  function onBackfillChkChange(el) {
+    if (el.checked) backfillCheckedSet.add(el.value);
+    else backfillCheckedSet.delete(el.value);
+    syncBackfillGroupCheckboxes();
+    syncBackfillGlobalCheckbox();
+    updateBackfillSubmitBtn();
+  }
+
+  function toggleBackfillGroup(el) {
+    var gid = el.getAttribute('data-group');
+    var boxes = document.querySelectorAll('tr[data-group="' + gid + '"] .backfill-chk');
+    for (var i = 0; i < boxes.length; i++) {
+      boxes[i].checked = el.checked;
+      if (el.checked) backfillCheckedSet.add(boxes[i].value);
+      else backfillCheckedSet.delete(boxes[i].value);
+    }
+    syncBackfillGlobalCheckbox();
+    updateBackfillSubmitBtn();
+  }
+
+  function syncBackfillGroupCheckboxes() {
+    var gChks = document.querySelectorAll('.group-chk-backfill');
+    for (var i = 0; i < gChks.length; i++) {
+      var gid = gChks[i].getAttribute('data-group');
+      var boxes = document.querySelectorAll('tr[data-group="' + gid + '"] .backfill-chk');
+      var all = boxes.length > 0;
+      for (var j = 0; j < boxes.length; j++) { if (!boxes[j].checked) { all = false; break; } }
+      gChks[i].checked = all;
+    }
+  }
+
+  function syncBackfillGlobalCheckbox() {
+    var boxes = document.querySelectorAll('.backfill-chk');
+    var all = boxes.length > 0;
+    for (var i = 0; i < boxes.length; i++) { if (!boxes[i].checked) { all = false; break; } }
+    document.getElementById('chkAllBackfill').checked = all;
+  }
+
+  // ==== Backfill: toggle all visible checkboxes ====
+  function toggleAllBackfill(checked) {
+    var boxes = document.querySelectorAll('.backfill-chk');
+    for (var i = 0; i < boxes.length; i++) {
+      boxes[i].checked = checked;
+      if (checked) backfillCheckedSet.add(boxes[i].value);
+      else backfillCheckedSet.delete(boxes[i].value);
+    }
+    syncBackfillGroupCheckboxes();
+    updateBackfillSubmitBtn();
+  }
+
+  // ==== Backfill: get ticked IDs (from persistent Set) ====
+  function getBackfillTickedIds() {
+    var ids = [];
+    backfillCheckedSet.forEach(function(v) { ids.push(v); });
+    return ids;
+  }
+
+  // ==== Backfill: reason input handler ====
+  function onBackfillReasonInput() {
+    var ta = document.getElementById('backfillReason');
+    var len = ta.value.trim().length;
+    var counter = document.getElementById('backfillCharCounter');
+    counter.textContent = len + ' ตัวอักษร';
+    counter.className = len < 5 ? 'char-counter warn' : 'char-counter';
+    updateBackfillSubmitBtn();
+  }
+
+  // ==== Backfill: update submit button ====
+  function updateBackfillSubmitBtn() {
+    var n = backfillCheckedSet.size;
+    var reason = (document.getElementById('backfillReason').value || '').trim();
+    var btn = document.getElementById('btnBackfillSubmit');
+    var warn = document.getElementById('backfillCapWarn');
+
+    btn.textContent = 'Backfill รายการที่เลือก (' + n + ')';
+
+    if (n === 0 || reason.length < 5) {
+      btn.disabled = true;
+      warn.style.display = n > 5 ? 'inline' : 'none';
+    } else if (n > 5) {
+      btn.disabled = true;
+      warn.style.display = 'inline';
+    } else {
+      btn.disabled = false;
+      warn.style.display = 'none';
+    }
+  }
+
+  // ==== Backfill: modal ====
+  function openBackfillModal() {
+    var ids = getBackfillTickedIds();
+    var reason = (document.getElementById('backfillReason').value || '').trim();
+    if (!ids.length || reason.length < 5) return;
+
+    loadFlags();
+    renderBackfillBadge();
+
+    document.getElementById('backfillModalCount').textContent = ids.length;
+
+    var modeText = '';
+    if (!flagState.sapWriteEnabled) {
+      modeText = 'โหมด: SAP ปิด — จะไม่ส่งจริง';
+    } else if (flagState.dryRun) {
+      modeText = 'โหมด: DRY-RUN — จะไม่ส่งจริง';
+    } else {
+      modeText = 'โหมด: LIVE — ส่งเข้า SAP จริง';
+    }
+    document.getElementById('backfillModalMode').textContent = modeText;
+
+    var isLive = flagState.sapWriteEnabled && !flagState.dryRun;
+    document.getElementById('backfillModalLiveWarn').style.display = isLive ? 'block' : 'none';
+
+    var html = '';
+    for (var i = 0; i < ids.length; i++) {
+      html += '<li>' + esc(ids[i]) + '</li>';
+    }
+    document.getElementById('backfillModalList').innerHTML = html;
+    document.getElementById('backfillModalReason').textContent = reason;
+
+    document.getElementById('backfillModalOverlay').classList.add('open');
+  }
+
+  function closeBackfillModal() {
+    document.getElementById('backfillModalOverlay').classList.remove('open');
+  }
+
+  function closeBackfillModalOutside(e) {
+    if (e.target === document.getElementById('backfillModalOverlay')) closeBackfillModal();
+  }
+
+  // ==== Backfill: confirm and send ====
+  function doBackfillConfirm() {
+    var ids = getBackfillTickedIds();
+    var reason = (document.getElementById('backfillReason').value || '').trim();
+    if (!ids.length || reason.length < 5) return;
+
+    var payload = [];
+    for (var i = 0; i < ids.length; i++) {
+      payload.push({ palletId: ids[i] });
+    }
+
+    var btnSend = document.getElementById('btnBackfillConfirmSend');
+    btnSend.disabled = true;
+    btnSend.textContent = 'กำลังส่ง...';
+    closeBackfillModal();
+    lockBackfillUI(true);
+    hideBackfillResult();
+
+    google.script.run
+      .withSuccessHandler(renderBackfillResults)
+      .withFailureHandler(function(e) {
+        showBackfillError(e);
+        lockBackfillUI(false);
+        btnSend.disabled = false;
+        btnSend.textContent = 'ยืนยัน Backfill';
+      })
+      .batchAdminBackfill(payload, reason);
+  }
+
+  function lockBackfillUI(lock) {
+    backfillLocked = lock;
+    document.getElementById('btnBackfillSubmit').disabled = lock;
+    document.getElementById('btnBackfillRefresh').disabled = lock;
+    document.getElementById('backfillProgressBar').classList.toggle('visible', lock);
+    var boxes = document.querySelectorAll('.backfill-chk');
+    for (var i = 0; i < boxes.length; i++) boxes[i].disabled = lock;
+    var gBoxes = document.querySelectorAll('.group-chk-backfill');
+    for (var i = 0; i < gBoxes.length; i++) gBoxes[i].disabled = lock;
+    document.getElementById('chkAllBackfill').disabled = lock;
+    document.getElementById('backfillReason').disabled = lock;
+    document.getElementById('fltBackfillStorage').disabled = lock;
+    document.getElementById('fltBackfillMaterial').disabled = lock;
+  }
+
+  // ==== Backfill: results ====
+  function renderBackfillResults(resp) {
+    lockBackfillUI(false);
+    var btnSend = document.getElementById('btnBackfillConfirmSend');
+    btnSend.disabled = false;
+    btnSend.textContent = 'ยืนยัน Backfill';
+
+    if (!resp || resp.error) {
+      showBackfillError({ message: (resp && resp.message) || (resp && resp.error) || 'เกิดข้อผิดพลาด' });
+      return;
+    }
+
+    var panel = document.getElementById('backfillResultPanel');
+    var counts = document.getElementById('backfillResultCounts');
+    var detail = document.getElementById('backfillResultDetail');
+
+    var results = resp.results || [];
+    var okCount = 0, failCount = 0;
+    var html = '';
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      if (r.ok || r.success) {
+        okCount++;
+        html += '<div class="item ok">✅ ' + esc(r.palletId || r.PalletID) +
+          ' — backfilled: ' + esc((r.operationsBackfilled || []).join(', ')) + '</div>';
+      } else {
+        failCount++;
+        html += '<div class="item fail">❌ ' + esc(r.palletId || r.PalletID) +
+          ' — ' + esc(r.message || r.error || 'ล้มเหลว') + '</div>';
+      }
+    }
+
+    counts.innerHTML =
+      '<span style="color:#28a745">✅ สำเร็จ ' + okCount + '</span>' +
+      '<span style="color:#dc3545">❌ ล้มเหลว ' + failCount + '</span>';
+    detail.innerHTML = html;
+    panel.classList.add('visible');
+
+    loadBackfillList();
+  }
+
+  function hideBackfillResult() {
+    document.getElementById('backfillResultPanel').classList.remove('visible');
+  }
+
+  // ==== Backfill: error handling ====
+  function showBackfillError(e) {
+    var el = document.getElementById('backfillErrorBanner');
+    el.textContent = (e && e.message) ? e.message : String(e);
+    el.classList.add('visible');
+
+    var btn = document.getElementById('btnBackfillRefresh');
+    btn.disabled = false;
+    btn.textContent = 'โหลดรายการรอ backfill';
+  }
+
+  function hideBackfillError() {
+    document.getElementById('backfillErrorBanner').classList.remove('visible');
   }
 </script>
 </body>

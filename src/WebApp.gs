@@ -976,6 +976,150 @@ function testListOverrideCandidates() {
 }
 
 // ============================================================================
+// Phase 3.5 Gate 8 — Admin Backfill UI backend (google.script.run)
+// ============================================================================
+
+/**
+ * List backfill candidates: pallets with at least one missing OperationLog
+ * entry that have not yet been confirmed or fully QC-inspected. Admin-gated.
+ * Reuses the exact same gap-diff logic as previewBackfillGaps_/
+ * adminBackfillPallet_ (AdminBackfill.gs) so the UI never shows a pallet the
+ * backend would reject as "nothing missing".
+ * @return {{success:boolean, pallets:Array, message?:string}}
+ */
+function listBackfillCandidates() {
+  if (!isAdminUser_()) {
+    return { success: false, pallets: [], message: 'ไม่มีสิทธิ์' };
+  }
+
+  try {
+    var sh = getSpreadsheet_().getSheetByName(PM_SHEET);
+    if (!sh || sh.getLastRow() < 2) return { success: true, pallets: [] };
+
+    var data = sh.getDataRange().getValues();
+    var hdr  = data[0];
+    var idx  = {};
+    hdr.forEach(function(h, i) { idx[h] = i; });
+
+    var required = ['PalletID', 'ManufacturingOrder', 'Material', 'MaterialName',
+                    'QtyPerPallet', 'Unit', 'WorkCenter', 'ScanStatus', 'QCStatus'];
+    for (var k = 0; k < required.length; k++) {
+      if (idx[required[k]] === undefined) {
+        logEvent('BACKFILL_LIST', 'ERROR', 'Missing column: ' + required[k]);
+        return { success: false, pallets: [], message: 'Missing column: ' + required[k] };
+      }
+    }
+
+    var pallets = [];
+    for (var r = 1; r < data.length; r++) {
+      var row = data[r];
+      var pid = String(row[idx['PalletID']] || '').trim();
+      if (!pid) continue;
+      if (String(row[idx['ScanStatus']] || '').trim() === 'CONFIRMED') continue;
+      if (String(row[idx['QCStatus']] || '').trim() === 'INSPECTED') continue;
+      if (/^PL-TEST-/i.test(pid)) continue;
+      if (idx['ExclusionStatus'] !== undefined &&
+        String(row[idx['ExclusionStatus']] || '').trim() === 'EXCLUDED') continue;
+
+      var mo = String(row[idx['ManufacturingOrder']] || '').trim();
+
+      var expectedOps = getOperationsForOrder(mo);
+      var existingLogs = getOperationLogs_(pid);
+      var existingOpNos = {};
+      existingLogs.forEach(function(l) { existingOpNos[l.operationNo] = true; });
+      var missingOps = expectedOps
+        .filter(function(o) { return !existingOpNos[o.opNo]; })
+        .map(function(o) { return o.opNo; });
+
+      if (missingOps.length === 0) continue;
+
+      var wc = row[idx['WorkCenter']];
+
+      pallets.push({
+        PalletID:           pid,
+        ManufacturingOrder: mo,
+        Material:           String(row[idx['Material']] || '').trim(),
+        MaterialName:       String(row[idx['MaterialName']] || '').trim(),
+        QtyPerPallet:       Number(row[idx['QtyPerPallet']]) || 0,
+        Unit:               String(row[idx['Unit']] || '').trim(),
+        WorkCenter:         (wc instanceof Date) ? dateToWorkCenter_(wc) : String(wc || '').trim(),
+        ScanStatus:         String(row[idx['ScanStatus']] || '').trim(),
+        MissingOps:         missingOps,
+        StorageLocation:    idx['StorageLocation'] !== undefined ? String(row[idx['StorageLocation']] || '').trim() : ''
+      });
+
+      if (pallets.length >= 50) break;
+    }
+
+    logEvent('BACKFILL_LIST', 'OK', 'found ' + pallets.length + ' candidates');
+    return { success: true, pallets: pallets };
+
+  } catch (e) {
+    logError('listBackfillCandidates', 'PalletMaster', e.message, '');
+    return { success: false, pallets: [], message: 'เกิดข้อผิดพลาด: ' + e.message };
+  }
+}
+
+/**
+ * Batch admin-backfill. Applies the SAME reason to every selected pallet.
+ * Fail-soft: one pallet's failure does not abort the batch. Admin-gated.
+ * Delegates each pallet to adminBackfillPallet_ (AdminBackfill.gs). No qty
+ * field on items — backfill always uses the pallet's full QtyPerPallet,
+ * there is no reduce-quantity concept here (unlike Override Confirm).
+ * @param {Array<{palletId:string}>} items
+ * @param {string} reason  Mandatory, >= 5 chars.
+ * @return {{success:boolean, results:Array, message?:string}}
+ */
+function batchAdminBackfill(items, reason) {
+  if (!isAdminUser_()) {
+    return { success: false, results: [], message: 'ไม่มีสิทธิ์' };
+  }
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return { success: false, results: [], message: 'กรุณาเลือกพาเลทอย่างน้อย 1 รายการ' };
+  }
+  if (items.length > 5) {
+    return { success: false, results: [], message: 'เลือกได้สูงสุด 5 พาเลทต่อครั้ง (เลือก ' + items.length + ')' };
+  }
+
+  reason = String(reason || '').trim();
+  if (reason.length < 5) {
+    return { success: false, results: [], message: 'ต้องระบุเหตุผล backfill (อย่างน้อย 5 ตัวอักษร)' };
+  }
+
+  for (var v = 0; v < items.length; v++) {
+    if (!items[v] || !String(items[v].palletId || '').trim()) {
+      return { success: false, results: [], message: 'รายการที่ ' + (v + 1) + ' ไม่มี PalletID' };
+    }
+  }
+
+  var actor = getActiveUserSafe_();
+  var results = [];
+  var okCount = 0;
+  var failCount = 0;
+
+  for (var i = 0; i < items.length; i++) {
+    var pid = String(items[i].palletId).trim();
+    try {
+      var res = adminBackfillPallet_(pid, reason, actor);
+      results.push({
+        palletId:             pid,
+        success:              res.success,
+        message:              res.message || '',
+        operationsBackfilled: res.operationsBackfilled || []
+      });
+      if (res.success) { okCount++; } else { failCount++; }
+    } catch (e) {
+      results.push({ palletId: pid, success: false, message: e.message, operationsBackfilled: [] });
+      failCount++;
+    }
+  }
+
+  logEvent('BATCH_BACKFILL', 'DONE', 'ok=' + okCount + ' fail=' + failCount + ' total=' + items.length);
+  return { success: true, results: results };
+}
+
+// ============================================================================
 // Step 2d — Slip Web UI backend (google.script.run from AdminSlip.html)
 // ============================================================================
 

@@ -508,3 +508,391 @@ function TEST_adminBackfillPallet_() {
 
   return pass;
 }
+
+/**
+ * TEST_listBackfillCandidates_ — self-cleaning fixture, prefix 'PL-ZZBFLIST-'.
+ * Stubs getOperationsForOrder (5-op fixed routing) and isAdminUser_ (admin
+ * gate) via plain reassignment, same technique as TEST_adminBackfillPallet_.
+ * Exercises listBackfillCandidates() (WebApp.gs) against the exact same
+ * gap-diff logic used by adminBackfillPallet_.
+ * @return {boolean} pass
+ */
+function TEST_listBackfillCandidates_() {
+  var fn = 'TEST_listBackfillCandidates_';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+    return ok;
+  }
+
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var olSh = getSpreadsheet_().getSheetByName(OL_SHEET);
+
+  var MO = '0000098011'; // all-digit — avoids leading-zero coercion gotcha
+  var origGetOperationsForOrder = getOperationsForOrder;
+  var origIsAdminUser = isAdminUser_;
+
+  var FIVE_OPS = [
+    { opNo: '0010', opText: 'Op10', workCenter: 'WC1', isFinal: false },
+    { opNo: '0020', opText: 'Op20', workCenter: 'WC1', isFinal: false },
+    { opNo: '0030', opText: 'Op30', workCenter: 'WC1', isFinal: false },
+    { opNo: '0040', opText: 'Op40', workCenter: 'WC1', isFinal: false },
+    { opNo: '0050', opText: 'Op50', workCenter: 'WC1', isFinal: true }
+  ];
+
+  getOperationsForOrder = function(mo) { return _normMo_(mo) === _normMo_(MO) ? FIVE_OPS : []; };
+  isAdminUser_ = function() { return true; }; // default ON for the business-logic assertions below
+
+  function seedPallet(pid, overrides) {
+    var vals = {
+      PalletID: pid, ManufacturingOrder: MO, Material: 'ZZTEST-MAT', MaterialName: 'Test Material',
+      QtyPerPallet: 10, Unit: 'PC',
+      ScanStatus: '', ExclusionStatus: '', QCStatus: ''
+    };
+    Object.keys(overrides || {}).forEach(function(k) { vals[k] = overrides[k]; });
+    pmSh.appendRow(buildPalletRow_(vals));
+    SpreadsheetApp.flush();
+  }
+
+  function seedOp(pid, opNo, opText) {
+    logOperation({
+      palletId: pid, mo: MO, operationNo: opNo, operationText: opText,
+      goodQty: 10, scrapQty: 0, repairQty: 0, awaitConvQty: 0,
+      operator: 'TEST', role: 'OP', result: 'PASS', source: 'TEST'
+    });
+  }
+
+  function findPid(resp, pid) {
+    return (resp && resp.pallets || []).filter(function(p) { return p.PalletID === pid; })[0];
+  }
+
+  try {
+    // ---- (a) missing ops, QCStatus not INSPECTED -> appears, correct MissingOps ----
+    var PID_A = 'PL-ZZBFLIST-A01';
+    seedPallet(PID_A);
+    seedOp(PID_A, '0010', 'Op10');
+    seedOp(PID_A, '0020', 'Op20');
+    SpreadsheetApp.flush();
+
+    var resA = listBackfillCandidates();
+    assert('(a1) success:true', resA && resA.success === true, JSON.stringify(resA));
+    var foundA = findPid(resA, PID_A);
+    assert('(a2) PID_A appears in list', !!foundA, JSON.stringify(foundA));
+    assert('(a3) MissingOps = [0030,0040,0050]',
+      foundA && JSON.stringify(foundA.MissingOps) === JSON.stringify(['0030', '0040', '0050']),
+      foundA && JSON.stringify(foundA.MissingOps));
+
+    // ---- (b) QCStatus=INSPECTED -> does NOT appear ----
+    var PID_B = 'PL-ZZBFLIST-B01';
+    seedPallet(PID_B, { QCStatus: 'INSPECTED' });
+    seedOp(PID_B, '0010', 'Op10');
+    SpreadsheetApp.flush();
+
+    var resB = listBackfillCandidates();
+    assert('(b1) PID_B does NOT appear (QCStatus INSPECTED)', !findPid(resB, PID_B));
+
+    // ---- (c) ScanStatus=CONFIRMED -> does NOT appear ----
+    var PID_C = 'PL-ZZBFLIST-C01';
+    seedPallet(PID_C, { ScanStatus: 'CONFIRMED' });
+    SpreadsheetApp.flush();
+
+    var resC = listBackfillCandidates();
+    assert('(c1) PID_C does NOT appear (ScanStatus CONFIRMED)', !findPid(resC, PID_C));
+
+    // ---- (d) ExclusionStatus=EXCLUDED -> does NOT appear ----
+    var PID_D = 'PL-ZZBFLIST-D01';
+    seedPallet(PID_D, { ExclusionStatus: 'EXCLUDED' });
+    SpreadsheetApp.flush();
+
+    var resD = listBackfillCandidates();
+    assert('(d1) PID_D does NOT appear (EXCLUDED)', !findPid(resD, PID_D));
+
+    // ---- (e) zero missing ops (fully logged) -> does NOT appear ----
+    var PID_E = 'PL-ZZBFLIST-E01';
+    seedPallet(PID_E);
+    FIVE_OPS.forEach(function(op) { seedOp(PID_E, op.opNo, op.opText); });
+    SpreadsheetApp.flush();
+
+    var resE = listBackfillCandidates();
+    assert('(e1) PID_E does NOT appear (nothing missing)', !findPid(resE, PID_E));
+
+    // ---- (f) non-admin caller -> {success:false, pallets:[]} ----
+    isAdminUser_ = function() { return false; };
+    var resF = listBackfillCandidates();
+    isAdminUser_ = function() { return true; }; // restore stub for any remaining assertions
+
+    assert('(f1) rejected (not admin)', resF && resF.success === false, JSON.stringify(resF));
+    assert('(f2) pallets:[] for non-admin', resF && Array.isArray(resF.pallets) && resF.pallets.length === 0,
+      JSON.stringify(resF && resF.pallets));
+
+  } catch (ex) {
+    pass = false;
+    Logger.log('❌ EXCEPTION: ' + ex.message);
+  } finally {
+    getOperationsForOrder = origGetOperationsForOrder;
+    isAdminUser_ = origIsAdminUser;
+
+    var pmCleanup = pmSh.getDataRange().getValues();
+    var pmHdrCleanup = pmCleanup[0];
+    var pidColCleanup = pmHdrCleanup.indexOf('PalletID');
+    for (var pr = pmCleanup.length - 1; pr >= 1; pr--) {
+      if (/^PL-ZZBFLIST-/i.test(String(pmCleanup[pr][pidColCleanup] || '').trim())) {
+        pmSh.deleteRow(pr + 1);
+      }
+    }
+
+    var olCleanup = olSh.getDataRange().getValues();
+    var olHdrCleanup = olCleanup[0];
+    var olPidColCleanup = olHdrCleanup.indexOf('PalletID');
+    for (var olr = olCleanup.length - 1; olr >= 1; olr--) {
+      if (/^PL-ZZBFLIST-/i.test(String(olCleanup[olr][olPidColCleanup] || '').trim())) {
+        olSh.deleteRow(olr + 1);
+      }
+    }
+
+    SpreadsheetApp.flush();
+  }
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent(fn, 'ListBackfillCandidates', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions');
+
+  return pass;
+}
+
+/**
+ * TEST_batchAdminBackfill_ — self-cleaning fixture, prefix 'PL-ZZBFBATCH-'.
+ * Stubs getOperationsForOrder (5-op fixed routing) and isAdminUser_ (admin
+ * gate) via plain reassignment, same technique as TEST_adminBackfillPallet_.
+ * Exercises batchAdminBackfill() (WebApp.gs), which fans out to
+ * adminBackfillPallet_ per item with fail-soft try/catch, same pattern as
+ * batchOverrideConfirm.
+ * @return {boolean} pass
+ */
+function TEST_batchAdminBackfill_() {
+  var fn = 'TEST_batchAdminBackfill_';
+  var t0 = Date.now();
+
+  Logger.log('');
+  Logger.log('══════════════════════════════════════════');
+  Logger.log(' ' + fn);
+  Logger.log('══════════════════════════════════════════');
+
+  var pass = true;
+  var results = [];
+  function assert(name, cond, detail) {
+    var ok = !!cond;
+    results.push({ name: name, ok: ok, detail: detail || '' });
+    Logger.log((ok ? '✅' : '❌') + ' ' + name + (detail ? ' — ' + detail : ''));
+    if (!ok) pass = false;
+    return ok;
+  }
+
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  var olSh = getSpreadsheet_().getSheetByName(OL_SHEET);
+
+  var MO = '0000098012'; // all-digit — avoids leading-zero coercion gotcha
+  var origGetOperationsForOrder = getOperationsForOrder;
+  var origIsAdminUser = isAdminUser_;
+
+  var FIVE_OPS = [
+    { opNo: '0010', opText: 'Op10', workCenter: 'WC1', isFinal: false },
+    { opNo: '0020', opText: 'Op20', workCenter: 'WC1', isFinal: false },
+    { opNo: '0030', opText: 'Op30', workCenter: 'WC1', isFinal: false },
+    { opNo: '0040', opText: 'Op40', workCenter: 'WC1', isFinal: false },
+    { opNo: '0050', opText: 'Op50', workCenter: 'WC1', isFinal: true }
+  ];
+
+  getOperationsForOrder = function(mo) { return _normMo_(mo) === _normMo_(MO) ? FIVE_OPS : []; };
+  isAdminUser_ = function() { return true; }; // default ON for the business-logic assertions below
+
+  function seedPallet(pid, overrides) {
+    var vals = {
+      PalletID: pid, ManufacturingOrder: MO, Material: 'ZZTEST-MAT', MaterialName: 'Test Material',
+      QtyPerPallet: 10, Unit: 'PC',
+      ScanStatus: '', ExclusionStatus: '', QCStatus: ''
+    };
+    Object.keys(overrides || {}).forEach(function(k) { vals[k] = overrides[k]; });
+    pmSh.appendRow(buildPalletRow_(vals));
+    SpreadsheetApp.flush();
+  }
+
+  function seedOp(pid, opNo, opText) {
+    logOperation({
+      palletId: pid, mo: MO, operationNo: opNo, operationText: opText,
+      goodQty: 10, scrapQty: 0, repairQty: 0, awaitConvQty: 0,
+      operator: 'TEST', role: 'OP', result: 'PASS', source: 'TEST'
+    });
+  }
+
+  function olRowsFor(pid) {
+    var data = olSh.getDataRange().getValues();
+    var hdr = data[0];
+    var idx = {};
+    hdr.forEach(function(h, i) { idx[String(h).trim()] = i; });
+    var rows = [];
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][idx['PalletID']] || '').trim() === pid) rows.push(data[r]);
+    }
+    return rows;
+  }
+
+  function findResult(resp, pid) {
+    return (resp && resp.results || []).filter(function(r) { return r.palletId === pid; })[0];
+  }
+
+  try {
+    // ---- (g) 2 valid fixtures, valid reason -> both succeed ----
+    var PID_G1 = 'PL-ZZBFBATCH-G01';
+    var PID_G2 = 'PL-ZZBFBATCH-G02';
+    seedPallet(PID_G1);
+    seedOp(PID_G1, '0010', 'Op10');
+    seedOp(PID_G1, '0020', 'Op20');
+    seedPallet(PID_G2);
+    seedOp(PID_G2, '0010', 'Op10');
+    SpreadsheetApp.flush();
+
+    var resG = batchAdminBackfill(
+      [{ palletId: PID_G1 }, { palletId: PID_G2 }], 'valid backfill reason');
+    assert('(g1) success:true', resG && resG.success === true, JSON.stringify(resG));
+    assert('(g2) results has 2 entries', resG && resG.results && resG.results.length === 2,
+      JSON.stringify(resG && resG.results));
+
+    var rG1 = findResult(resG, PID_G1);
+    var rG2 = findResult(resG, PID_G2);
+    assert('(g3) PID_G1 succeeds, operationsBackfilled=[0030,0040,0050]',
+      rG1 && rG1.success === true &&
+      JSON.stringify(rG1.operationsBackfilled) === JSON.stringify(['0030', '0040', '0050']),
+      JSON.stringify(rG1));
+    assert('(g4) PID_G2 succeeds, operationsBackfilled=[0020,0030,0040,0050]',
+      rG2 && rG2.success === true &&
+      JSON.stringify(rG2.operationsBackfilled) === JSON.stringify(['0020', '0030', '0040', '0050']),
+      JSON.stringify(rG2));
+
+    // ---- (h) 6 items (over cap 5) -> rejected, zero writes ----
+    var PID_H = [];
+    for (var hIdx = 1; hIdx <= 6; hIdx++) {
+      var pidH = 'PL-ZZBFBATCH-H0' + hIdx;
+      PID_H.push(pidH);
+      seedPallet(pidH);
+      seedOp(pidH, '0010', 'Op10');
+    }
+    SpreadsheetApp.flush();
+
+    var itemsH = PID_H.map(function(pid) { return { palletId: pid }; });
+    var beforeCountsH = PID_H.map(function(pid) { return olRowsFor(pid).length; });
+    var resH = batchAdminBackfill(itemsH, 'valid backfill reason');
+    assert('(h1) rejected (over cap)', resH && resH.success === false, JSON.stringify(resH));
+    assert('(h2) message mentions cap', resH && /5/.test(resH.message || ''), resH && resH.message);
+    var afterCountsH = PID_H.map(function(pid) { return olRowsFor(pid).length; });
+    var writesH = beforeCountsH.some(function(before, i) { return afterCountsH[i] !== before; });
+    assert('(h3) zero NEW writes to any of the 6 fixtures (before/after row counts match)',
+      !writesH, 'before=' + JSON.stringify(beforeCountsH) + ' after=' + JSON.stringify(afterCountsH));
+
+    // ---- (i) reason < 5 chars -> rejected, zero writes ----
+    var PID_I = 'PL-ZZBFBATCH-I01';
+    seedPallet(PID_I);
+    seedOp(PID_I, '0010', 'Op10');
+    SpreadsheetApp.flush();
+    var olCountIBefore = olRowsFor(PID_I).length;
+
+    var resI = batchAdminBackfill([{ palletId: PID_I }], 'ab');
+    assert('(i1) rejected (reason too short)', resI && resI.success === false, JSON.stringify(resI));
+    assert('(i2) no OperationLog rows added', olRowsFor(PID_I).length === olCountIBefore);
+
+    // ---- (j) one already-INSPECTED fixture mixed into otherwise-valid batch: fail-soft ----
+    var PID_J1 = 'PL-ZZBFBATCH-J01';
+    var PID_J2 = 'PL-ZZBFBATCH-J02'; // already INSPECTED — should fail individually
+    var PID_J3 = 'PL-ZZBFBATCH-J03';
+    seedPallet(PID_J1);
+    seedOp(PID_J1, '0010', 'Op10');
+    seedPallet(PID_J2, { QCStatus: 'INSPECTED', QCResult: 'PASS' });
+    seedPallet(PID_J3);
+    seedOp(PID_J3, '0010', 'Op10');
+    SpreadsheetApp.flush();
+
+    var resJ = batchAdminBackfill(
+      [{ palletId: PID_J1 }, { palletId: PID_J2 }, { palletId: PID_J3 }], 'valid backfill reason');
+    assert('(j1) batch call succeeds overall', resJ && resJ.success === true, JSON.stringify(resJ));
+    var rJ1 = findResult(resJ, PID_J1);
+    var rJ2 = findResult(resJ, PID_J2);
+    var rJ3 = findResult(resJ, PID_J3);
+    assert('(j2) PID_J1 succeeds', rJ1 && rJ1.success === true, JSON.stringify(rJ1));
+    assert('(j3) PID_J2 fails individually (already INSPECTED)', rJ2 && rJ2.success === false, JSON.stringify(rJ2));
+    assert('(j4) PID_J3 still succeeds despite PID_J2 failing', rJ3 && rJ3.success === true, JSON.stringify(rJ3));
+
+    // ---- (k) non-admin caller -> rejected, zero writes ----
+    var PID_K = 'PL-ZZBFBATCH-K01';
+    seedPallet(PID_K);
+    seedOp(PID_K, '0010', 'Op10');
+    SpreadsheetApp.flush();
+    var olCountKBefore = olRowsFor(PID_K).length;
+
+    isAdminUser_ = function() { return false; };
+    var resK = batchAdminBackfill([{ palletId: PID_K }], 'valid backfill reason');
+    isAdminUser_ = function() { return true; }; // restore stub for any remaining assertions
+
+    assert('(k1) rejected (not admin)', resK && resK.success === false, JSON.stringify(resK));
+    assert('(k2) no OperationLog rows added', olRowsFor(PID_K).length === olCountKBefore);
+
+  } catch (ex) {
+    pass = false;
+    Logger.log('❌ EXCEPTION: ' + ex.message);
+  } finally {
+    getOperationsForOrder = origGetOperationsForOrder;
+    isAdminUser_ = origIsAdminUser;
+
+    var pmCleanup = pmSh.getDataRange().getValues();
+    var pmHdrCleanup = pmCleanup[0];
+    var pidColCleanup = pmHdrCleanup.indexOf('PalletID');
+    for (var pr = pmCleanup.length - 1; pr >= 1; pr--) {
+      if (/^PL-ZZBFBATCH-/i.test(String(pmCleanup[pr][pidColCleanup] || '').trim())) {
+        pmSh.deleteRow(pr + 1);
+      }
+    }
+
+    var olCleanup = olSh.getDataRange().getValues();
+    var olHdrCleanup = olCleanup[0];
+    var olPidColCleanup = olHdrCleanup.indexOf('PalletID');
+    for (var olr = olCleanup.length - 1; olr >= 1; olr--) {
+      if (/^PL-ZZBFBATCH-/i.test(String(olCleanup[olr][olPidColCleanup] || '').trim())) {
+        olSh.deleteRow(olr + 1);
+      }
+    }
+
+    SpreadsheetApp.flush();
+  }
+
+  var elapsed = Date.now() - t0;
+  Logger.log('');
+  Logger.log('──────────────────────────────────────────');
+  Logger.log(fn + ': ' + (pass ? 'ALL PASS' : 'SOME FAILED') + ' (' + elapsed + 'ms)');
+  results.forEach(function(r) {
+    Logger.log('  ' + (r.ok ? '✅' : '❌') + ' ' + r.name);
+  });
+  Logger.log('──────────────────────────────────────────');
+
+  logEvent(fn, 'BatchAdminBackfill', pass ? 'PASS' : 'FAIL', elapsed,
+    results.length + ' assertions');
+
+  return pass;
+}
