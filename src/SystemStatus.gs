@@ -194,6 +194,20 @@ function showSystemStatusDialog() {
 // TEST
 // ============================================================================
 
+/**
+ * READ-ONLY diagnostic: logs every sheet name in the active spreadsheet
+ * exactly as stored (no trim/normalize), in tab order, plus the total count.
+ * No writes.
+ */
+function TEST_logAllSheetNames_() {
+  var sheets = SpreadsheetApp.getActiveSpreadsheet().getSheets();
+  Logger.log('=== Sheet list (' + sheets.length + ' total) ===');
+  sheets.forEach(function(sh) {
+    Logger.log(sh.getName());
+  });
+  Logger.log('=== Total sheet count: ' + sheets.length + ' ===');
+}
+
 function TEST_systemStatus_() {
   var results = [];
   var pass    = true;

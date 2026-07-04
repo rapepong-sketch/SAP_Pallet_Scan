@@ -275,3 +275,83 @@ function TEST_palletExclusion_runAll() {
 
   return exclusionPass && replayPass;
 }
+
+/**
+ * READ-ONLY diagnostic: prints the PalletMaster exclusion fields for a
+ * given PalletID verbatim, plus every EventLog row whose Function is
+ * PALLET_EXCLUDE/PALLET_INCLUDE AND whose row text mentions that PalletID
+ * (most recent first). Scans the full row rather than one fixed column,
+ * since excludePallet_()/includePallet_() call logEvent(fn, endpoint, ...)
+ * with only 3 args against its 5-arg signature (fn, endpoint, status,
+ * responseTimeMs, note) — the JSON payload containing the PalletID lands
+ * in the sheet's Status column, not a dedicated "detail" column, so a
+ * fixed-column search would be fragile. No writes anywhere.
+ * @param {string} palletId — defaults to 'PL-1000036127-L02' if omitted
+ * @return {void}
+ */
+function TEST_readExclusionAudit_(palletId) {
+  var pid = String(palletId || 'PL-1000036127-L02').trim();
+
+  Logger.log('══════════════════════════════════════════════════════');
+  Logger.log('TEST_readExclusionAudit_ — READ-ONLY, PalletID = ' + pid);
+  Logger.log('══════════════════════════════════════════════════════');
+
+  // ---- PalletMaster row ----
+  var pmSh = getSpreadsheet_().getSheetByName(PM_SHEET);
+  if (!pmSh || pmSh.getLastRow() < 2) {
+    Logger.log('PalletMaster sheet empty or missing.');
+  } else {
+    var pmData = pmSh.getDataRange().getValues();
+    var pmHdr  = pmData[0];
+    var pmIdx  = {};
+    pmHdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+    var found = null;
+    for (var r = 1; r < pmData.length; r++) {
+      if (String(pmData[r][pmIdx['PalletID']] || '').trim() === pid) {
+        found = pmData[r];
+        break;
+      }
+    }
+
+    if (!found) {
+      Logger.log('PalletMaster: PalletID not found: ' + pid);
+    } else {
+      ['ExclusionStatus', 'ExclusionReason', 'ExcludedAt', 'ExcludedBy'].forEach(function(col) {
+        var present = pmIdx[col] !== undefined;
+        Logger.log(col + ' = ' + (present ? JSON.stringify(found[pmIdx[col]]) : '(column not found)'));
+      });
+    }
+  }
+
+  // ---- EventLog rows ----
+  Logger.log('');
+  Logger.log('EventLog matches (PALLET_EXCLUDE / PALLET_INCLUDE mentioning ' + pid + '), most recent first:');
+  var elSh = getSpreadsheet_().getSheetByName(CFG.SHEETS.EVENT_LOG);
+  if (!elSh || elSh.getLastRow() < 2) {
+    Logger.log('EventLog sheet empty or missing.');
+  } else {
+    var elData = elSh.getDataRange().getValues();
+    var elHdr  = elData[0];
+    var fnIdx  = elHdr.indexOf('Function');
+    var matches = [];
+    for (var er = 1; er < elData.length; er++) {
+      var row = elData[er];
+      var fnVal = fnIdx !== -1 ? String(row[fnIdx] || '').trim() : '';
+      if (fnVal !== 'PALLET_EXCLUDE' && fnVal !== 'PALLET_INCLUDE') continue;
+      var rowText = row.join(' | ');
+      if (rowText.indexOf(pid) === -1) continue;
+      matches.push({ rowNum: er + 1, row: row });
+    }
+    matches.reverse(); // most recent first
+    if (matches.length === 0) {
+      Logger.log('(none found)');
+    } else {
+      matches.forEach(function(m) {
+        Logger.log('Row ' + m.rowNum + ': ' + JSON.stringify(elHdr) + ' = ' + JSON.stringify(m.row));
+      });
+    }
+  }
+
+  Logger.log('══════════════════════════════════════════════════════');
+}
