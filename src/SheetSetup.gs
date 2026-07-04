@@ -51,6 +51,9 @@ function onOpen() {
     .addItem('🟢 เปิด Local Op Cumulative Confirm', 'flagEnableLocalOpCumulative')
     .addItem('🔴 ปิด Local Op Cumulative Confirm',  'flagDisableLocalOpCumulative')
     .addSeparator()
+    .addItem('🟢 เปิด Auto-Exclude เมื่อ Order ถูกลบ', 'flagEnableAutoExcludeOnOrderDeleted')
+    .addItem('🔴 ปิด Auto-Exclude เมื่อ Order ถูกลบ',  'flagDisableAutoExcludeOnOrderDeleted')
+    .addSeparator()
     .addItem('📊 ดูสถานะ flag',                'flagShowStatus')
     .addItem('↩️ รีเซ็ตเป็น default ปลอดภัย', 'flagSetDefaults');
 
