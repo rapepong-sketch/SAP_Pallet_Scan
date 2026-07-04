@@ -127,6 +127,7 @@ function onOpen() {
     .addSeparator()
     .addItem('🚫 [Admin] Exclude Pallet',               'MENU_excludePallet')
     .addItem('✅ [Admin] Include Pallet (Undo Exclude)', 'MENU_includePallet')
+    .addItem('🧩 [Admin] Backfill Missing Operations',  'MENU_adminBackfillPallet')
     .addItem('🔍 [Diag] Override Candidate Cap (RO)',    'MENU_diagOverrideCandidateCap')
     .addSeparator()
     .addItem('⚠️ Reverse First-Live Doc 4900216057 (WRITES)', 'REVERSE_firstLiveDoc')
@@ -293,4 +294,44 @@ function MENU_includePallet() {
   } else {
     ui.alert('❌ Failed', result.message || 'Unknown error', ui.ButtonSet.OK);
   }
+}
+
+/**
+ * Menu entry: prompt for PalletID, preview the missing-operations gap via
+ * previewBackfillGaps_() (read-only, no writes), then — only if there is a
+ * real gap to backfill — prompt for a mandatory reason and call
+ * adminBackfillPallet_(). If the pallet doesn't qualify (not found, already
+ * CONFIRMED/EXCLUDED/INSPECTED, or nothing missing), the preview's own
+ * message is shown and the flow stops before ever asking for a reason.
+ */
+function MENU_adminBackfillPallet() {
+  var ui = SpreadsheetApp.getUi();
+  var pidResp = ui.prompt('🧩 Admin Backfill', 'ระบุ PalletID:', ui.ButtonSet.OK_CANCEL);
+  if (pidResp.getSelectedButton() !== ui.Button.OK) return;
+  var pid = pidResp.getResponseText().trim();
+  if (!pid) return;
+
+  var preview = previewBackfillGaps_(pid);
+  if (!preview.success) {
+    ui.alert('❌ ' + preview.message);
+    return;
+  }
+
+  ui.alert('🧩 Admin Backfill — Preview',
+    'PalletID: ' + preview.palletId + '\n' +
+    'MO: ' + preview.mo + '\n' +
+    'QCStatus ปัจจุบัน: ' + (preview.qcStatus || '(ว่าง)') + '\n' +
+    'Operation ที่ขาด: ' + preview.missingOps.join(', '),
+    ui.ButtonSet.OK);
+
+  var reasonResp = ui.prompt('Admin Backfill — เหตุผล (บังคับ, อย่างน้อย 5 ตัวอักษร)',
+    'ระบุเหตุผลที่ต้อง backfill:', ui.ButtonSet.OK_CANCEL);
+  if (reasonResp.getSelectedButton() !== ui.Button.OK) return;
+  var reason = reasonResp.getResponseText().trim();
+
+  var actor = getActiveUserSafe_();
+  var result = adminBackfillPallet_(pid, reason, actor);
+  ui.alert(result.success
+    ? '✅ Backfill สำเร็จ: ' + JSON.stringify(result.operationsBackfilled)
+    : '❌ ' + result.message);
 }
