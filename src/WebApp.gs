@@ -1010,6 +1010,10 @@ function listBackfillCandidates() {
       }
     }
 
+    // ProductGroup lookup map: materialCode → productGroup string.
+    // Built once, before the per-row loop, shared with searchPallets()/getQcWorklist_() (DesktopSearch.gs).
+    var pgMap = _buildProductGroupMap_();
+
     var pallets = [];
     for (var r = 1; r < data.length; r++) {
       var row = data[r];
@@ -1022,6 +1026,7 @@ function listBackfillCandidates() {
         String(row[idx['ExclusionStatus']] || '').trim() === 'EXCLUDED') continue;
 
       var mo = String(row[idx['ManufacturingOrder']] || '').trim();
+      var mat = String(row[idx['Material']] || '').trim();
 
       var expectedOps = getOperationsForOrder(mo);
       var existingLogs = getOperationLogs_(pid);
@@ -1038,14 +1043,15 @@ function listBackfillCandidates() {
       pallets.push({
         PalletID:           pid,
         ManufacturingOrder: mo,
-        Material:           String(row[idx['Material']] || '').trim(),
+        Material:           mat,
         MaterialName:       String(row[idx['MaterialName']] || '').trim(),
         QtyPerPallet:       Number(row[idx['QtyPerPallet']]) || 0,
         Unit:               String(row[idx['Unit']] || '').trim(),
         WorkCenter:         (wc instanceof Date) ? dateToWorkCenter_(wc) : String(wc || '').trim(),
         ScanStatus:         String(row[idx['ScanStatus']] || '').trim(),
         MissingOps:         missingOps,
-        StorageLocation:    idx['StorageLocation'] !== undefined ? String(row[idx['StorageLocation']] || '').trim() : ''
+        StorageLocation:    idx['StorageLocation'] !== undefined ? String(row[idx['StorageLocation']] || '').trim() : '',
+        ProductGroup:       pgMap[mat] || ''
       });
 
       if (pallets.length >= 50) break;
@@ -1063,10 +1069,11 @@ function listBackfillCandidates() {
 /**
  * Batch admin-backfill. Applies the SAME reason to every selected pallet.
  * Fail-soft: one pallet's failure does not abort the batch. Admin-gated.
- * Delegates each pallet to adminBackfillPallet_ (AdminBackfill.gs). No qty
- * field on items — backfill always uses the pallet's full QtyPerPallet,
- * there is no reduce-quantity concept here (unlike Override Confirm).
- * @param {Array<{palletId:string}>} items
+ * Delegates each pallet to adminBackfillPallet_ (AdminBackfill.gs). Optional
+ * qty field on items reduces the pallet's actual confirmed quantity (mirrors
+ * batchOverrideConfirm's items shape); omitted/null uses the pallet's full
+ * QtyPerPallet.
+ * @param {Array<{palletId:string, qty:(number|null)=}>} items
  * @param {string} reason  Mandatory, >= 5 chars.
  * @return {{success:boolean, results:Array, message?:string}}
  */
@@ -1100,17 +1107,19 @@ function batchAdminBackfill(items, reason) {
 
   for (var i = 0; i < items.length; i++) {
     var pid = String(items[i].palletId).trim();
+    var qty = (items[i].qty != null && items[i].qty !== '') ? Number(items[i].qty) : null;
     try {
-      var res = adminBackfillPallet_(pid, reason, actor);
+      var res = adminBackfillPallet_(pid, reason, actor, qty);
       results.push({
         palletId:             pid,
         success:              res.success,
         message:              res.message || '',
-        operationsBackfilled: res.operationsBackfilled || []
+        operationsBackfilled: res.operationsBackfilled || [],
+        qtyBackfilled:        res.qtyBackfilled != null ? res.qtyBackfilled : null
       });
       if (res.success) { okCount++; } else { failCount++; }
     } catch (e) {
-      results.push({ palletId: pid, success: false, message: e.message, operationsBackfilled: [] });
+      results.push({ palletId: pid, success: false, message: e.message, operationsBackfilled: [], qtyBackfilled: null });
       failCount++;
     }
   }

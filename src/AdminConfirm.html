@@ -132,6 +132,13 @@
 
     /* Override modal reduction warning */
     .ovr-reduced { color: #dc3545; font-weight: 600; }
+
+    /* Backfill qty input (mirrors Override's .ovr-qty) */
+    .bf-qty { width: 68px; padding: 4px 6px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 0.88em; text-align: center; margin-top: 2px; }
+    .bf-qty:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
+    .bf-qty.invalid { border-color: #dc3545; box-shadow: 0 0 0 2px rgba(220,53,69,0.15); }
+    .bf-qty-hint { display: none; font-size: 0.72em; color: #dc3545; margin-top: 1px; white-space: nowrap; }
+    .bf-qty.invalid + .bf-qty-hint { display: block; }
   </style>
 </head>
 <body>
@@ -314,6 +321,10 @@
       <label>คลัง:</label>
       <select id="fltBackfillStorage" onchange="onBackfillStorageFilterChange()">
         <option value="">ทุกคลัง</option>
+      </select>
+      <label>Product Group:</label>
+      <select id="fltBackfillProductGroup" onchange="onBackfillProductGroupFilterChange()">
+        <option value="">ทุก Product Group</option>
       </select>
       <label>Material:</label>
       <select id="fltBackfillMaterial" onchange="applyBackfillFilters()">
@@ -1261,6 +1272,7 @@
     document.getElementById('backfillFilterBar').style.display = '';
     document.getElementById('fltBackfillStorage').value = '';
     populateBackfillStorageFilter();
+    populateBackfillProductGroupFilter();
     applyBackfillFilters();
     document.getElementById('backfillSummary').innerHTML = 'พาเลทรอ backfill: <b>' + backfillAllPallets.length + '</b>';
   }
@@ -1288,15 +1300,44 @@
     populateBackfillMaterialFilter();
   }
 
-  function populateBackfillMaterialFilter() {
+  function populateBackfillProductGroupFilter() {
     var storageVal = document.getElementById('fltBackfillStorage').value;
-    var sel = document.getElementById('fltBackfillMaterial');
-    var mats = {};
+    var sel = document.getElementById('fltBackfillProductGroup');
+    var pgs = {};
     for (var i = 0; i < backfillAllPallets.length; i++) {
       var p = backfillAllPallets[i];
       var loc = p.StorageLocation || '';
       var match = storageVal === '' || (storageVal === '__EMPTY__' ? loc === '' : loc === storageVal);
       if (match) {
+        pgs[p.ProductGroup || ''] = true;
+      }
+    }
+    var sorted = Object.keys(pgs).sort(function(a, b) {
+      if (a === '' && b !== '') return 1;
+      if (b === '' && a !== '') return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    var html = '<option value="">ทุก Product Group</option>';
+    for (var i = 0; i < sorted.length; i++) {
+      var v = sorted[i];
+      var optVal = v === '' ? '__EMPTY__' : v;
+      html += '<option value="' + esc(optVal) + '">' + esc(v || '(ไม่ระบุ Product Group)') + '</option>';
+    }
+    sel.innerHTML = html;
+  }
+
+  function populateBackfillMaterialFilter() {
+    var storageVal = document.getElementById('fltBackfillStorage').value;
+    var productGroupVal = document.getElementById('fltBackfillProductGroup').value;
+    var sel = document.getElementById('fltBackfillMaterial');
+    var mats = {};
+    for (var i = 0; i < backfillAllPallets.length; i++) {
+      var p = backfillAllPallets[i];
+      var loc = p.StorageLocation || '';
+      var pg = p.ProductGroup || '';
+      var storageMatch = storageVal === '' || (storageVal === '__EMPTY__' ? loc === '' : loc === storageVal);
+      var pgMatch = productGroupVal === '' || (productGroupVal === '__EMPTY__' ? pg === '' : pg === productGroupVal);
+      if (storageMatch && pgMatch) {
         var key = p.Material || '';
         if (!mats[key]) mats[key] = p.MaterialName || '';
       }
@@ -1312,18 +1353,28 @@
   }
 
   function onBackfillStorageFilterChange() {
+    document.getElementById('fltBackfillProductGroup').value = '';
+    populateBackfillProductGroupFilter();
+    populateBackfillMaterialFilter();
+    applyBackfillFilters();
+  }
+
+  function onBackfillProductGroupFilterChange() {
     populateBackfillMaterialFilter();
     applyBackfillFilters();
   }
 
   function applyBackfillFilters() {
     var storageVal = document.getElementById('fltBackfillStorage').value;
+    var productGroupVal = document.getElementById('fltBackfillProductGroup').value;
     var materialVal = document.getElementById('fltBackfillMaterial').value;
     var filtered = [];
     for (var i = 0; i < backfillAllPallets.length; i++) {
       var p = backfillAllPallets[i];
       var loc = p.StorageLocation || '';
+      var pg = p.ProductGroup || '';
       if (storageVal !== '' && (storageVal === '__EMPTY__' ? loc !== '' : loc !== storageVal)) continue;
+      if (productGroupVal !== '' && (productGroupVal === '__EMPTY__' ? pg !== '' : pg !== productGroupVal)) continue;
       if (materialVal !== '' && p.Material !== materialVal) continue;
       filtered.push(p);
     }
@@ -1361,13 +1412,18 @@
         '<td colspan="7">' + esc(loc || '(ไม่ระบุคลัง)') + '<span class="group-count"> (' + items.length + ' พาเลท)</span></td></tr>';
       for (var i = 0; i < items.length; i++) {
         var p = items[i];
+        var maxQ = p.QtyPerPallet || 0;
         var chk = backfillCheckedSet.has(p.PalletID) ? ' checked' : '';
         html += '<tr data-group="' + gid + '">' +
           '<td><input type="checkbox" class="backfill-chk" value="' + esc(p.PalletID) + '"' + chk + ' onchange="onBackfillChkChange(this)"></td>' +
           '<td>' + esc(p.PalletID) + '</td>' +
           '<td>' + esc(p.ManufacturingOrder) + '</td>' +
           '<td>' + esc(p.Material) + (p.MaterialName ? ' / ' + esc(p.MaterialName) : '') + '</td>' +
-          '<td>' + p.QtyPerPallet + ' ' + esc(p.Unit || '') + '</td>' +
+          '<td>' + maxQ + ' ' + esc(p.Unit || '') +
+            '<br><input type="number" class="bf-qty" value="' + maxQ + '" min="1" max="' + maxQ + '" step="1"' +
+            ' data-maxqty="' + maxQ + '" data-palletid="' + esc(p.PalletID) + '"' +
+            ' oninput="onBfQtyInput(this)">' +
+            '<span class="bf-qty-hint">ลดได้ไม่เกิน ' + maxQ + '</span></td>' +
           '<td>' + esc(p.WorkCenter || '-') + '</td>' +
           '<td>' + esc(p.ScanStatus || '-') + '</td>' +
           '<td>' + esc((p.MissingOps || []).join(', ')) + '</td></tr>';
@@ -1384,6 +1440,26 @@
     syncBackfillGroupCheckboxes();
     syncBackfillGlobalCheckbox();
     updateBackfillSubmitBtn();
+  }
+
+  function onBfQtyInput(el) {
+    var maxQ = parseInt(el.getAttribute('data-maxqty'), 10) || 0;
+    var raw = el.value.trim();
+    var n = parseInt(raw, 10);
+    var invalid = raw === '' || isNaN(n) || n < 1 || n > maxQ || String(n) !== raw;
+    el.classList.toggle('invalid', invalid);
+    updateBackfillSubmitBtn();
+  }
+
+  function hasInvalidCheckedBfQty() {
+    var inputs = document.querySelectorAll('.bf-qty');
+    for (var i = 0; i < inputs.length; i++) {
+      var inp = inputs[i];
+      if (!inp.classList.contains('invalid')) continue;
+      var pid = inp.getAttribute('data-palletid');
+      if (backfillCheckedSet.has(pid)) return true;
+    }
+    return false;
   }
 
   function toggleBackfillGroup(el) {
@@ -1428,13 +1504,6 @@
     updateBackfillSubmitBtn();
   }
 
-  // ==== Backfill: get ticked IDs (from persistent Set) ====
-  function getBackfillTickedIds() {
-    var ids = [];
-    backfillCheckedSet.forEach(function(v) { ids.push(v); });
-    return ids;
-  }
-
   // ==== Backfill: reason input handler ====
   function onBackfillReasonInput() {
     var ta = document.getElementById('backfillReason');
@@ -1454,7 +1523,7 @@
 
     btn.textContent = 'Backfill รายการที่เลือก (' + n + ')';
 
-    if (n === 0 || reason.length < 5) {
+    if (n === 0 || reason.length < 5 || hasInvalidCheckedBfQty()) {
       btn.disabled = true;
       warn.style.display = n > 5 ? 'inline' : 'none';
     } else if (n > 5) {
@@ -1467,15 +1536,32 @@
   }
 
   // ==== Backfill: modal ====
+  function getBackfillTickedItems() {
+    var items = [];
+    var inputs = document.querySelectorAll('.bf-qty');
+    var qtyMap = {};
+    for (var i = 0; i < inputs.length; i++) {
+      qtyMap[inputs[i].getAttribute('data-palletid')] = {
+        qty: parseInt(inputs[i].value, 10),
+        maxQty: parseInt(inputs[i].getAttribute('data-maxqty'), 10)
+      };
+    }
+    backfillCheckedSet.forEach(function(pid) {
+      var info = qtyMap[pid];
+      items.push({ palletId: pid, qty: info ? info.qty : null, maxQty: info ? info.maxQty : null });
+    });
+    return items;
+  }
+
   function openBackfillModal() {
-    var ids = getBackfillTickedIds();
+    var tickedItems = getBackfillTickedItems();
     var reason = (document.getElementById('backfillReason').value || '').trim();
-    if (!ids.length || reason.length < 5) return;
+    if (!tickedItems.length || reason.length < 5) return;
 
     loadFlags();
     renderBackfillBadge();
 
-    document.getElementById('backfillModalCount').textContent = ids.length;
+    document.getElementById('backfillModalCount').textContent = tickedItems.length;
 
     var modeText = '';
     if (!flagState.sapWriteEnabled) {
@@ -1491,8 +1577,13 @@
     document.getElementById('backfillModalLiveWarn').style.display = isLive ? 'block' : 'none';
 
     var html = '';
-    for (var i = 0; i < ids.length; i++) {
-      html += '<li>' + esc(ids[i]) + '</li>';
+    for (var i = 0; i < tickedItems.length; i++) {
+      var t = tickedItems[i];
+      html += '<li>' + esc(t.palletId) + ' — ' + (t.qty || '-');
+      if (t.maxQty != null && t.qty != null && t.qty < t.maxQty) {
+        html += ' <span class="ovr-reduced">ลดจาก ' + t.maxQty + ' → ' + t.qty + '</span>';
+      }
+      html += '</li>';
     }
     document.getElementById('backfillModalList').innerHTML = html;
     document.getElementById('backfillModalReason').textContent = reason;
@@ -1510,13 +1601,13 @@
 
   // ==== Backfill: confirm and send ====
   function doBackfillConfirm() {
-    var ids = getBackfillTickedIds();
+    var tickedItems = getBackfillTickedItems();
     var reason = (document.getElementById('backfillReason').value || '').trim();
-    if (!ids.length || reason.length < 5) return;
+    if (!tickedItems.length || reason.length < 5) return;
 
     var payload = [];
-    for (var i = 0; i < ids.length; i++) {
-      payload.push({ palletId: ids[i] });
+    for (var i = 0; i < tickedItems.length; i++) {
+      payload.push({ palletId: tickedItems[i].palletId, qty: tickedItems[i].qty });
     }
 
     var btnSend = document.getElementById('btnBackfillConfirmSend');
@@ -1549,6 +1640,7 @@
     document.getElementById('chkAllBackfill').disabled = lock;
     document.getElementById('backfillReason').disabled = lock;
     document.getElementById('fltBackfillStorage').disabled = lock;
+    document.getElementById('fltBackfillProductGroup').disabled = lock;
     document.getElementById('fltBackfillMaterial').disabled = lock;
   }
 
@@ -1576,7 +1668,9 @@
       if (r.ok || r.success) {
         okCount++;
         html += '<div class="item ok">✅ ' + esc(r.palletId || r.PalletID) +
-          ' — backfilled: ' + esc((r.operationsBackfilled || []).join(', ')) + '</div>';
+          ' — backfilled: ' + esc((r.operationsBackfilled || []).join(', '));
+        if (r.qtyBackfilled != null) html += ' (qty: ' + r.qtyBackfilled + ')';
+        html += '</div>';
       } else {
         failCount++;
         html += '<div class="item fail">❌ ' + esc(r.palletId || r.PalletID) +

@@ -79,9 +79,12 @@ function previewBackfillGaps_(palletId) {
  * @param {string} palletId
  * @param {string} reason — mandatory, >= 5 chars, free-text justification
  * @param {string} actor — email/name of the admin performing the backfill
- * @return {{success:boolean, message?:string, palletId?:string, operationsBackfilled?:string[]}}
+ * @param {number} [actualQty] — optional reduce-only actual count; omitted/null/''
+ *   uses the pallet's full QtyPerPallet (byte-identical to pre-existing behavior)
+ * @return {{success:boolean, message?:string, palletId?:string,
+ *   operationsBackfilled?:string[], qtyBackfilled?:number}}
  */
-function adminBackfillPallet_(palletId, reason, actor) {
+function adminBackfillPallet_(palletId, reason, actor, actualQty) {
   // Guard 1 — admin only (same gate as confirmPalletOverride)
   if (!isAdminUser_()) {
     return { success: false, message: 'ไม่มีสิทธิ์ backfill' };
@@ -121,6 +124,22 @@ function adminBackfillPallet_(palletId, reason, actor) {
       message: 'Backfill ยังไม่รองรับตอน Local Op Cumulative เปิดอยู่ — ปิด flag นี้ก่อน' };
   }
 
+  // Guard 8 — reduce-only actual quantity (optional). Omitted/null/'' keeps
+  // finalQty === originalQty, so behavior below is byte-identical to the
+  // pre-existing 3-arg call.
+  var originalQty = Number(pallet.QtyPerPallet) || 0;
+  var finalQty;
+  if (actualQty == null || actualQty === '') {
+    finalQty = originalQty;
+  } else {
+    var n = Number(actualQty);
+    if (!isFinite(n) || n <= 0 || n > originalQty) {
+      return { success: false,
+        message: 'จำนวนจริงต้องมากกว่า 0 และไม่เกิน ' + originalQty };
+    }
+    finalQty = n;
+  }
+
   var mo = String(pallet.ManufacturingOrder || '').trim();
   var expectedOps = getOperationsForOrder(mo);          // [{opNo, opText, workCenter, isFinal}, ...]
   var existingLogs = getOperationLogs_(pid);             // existing entries
@@ -140,7 +159,7 @@ function adminBackfillPallet_(palletId, reason, actor) {
       mo:            mo,
       operationNo:   op.opNo,
       operationText: op.opText,
-      goodQty:       pallet.QtyPerPallet,
+      goodQty:       finalQty,
       scrapQty:      0,
       repairQty:     0,
       awaitConvQty:  0,
@@ -157,20 +176,27 @@ function adminBackfillPallet_(palletId, reason, actor) {
     backfilled.push(op.opNo);
   });
 
-  updatePalletScanFields_(pid, {
+  var qcResultNote = 'Admin backfill: ' + trimmedReason +
+    (finalQty !== originalQty ? ' | Qty backfill: original ' + originalQty + ' -> actual ' + finalQty : '');
+
+  var scanFields = {
     QCStatus:     'INSPECTED',
     QCResult:     'PASS',
     QCInspector:  'ADMIN_BACKFILL:' + actor,
-    QCResultNote: 'Admin backfill: ' + trimmedReason,
+    QCResultNote: qcResultNote,
     ScanStatus:   'QC_COMPLETE'
-  });
+  };
+  if (finalQty !== originalQty) {
+    scanFields.QtyPerPallet = finalQty;
+  }
+  updatePalletScanFields_(pid, scanFields);
 
   logEvent('PALLET_BACKFILL', 'OK', JSON.stringify({
     palletId: pid, actor: actor, reason: trimmedReason,
-    operationsBackfilled: backfilled
+    operationsBackfilled: backfilled, qtyBackfilled: finalQty
   }));
 
-  return { success: true, palletId: pid, operationsBackfilled: backfilled };
+  return { success: true, palletId: pid, operationsBackfilled: backfilled, qtyBackfilled: finalQty };
 }
 
 // ============================================================================
@@ -270,7 +296,8 @@ function TEST_adminBackfillPallet_() {
         rows.push({
           operationNo: _normOpNo_(data[r][idx['OperationNo']]),
           role:        String(data[r][idx['Role']]        || '').trim(),
-          source:      String(data[r][idx['Source']]      || '').trim()
+          source:      String(data[r][idx['Source']]      || '').trim(),
+          goodQty:     Number(data[r][idx['GoodQty']]) || 0
         });
       }
     }
@@ -465,6 +492,90 @@ function TEST_adminBackfillPallet_() {
       !threwRealAdmin && typeof realAdminResult === 'boolean', 'got=' + realAdminResult);
     isAdminUser_ = function() { return true; }; // restore stub for any remaining assertions
 
+    // ---- (l) actualQty valid reduction (10 -> 6) — success, GoodQty=6, QtyPerPallet=6, note suffix ----
+    var PID_L = 'PL-ZZBACKFILL-L01';
+    seedPallet(PID_L);
+    seedOp(PID_L, '0010', 'Op10');
+    seedOp(PID_L, '0020', 'Op20');
+    SpreadsheetApp.flush();
+
+    var resL = adminBackfillPallet_(PID_L, 'valid backfill reason', 'tester@test.com', 6);
+    assert('(l1) success:true', resL && resL.success === true, JSON.stringify(resL));
+    assert('(l2) qtyBackfilled===6', resL && resL.qtyBackfilled === 6, JSON.stringify(resL));
+    var olRowsL = olRowsFor(PID_L);
+    ['0030', '0040', '0050'].forEach(function(opNo) {
+      var row = olRowsL.filter(function(r) { return r.operationNo === opNo; })[0];
+      assert('(l3) OperationLog ' + opNo + ' has GoodQty=6', row && row.goodQty === 6, JSON.stringify(row));
+    });
+    var pmL = lookupPalletById_(PID_L);
+    assert('(l4) PalletMaster.QtyPerPallet=6', pmL && pmL.QtyPerPallet === 6, pmL && pmL.QtyPerPallet);
+    var rawPmL = rawPmRow(PID_L);
+    assert('(l5) QCResultNote contains original 10 -> actual 6',
+      rawPmL && /original 10 -> actual 6/.test(rawPmL.QCResultNote || ''), rawPmL && rawPmL.QCResultNote);
+
+    // ---- (m) actualQty === original (10) — success, no note suffix, QtyPerPallet unchanged ----
+    var PID_M = 'PL-ZZBACKFILL-M01';
+    seedPallet(PID_M);
+    seedOp(PID_M, '0010', 'Op10');
+    seedOp(PID_M, '0020', 'Op20');
+    SpreadsheetApp.flush();
+
+    var resM = adminBackfillPallet_(PID_M, 'valid backfill reason', 'tester@test.com', 10);
+    assert('(m1) success:true', resM && resM.success === true, JSON.stringify(resM));
+    var pmM = lookupPalletById_(PID_M);
+    assert('(m2) PalletMaster.QtyPerPallet unchanged at 10', pmM && pmM.QtyPerPallet === 10, pmM && pmM.QtyPerPallet);
+    var rawPmM = rawPmRow(PID_M);
+    assert('(m3) QCResultNote does NOT contain Qty backfill suffix',
+      rawPmM && !/Qty backfill/.test(rawPmM.QCResultNote || ''), rawPmM && rawPmM.QCResultNote);
+
+    // ---- (n) actualQty > original — rejected, cap mentioned, zero writes ----
+    var PID_N = 'PL-ZZBACKFILL-N01';
+    seedPallet(PID_N);
+    seedOp(PID_N, '0010', 'Op10');
+    seedOp(PID_N, '0020', 'Op20');
+    SpreadsheetApp.flush();
+    var olCountNBefore = olRowsFor(PID_N).length;
+
+    var resN = adminBackfillPallet_(PID_N, 'valid backfill reason', 'tester@test.com', 15);
+    assert('(n1) rejected (actualQty > original)', resN && resN.success === false, JSON.stringify(resN));
+    assert('(n2) message mentions cap (10)', resN && /10/.test(resN.message || ''), resN && resN.message);
+    assert('(n3) no OperationLog rows added', olRowsFor(PID_N).length === olCountNBefore);
+    var pmN = lookupPalletById_(PID_N);
+    assert('(n4) PalletMaster fields unchanged',
+      pmN && pmN.QCStatus === '' && pmN.ScanStatus === '', JSON.stringify(pmN && { QCStatus: pmN.QCStatus, ScanStatus: pmN.ScanStatus }));
+
+    // ---- (o) actualQty <= 0 — rejected, zero writes ----
+    var PID_O = 'PL-ZZBACKFILL-O01';
+    seedPallet(PID_O);
+    seedOp(PID_O, '0010', 'Op10');
+    seedOp(PID_O, '0020', 'Op20');
+    SpreadsheetApp.flush();
+    var olCountOBefore = olRowsFor(PID_O).length;
+
+    var resO = adminBackfillPallet_(PID_O, 'valid backfill reason', 'tester@test.com', 0);
+    assert('(o1) rejected (actualQty <= 0)', resO && resO.success === false, JSON.stringify(resO));
+    assert('(o2) no OperationLog rows added', olRowsFor(PID_O).length === olCountOBefore);
+    var pmO = lookupPalletById_(PID_O);
+    assert('(o3) PalletMaster fields unchanged',
+      pmO && pmO.QCStatus === '' && pmO.ScanStatus === '', JSON.stringify(pmO && { QCStatus: pmO.QCStatus, ScanStatus: pmO.ScanStatus }));
+
+    // ---- (p) actualQty omitted — byte-identical to existing 3-arg behavior (already covered by (a); re-confirm here) ----
+    var PID_P = 'PL-ZZBACKFILL-P01';
+    seedPallet(PID_P);
+    seedOp(PID_P, '0010', 'Op10');
+    seedOp(PID_P, '0020', 'Op20');
+    SpreadsheetApp.flush();
+
+    var resP = adminBackfillPallet_(PID_P, 'valid backfill reason', 'tester@test.com');
+    assert('(p1) success:true', resP && resP.success === true, JSON.stringify(resP));
+    var pmP = lookupPalletById_(PID_P);
+    assert('(p2) PalletMaster.QtyPerPallet untouched at 10', pmP && pmP.QtyPerPallet === 10, pmP && pmP.QtyPerPallet);
+    var olRowsP = olRowsFor(PID_P);
+    ['0030', '0040', '0050'].forEach(function(opNo) {
+      var row = olRowsP.filter(function(r) { return r.operationNo === opNo; })[0];
+      assert('(p3) OperationLog ' + opNo + ' has GoodQty=10 (full QtyPerPallet)', row && row.goodQty === 10, JSON.stringify(row));
+    });
+
   } catch (ex) {
     pass = false;
     Logger.log('❌ EXCEPTION: ' + ex.message);
@@ -577,6 +688,36 @@ function TEST_listBackfillCandidates_() {
     return (resp && resp.pallets || []).filter(function(p) { return p.PalletID === pid; })[0];
   }
 
+  // ---- ProductGroup join fixture: seed MaterialMaster for 'ZZTEST-MAT' only if
+  // it doesn't already exist (preserve-on-sync rule — never touch a real row).
+  var mmSh = getSpreadsheet_().getSheetByName('MaterialMaster');
+  var MM_TEST_PG = 'ZZTEST-BFLIST-PG';
+  var addedMmRow = false;
+  var expectedPg = null;
+  if (mmSh && mmSh.getLastRow() > 1) {
+    var mmData = mmSh.getDataRange().getValues();
+    var mmHdr = mmData[0];
+    var mmIdx = {};
+    mmHdr.forEach(function(h, i) { mmIdx[h] = i; });
+    for (var mr = 1; mr < mmData.length; mr++) {
+      if (String(mmData[mr][mmIdx['Material']] || '').trim() === 'ZZTEST-MAT') {
+        expectedPg = String(mmData[mr][mmIdx['ProductGroup']] || '').trim();
+        break;
+      }
+    }
+  }
+  if (expectedPg === null && mmSh) {
+    var mmRow = MM_HEADERS.map(function(h) {
+      if (h === 'Material')     return 'ZZTEST-MAT';
+      if (h === 'ProductGroup') return MM_TEST_PG;
+      return '';
+    });
+    mmSh.appendRow(mmRow);
+    SpreadsheetApp.flush();
+    addedMmRow = true;
+    expectedPg = MM_TEST_PG;
+  }
+
   try {
     // ---- (a) missing ops, QCStatus not INSPECTED -> appears, correct MissingOps ----
     var PID_A = 'PL-ZZBFLIST-A01';
@@ -592,6 +733,9 @@ function TEST_listBackfillCandidates_() {
     assert('(a3) MissingOps = [0030,0040,0050]',
       foundA && JSON.stringify(foundA.MissingOps) === JSON.stringify(['0030', '0040', '0050']),
       foundA && JSON.stringify(foundA.MissingOps));
+    assert('(a4) ProductGroup matches MaterialMaster join',
+      foundA && foundA.ProductGroup === expectedPg,
+      'got=' + (foundA && foundA.ProductGroup) + ' expected=' + expectedPg);
 
     // ---- (b) QCStatus=INSPECTED -> does NOT appear ----
     var PID_B = 'PL-ZZBFLIST-B01';
@@ -658,6 +802,17 @@ function TEST_listBackfillCandidates_() {
     for (var olr = olCleanup.length - 1; olr >= 1; olr--) {
       if (/^PL-ZZBFLIST-/i.test(String(olCleanup[olr][olPidColCleanup] || '').trim())) {
         olSh.deleteRow(olr + 1);
+      }
+    }
+
+    if (addedMmRow && mmSh) {
+      var mmCleanup = mmSh.getDataRange().getValues();
+      var mmHdrCleanup = mmCleanup[0];
+      var mmMatColCleanup = mmHdrCleanup.indexOf('Material');
+      for (var mmr = mmCleanup.length - 1; mmr >= 1; mmr--) {
+        if (String(mmCleanup[mmr][mmMatColCleanup] || '').trim() === 'ZZTEST-MAT') {
+          mmSh.deleteRow(mmr + 1);
+        }
       }
     }
 
@@ -853,6 +1008,25 @@ function TEST_batchAdminBackfill_() {
 
     assert('(k1) rejected (not admin)', resK && resK.success === false, JSON.stringify(resK));
     assert('(k2) no OperationLog rows added', olRowsFor(PID_K).length === olCountKBefore);
+
+    // ---- (l) 2 items, one qty-reduced (10 -> 7) + one full-qty -> both succeed, qtyBackfilled correct ----
+    var PID_L1 = 'PL-ZZBFBATCH-L01'; // reduced
+    var PID_L2 = 'PL-ZZBFBATCH-L02'; // no qty field — full QtyPerPallet
+    seedPallet(PID_L1);
+    seedOp(PID_L1, '0010', 'Op10');
+    seedPallet(PID_L2);
+    seedOp(PID_L2, '0010', 'Op10');
+    SpreadsheetApp.flush();
+
+    var resL = batchAdminBackfill(
+      [{ palletId: PID_L1, qty: 7 }, { palletId: PID_L2 }], 'valid backfill reason');
+    assert('(l1) success:true', resL && resL.success === true, JSON.stringify(resL));
+    var rL1 = findResult(resL, PID_L1);
+    var rL2 = findResult(resL, PID_L2);
+    assert('(l2) PID_L1 succeeds with qtyBackfilled===7',
+      rL1 && rL1.success === true && rL1.qtyBackfilled === 7, JSON.stringify(rL1));
+    assert('(l3) PID_L2 succeeds with qtyBackfilled===10 (full QtyPerPallet)',
+      rL2 && rL2.success === true && rL2.qtyBackfilled === 10, JSON.stringify(rL2));
 
   } catch (ex) {
     pass = false;
