@@ -56,7 +56,7 @@ function buildSapUrl_(path, params) {
  * retry เฉพาะ: network error, 429, 5xx และ 403 CSRF (write เท่านั้น — refresh token แล้วยิงใหม่)
  * @return {HTTPResponse}
  */
-function sapRequest_(method, path, params, payload, extraHeaders, fnName) {
+function sapRequest_(method, path, params, payload, extraHeaders, fnName, suppressErrorLog) {
   const creds = getSapCredentials_();
   const fn = fnName || ('sap' + method.toUpperCase());
   const headers = Object.assign({
@@ -118,11 +118,19 @@ function sapRequest_(method, path, params, payload, extraHeaders, fnName) {
     }
 
     // 4xx อื่น ๆ — retry ไปก็เท่านั้น โยน error พร้อม body ให้วิเคราะห์
-    logError(fn, endpointForLog, 'HTTP ' + code + ': ' + body, options.payload || '');
+    if (suppressErrorLog) {
+      Logger.log('[' + fn + '] ' + endpointForLog + ' → HTTP ' + code + ': ' + body);
+    } else {
+      logError(fn, endpointForLog, 'HTTP ' + code + ': ' + body, options.payload || '');
+    }
     throw new Error('SAP HTTP ' + code + ' [' + endpointForLog + ']: ' + body);
   }
 
-  logError(fn, endpointForLog, 'Failed after ' + CFG.MAX_RETRIES + ' attempts: ' + (lastError && lastError.message), '');
+  if (suppressErrorLog) {
+    Logger.log('[' + fn + '] ' + endpointForLog + ' → Failed after ' + CFG.MAX_RETRIES + ' attempts: ' + (lastError && lastError.message));
+  } else {
+    logError(fn, endpointForLog, 'Failed after ' + CFG.MAX_RETRIES + ' attempts: ' + (lastError && lastError.message), '');
+  }
   throw lastError || new Error('SAP request failed after retries');
 }
 
@@ -141,9 +149,9 @@ let _lastServicePath_ = null;
 /**
  * GET 1 page — return parsed JSON (OData V2: { d: { results: [...], __next } })
  */
-function sapGet(path, params, fnName) {
+function sapGet(path, params, fnName, suppressErrorLog) {
   const p = Object.assign({ '$format': 'json' }, params || {});
-  const resp = sapRequest_('get', path, p, null, null, fnName || 'sapGet');
+  const resp = sapRequest_('get', path, p, null, null, fnName || 'sapGet', suppressErrorLog);
   return JSON.parse(resp.getContentText() || '{}');
 }
 

@@ -570,8 +570,10 @@ function fetchOperationsForMO_(mo) {
   };
   Logger.log('fetchOperationsForMO_: path=' + path);
 
+  const isTestMo = CFG.TEST_MO_PATTERN.some(function(re) { return re.test(mo); });
+
   try {
-    const data   = sapGet(path, params, 'fetchOperationsForMO_');
+    const data   = sapGet(path, params, 'fetchOperationsForMO_', isTestMo);
     const d      = data.d || {};
     const rawOps = (d.to_ProductionOrderOperation || {}).results || [];
     Logger.log('fetchOperationsForMO_: rawOps.length=' + rawOps.length +
@@ -590,7 +592,9 @@ function fetchOperationsForMO_(mo) {
     cache.put(cacheKey, JSON.stringify(ops), 1800); // 30 min
     return ops;
   } catch (e) {
-    logError('fetchOperationsForMO_', path, e.message, 'MO=' + mo);
+    if (isTestMo) {
+      Logger.log('fetchOperationsForMO_: expected 404 for test-fixture MO=' + mo + ': ' + e.message);
+    }
     Logger.log('fetchOperationsForMO_: EXCEPTION ' + e.message);
     return [];
   }
