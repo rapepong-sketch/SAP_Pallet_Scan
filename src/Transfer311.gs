@@ -1961,6 +1961,7 @@ function TEST_buildPayload_tier3() {
   pmSeedRow[pmIdx['GRMaterialDocument']]       = 'FAKE_GR_001';
   pmSeedRow[pmIdx['GRMaterialDocumentYear']]   = '2026';
   pmSeedRow[pmIdx['Material']]                 = 'ZZTEST-MAT-T3';
+  pmSeedRow[pmIdx['ScanStatus']]               = 'CONFIRMED';
   pmSh.appendRow(pmSeedRow);
   SpreadsheetApp.flush();
 
