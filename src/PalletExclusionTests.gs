@@ -165,6 +165,7 @@ function TEST_palletExclusion_() {
       !findsInListConfirmable(PID_A));
 
     // ---- (f) fixture B — filter-shape matches listOverrideCandidates() ----
+    seedProductionOrderFinalOp(MO_A, '0010');
     seedProductionOrderFinalOp(MO_B, '0040');
     seedOverrideCandidateRow(PID_B, MO_B);
 
@@ -228,7 +229,8 @@ function TEST_palletExclusion_() {
     }
     var poCleanup = poSh.getDataRange().getValues();
     for (var por = poCleanup.length - 1; por >= 1; por--) {
-      if (String(poCleanup[por][poIdx['ManufacturingOrder']] || '').trim() === MO_B) {
+      var poMo = String(poCleanup[por][poIdx['ManufacturingOrder']] || '').trim();
+      if (poMo === MO_A || poMo === MO_B) {
         poSh.deleteRow(por + 1);
       }
     }
