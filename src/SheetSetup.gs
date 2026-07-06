@@ -69,73 +69,78 @@ function onOpen() {
     .addSubMenu(larkMenu)
     .addSubMenu(flagMenu);
 
-  // ── 🧪 Diagnostic / Test ────────────────────────────────────────────────
-  const diagMenu = ui.createMenu('🧪 Diagnostic / Test')
-    .addItem('🔍 [Diag] Yield Bucket Diagnostic',       'runYieldBucketDiagnostic')
-    .addItem('🔧 [Admin] Debug PM Schema',               'debugPalletMasterSchema')
-    .addSeparator()
-    .addItem('🧪 [Test] Yield Bucket Payload',           'testBuildYieldBucketPayload')
-    .addItem('🧪 [Test] Confirm Fallback (legacy)',      'TEST_confirmFallbackLegacy')
-    .addItem('🧪 [Test] Auto-cache FinalOp',              'TEST_autoCacheFinalOp')
-    .addSeparator()
+  // ── 🧪 Test Suites ──────────────────────────────────────────────────────
+  const testSuitesMenu = ui.createMenu('🧪 Test Suites')
     .addItem('🧪 Phase 4.5: Run all tests',              'TEST_phase45_all_')
+    .addItem('🧪 T4: Run 311 Retry/DL Test Suite',       'TEST_t311_runAll')
+    .addItem('🧪 Batch Resolution Test Suite',            'TEST_resolveBatch_runAll')
+    .addItem('🧪 [Test] Scan-Transfer (run all)',         'TEST_scanTransfer_runAll')
+    .addItem('🧪 Run all (Local Op Cumulative)',          'TEST_localOpCumulative_runAll')
     .addSeparator()
+    .addItem('🧪 [Test] Yield Bucket Payload',            'testBuildYieldBucketPayload')
+    .addItem('🧪 [Test] Auto-cache FinalOp',              'TEST_autoCacheFinalOp')
     .addItem('🧪 [Test] Yield/QC Report',                 'TEST_yieldQcReport_')
+    .addItem('🧪 [Test] Confirm Fallback (legacy)',       'TEST_confirmFallbackLegacy')
     .addSeparator()
-    .addItem('🔍 Probe Transfer311 Readback (RO)',          'PROBE_transfer311ReadbackFilter')
-    .addItem('🔍 Probe 311 Test Candidates (RO)',            'PROBE_transfer311Candidates')
-    .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',     'TEST_transfer311CreatabilityProof')
-    .addItem('🔍 Verify 311 Stock Settle (RO)',              'PROBE_verify311StockSettle')
-    .addItem('🔍 Probe D/C Direction 842/843 (RO)',          'PROBE_dcDirection311')
-    .addItem('⚠️ FIX 311 Housekeeping Restore (WRITES)',    'TEST_transfer311HousekeepingRestore')
+    .addItem('➕ Create Edge Case Fixture',                'TEST_createEdgeCaseFixture')
+    .addItem('🗑️ Delete Edge Case Fixture (cleanup)',     'TEST_deleteEdgeCaseFixture');
+
+  // ── 🔍 Diagnostics ──────────────────────────────────────────────────────
+  const diagnosticsMenu = ui.createMenu('🔍 Diagnostics')
+    .addItem('🔍 [Diag] Yield Bucket Diagnostic',        'runYieldBucketDiagnostic')
+    .addItem('🔧 [Admin] Debug PM Schema',                'debugPalletMasterSchema')
+    .addItem('🔍 [Diag] Override Candidate Cap (RO)',    'MENU_diagOverrideCandidateCap')
+    .addItem('🔍 DIAG Verify Batch Leading Zeros (RO)',  'DIAG_verifyBatchLeadingZeros')
+    .addItem('🔍 DIAG FIFO Stock Filter (RO)',            'DIAG_fifoStockFilter')
+    .addItem('🔍 Find Open Period (RO)',                  'TEST_findOpenPostingPeriod');
+
+  // ── 🗄 Archive ──────────────────────────────────────────────────────────
+  const archiveMenu = ui.createMenu('🗄 Archive')
+    .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',   'runYieldBucketMigration')
+    .addItem('🔄 Migrate: Add OL Bucket Columns',        'runOperationLogMigration')
+    .addItem('🔄 Reorder: OL Bucket Columns',            'runReorderOperationLogBuckets')
+    .addItem('🔄 Migrate: FinalOp Leading Zeros',        'migrateFinalOpLeadingZeros')
+    .addItem('🔒 Migrate: Add QCInspector column',       'runQCInspectorMigration')
+    .addItem('🔧 Backfill OL RoundNumber/IsFinalRound',  'runBackfillOperationLogRoundColumns')
+    .addSeparator()
+    .addItem('🔍 Backfill PM.Batch (DRY RUN)',           'BACKFILL_palletMasterBatch_dryRun')
+    .addItem('⚠️ Backfill PM.Batch (APPLY)',             'BACKFILL_palletMasterBatch_apply')
+    .addItem('⚠️ Reverse First-Live Doc 4900216057 (WRITES)', 'REVERSE_firstLiveDoc')
+    .addSeparator()
+    .addItem('🔍 Probe Transfer311 Readback (RO)',        'PROBE_transfer311ReadbackFilter')
+    .addItem('🔍 Probe 311 Test Candidates (RO)',         'PROBE_transfer311Candidates')
+    .addItem('⚠️ TEST 311 Creatability Proof (WRITES)',  'TEST_transfer311CreatabilityProof')
+    .addItem('🔍 Verify 311 Stock Settle (RO)',           'PROBE_verify311StockSettle')
+    .addItem('🔍 Probe D/C Direction 842/843 (RO)',       'PROBE_dcDirection311')
+    .addItem('⚠️ FIX 311 Housekeeping Restore (WRITES)', 'TEST_transfer311HousekeepingRestore')
     .addItem('🔍 Probe MatDoc Cancellation Mechanism (RO)', 'PROBE_materialDocCancellation')
-    .addItem('⚠️ TEST 311 Cancel-by-Ref Proof (WRITES)',    'TEST_transfer311CancelProof')
-    .addItem('⚠️ FIX Cancel Dangling Doc (WRITES)',         'TEST_cancelDanglingDoc')
+    .addItem('⚠️ TEST 311 Cancel-by-Ref Proof (WRITES)', 'TEST_transfer311CancelProof')
+    .addItem('⚠️ FIX Cancel Dangling Doc (WRITES)',      'TEST_cancelDanglingDoc')
+    .addItem('🔍 DIAG Batch for First-Live (RO)',         'DIAG_checkBatchForFirstLive')
+    .addItem('🔍 DIAG GR-Doc Batch Proof (RO)',           'DIAG_grDocBatchProof')
+    .addItem('🔍 DIAG Tier-3 Batch Resolve (RO)',         'DIAG_tier3BatchResolve')
+    .addItem('🔍 PROBE Pallet Batch Stock (RO)',          'PROBE_palletBatchStock')
     .addSeparator()
-    .addItem('🧪 T4: Run 311 Retry/DL Test Suite',          'TEST_t311_runAll')
-    .addItem('🔍 DIAG Batch for First-Live (RO)',            'DIAG_checkBatchForFirstLive')
-    .addItem('🔍 DIAG GR-Doc Batch Proof (RO)',              'DIAG_grDocBatchProof')
-    .addItem('🔍 DIAG Tier-3 Batch Resolve (RO)',            'DIAG_tier3BatchResolve')
-    .addItem('🔍 DIAG Verify Batch Leading Zeros (RO)',     'DIAG_verifyBatchLeadingZeros')
-    .addSeparator()
-    .addItem('🔍 PROBE Pallet Batch Stock (RO)',            'PROBE_palletBatchStock')
-    .addItem('🔍 DIAG FIFO Stock Filter (RO)',              'DIAG_fifoStockFilter')
-    .addSeparator()
-    .addItem('🔍 Backfill PM.Batch (DRY RUN)',              'BACKFILL_palletMasterBatch_dryRun')
-    .addItem('⚠️ Backfill PM.Batch (APPLY)',                'BACKFILL_palletMasterBatch_apply')
-    .addSeparator()
-    .addItem('🧪 Batch Resolution Test Suite',               'TEST_resolveBatch_runAll')
-    .addItem('🧪 [Test] Scan-Transfer (run all)',            'TEST_scanTransfer_runAll');
+    .addItem('⚠️ Run partial-confirmation probe (LIVE POST to TEST MO)', 'TEST_probePartialConfirmation');
 
   // ── 🔒 Admin ────────────────────────────────────────────────────────────
   const adminMenu = ui.createMenu('🔒 Admin')
-    .addItem('🔧 [Admin] Reset PalletMaster Data',      'hardResetPalletMaster')
-    .addItem('🔧 [Admin] Rebuild PM Header',             'rebuildPalletMasterHeader')
-    .addItem('🔧 Backfill MaterialName',                 'backfillMaterialName')
-    .addItem('🔧 Backfill WorkCenter',                   'backfillWorkCenter')
+    .addItem('🔧 [Admin] Reset PalletMaster Data',       'hardResetPalletMaster')
+    .addItem('🔧 [Admin] Rebuild PM Header',              'rebuildPalletMasterHeader')
+    .addItem('🔧 Backfill MaterialName',                  'backfillMaterialName')
+    .addItem('🔧 Backfill WorkCenter',                    'backfillWorkCenter')
+    .addItem('🧹 [Admin] Delete Test Pallets',            'deleteTestPallets')
     .addSeparator()
-    .addItem('🔄 Migrate: Add 4-Bucket Yield Columns',  'runYieldBucketMigration')
-    .addItem('🔄 Migrate: Add OL Bucket Columns',       'runOperationLogMigration')
-    .addItem('🔄 Reorder: OL Bucket Columns',           'runReorderOperationLogBuckets')
-    .addItem('🔄 Migrate: FinalOp Leading Zeros',       'migrateFinalOpLeadingZeros')
-    .addItem('🔒 Migrate: Add QCInspector column',      'runQCInspectorMigration')
-    .addItem('🔧 Backfill OL RoundNumber/IsFinalRound', 'runBackfillOperationLogRoundColumns')
-    .addSeparator()
-    .addItem('🧹 [Admin] Delete Test Pallets',           'deleteTestPallets')
-    .addSeparator()
-    .addItem('🔁 [Admin] Replay DeadLetter (by DLID)',  'replayDeadLetterDialog')
-    .addSeparator()
-    .addItem('🚫 [Admin] Exclude Pallet',               'MENU_excludePallet')
+    .addItem('🔁 [Admin] Replay DeadLetter (by DLID)',   'replayDeadLetterDialog')
+    .addItem('🚫 [Admin] Exclude Pallet',                'MENU_excludePallet')
     .addItem('✅ [Admin] Include Pallet (Undo Exclude)', 'MENU_includePallet')
-    .addItem('🧩 [Admin] Backfill Missing Operations',  'MENU_adminBackfillPallet')
-    .addItem('🔍 [Diag] Override Candidate Cap (RO)',    'MENU_diagOverrideCandidateCap')
+    .addItem('🧩 [Admin] Backfill Missing Operations',   'MENU_adminBackfillPallet')
     .addSeparator()
-    .addItem('⚠️ Reverse First-Live Doc 4900216057 (WRITES)', 'REVERSE_firstLiveDoc')
-    .addItem('🔄 Reverse Transfer 311 (manual)',               'MENU_reverseTransfer311')
+    .addItem('🔄 Reverse Transfer 311 (manual)',          'MENU_reverseTransfer311')
     .addSeparator()
-    .addItem('🩺 ตรวจ Confirm Drift (ตอนนี้)',        'runConfirmDriftDaily')
-    .addItem('⏰ ติดตั้ง Trigger Drift รายวัน',        'installConfirmDriftTrigger')
-    .addItem('⏹ ถอน Trigger Drift',                   'uninstallConfirmDriftTrigger');
+    .addItem('🩺 ตรวจ Confirm Drift (ตอนนี้)',           'runConfirmDriftDaily')
+    .addItem('⏰ ติดตั้ง Trigger Drift รายวัน',           'installConfirmDriftTrigger')
+    .addItem('⏹ ถอน Trigger Drift',                      'uninstallConfirmDriftTrigger');
 
   // ── ⚙ ระบบ ──────────────────────────────────────────────────────────────
   const sysMenu = ui.createMenu('⚙ ระบบ')
@@ -149,16 +154,14 @@ function onOpen() {
   ui.createMenu('🏭 Pallet Tracker')
     .addSubMenu(dailyMenu)
     .addSubMenu(settingsMenu)
-    .addSubMenu(diagMenu)
+    .addSubMenu(testSuitesMenu)
+    .addSubMenu(diagnosticsMenu)
+    .addSubMenu(archiveMenu)
     .addSubMenu(adminMenu)
     .addSubMenu(sysMenu)
     .addToUi();
 
   refreshRunbookOnOpen_();
-
-  addGate0ProbeMenu_(); // Phase 6.5 Gate 0 — separate probe menu, defined in Gate0Probe.gs
-  addLocalOpCumulativeTestsMenu_(); // Local per-operation cumulative confirmation tests — LocalOpCumulativeTests.gs
-  addEdgeCaseFixtureMenu_(); // Self-cleaning edge-case fixture for Local Op Cumulative — EdgeCaseFixture.gs
 }
 
 let _ss_ = null;
