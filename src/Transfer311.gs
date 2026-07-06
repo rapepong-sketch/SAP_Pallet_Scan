@@ -2020,6 +2020,110 @@ function TEST_buildPayload_tier3() {
   return pass;
 }
 
+/**
+ * TOCTOU gap probe (pre-fix): documents that buildTransfer311Payload_ does NOT
+ * re-check PalletMaster.ScanStatus at build time. A TransferLog row can be
+ * created while a pallet is CONFIRMED, but by the time the 311 payload is
+ * built the pallet's ScanStatus may have moved off CONFIRMED (e.g. excluded,
+ * superseded, or reverted) — today that still builds a valid payload.
+ *
+ * This test asserts TODAY's actual (gap) behavior: payload build SUCCEEDS
+ * despite a non-CONFIRMED ScanStatus. Once Commit 3 adds the real ScanStatus
+ * re-check inside buildTransfer311Payload_, this assertion must be FLIPPED to
+ * expect a thrown rejection — that is the intended regression check.
+ */
+function TEST_buildPayload_rejectsStaleScanStatus() {
+  var fn = 'TEST_buildPayload_rejectsStaleScanStatus';
+  var TEST_TXNID = 'ZZTEST-STALESTATUS-001';
+
+  // Seed a TransferLog row with a real Batch (tier-1) — no GR-doc resolution needed.
+  var ss   = getSpreadsheet_();
+  var tlSh = ss.getSheetByName(TL_SHEET);
+  if (!tlSh) throw new Error(fn + ': TransferLog sheet missing');
+  var tlHdr = tlSh.getRange(1, 1, 1, tlSh.getLastColumn()).getValues()[0];
+  var tlIdx = {};
+  tlHdr.forEach(function(h, i) { tlIdx[String(h).trim()] = i; });
+
+  var seedRow = new Array(tlHdr.length).fill('');
+  seedRow[tlIdx['TxnID']]          = TEST_TXNID;
+  seedRow[tlIdx['TxnType']]        = 'SPLIT_ISSUE';
+  seedRow[tlIdx['Status']]         = 'PENDING';
+  seedRow[tlIdx['Material']]       = 'ZZTEST-MAT-STALE';
+  seedRow[tlIdx['IssueQty']]       = 1;
+  seedRow[tlIdx['Unit']]           = 'PC';
+  seedRow[tlIdx['SourceSLoc']]     = 'PW30';
+  seedRow[tlIdx['Batch']]          = '0000099999';
+  seedRow[tlIdx['ParentPalletID']] = 'ZZTEST-PARENT-STALE';
+  seedRow[tlIdx['CreatedAt']]      = new Date().toISOString();
+  seedRow[tlIdx['IdempotencyKey']] = TEST_TXNID;
+  tlSh.appendRow(seedRow);
+
+  // Seed a PalletMaster row with a NON-CONFIRMED ScanStatus. QC_COMPLETE is the
+  // lifecycle step immediately before CONFIRMED (CREATED → SCANNED → PD_COMPLETE
+  // → QC_COMPLETE → CONFIRMED — see PHASE3_README.md), so it's the realistic
+  // stand-in for "not actually confirmed" — e.g. a pallet reverted, excluded, or
+  // superseded after this TransferLog row was already created against it.
+  var pmSh = ss.getSheetByName(PM_SHEET);
+  if (!pmSh) throw new Error(fn + ': PalletMaster sheet missing');
+  var pmHdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  pmHdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var pmSeedRow = new Array(pmHdr.length).fill('');
+  pmSeedRow[pmIdx['PalletID']]   = 'ZZTEST-PARENT-STALE';
+  pmSeedRow[pmIdx['Batch']]      = '0000099999';
+  pmSeedRow[pmIdx['Material']]   = 'ZZTEST-MAT-STALE';
+  pmSeedRow[pmIdx['ScanStatus']] = 'QC_COMPLETE';
+  pmSh.appendRow(pmSeedRow);
+  SpreadsheetApp.flush();
+
+  var pass = true;
+  var detail = '';
+
+  try {
+    // PRE-FIX (documented gap): buildTransfer311Payload_ reads TransferLog +
+    // PalletMaster but never re-checks PalletMaster.ScanStatus, so a pallet
+    // that is no longer CONFIRMED still builds a payload today.
+    var payload = buildTransfer311Payload_(TEST_TXNID, CFG.DEST_SLOCS[0]);
+    var items = payload.to_MaterialDocumentItem || [];
+
+    if (!items.length) {
+      pass = false;
+      detail += 'no items in payload (expected pre-fix success with 1 item) ';
+    } else {
+      detail += 'PRE-FIX GAP CONFIRMED: payload built despite ScanStatus=QC_COMPLETE ' +
+        '(not CONFIRMED). Commit 3 must flip this assertion to expect rejection. ';
+    }
+  } catch (e) {
+    pass = false;
+    detail += 'UNEXPECTED EXCEPTION (pre-fix code should not reject on ScanStatus yet): ' + e.message;
+  } finally {
+    // Cleanup TransferLog
+    try {
+      var cleanTl = tlSh.getDataRange().getValues();
+      for (var d = cleanTl.length - 1; d >= 1; d--) {
+        if (String(cleanTl[d][tlIdx['TxnID']] || '').trim() === TEST_TXNID) {
+          tlSh.deleteRow(d + 1);
+        }
+      }
+    } catch (ce) { Logger.log(fn + ' TL cleanup: ' + ce.message); }
+
+    // Cleanup PalletMaster
+    try {
+      var cleanPm = pmSh.getDataRange().getValues();
+      for (var d2 = cleanPm.length - 1; d2 >= 1; d2--) {
+        if (String(cleanPm[d2][pmIdx['PalletID']] || '').trim() === 'ZZTEST-PARENT-STALE') {
+          pmSh.deleteRow(d2 + 1);
+        }
+      }
+    } catch (ce2) { Logger.log(fn + ' PM cleanup: ' + ce2.message); }
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
+}
+
 function TEST_resolveBatch_runAll() {
   var fn = 'TEST_resolveBatch_runAll';
   var t0 = Date.now();
