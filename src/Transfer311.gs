@@ -833,6 +833,65 @@ function replayTransfer311DeadLetter_(dlid) {
   logEvent('TRANSFER311_DL', 'REPLAY_START', dlid + ' ' + txnId);
 
   try {
+    // ---- Live re-check: PalletMaster.ScanStatus must still be CONFIRMED ----
+    // Same TOCTOU gap as Commit 3, but on the replay path: PayloadJSON was already
+    // built and serialized at first-attempt time, so buildTransfer311Payload_'s
+    // re-check never runs here. A pallet's status can still change (excluded,
+    // reverted, superseded) between the original dead-letter capture and this
+    // replay. Fail-closed: missing row = reject. The DL row's PalletID column
+    // actually holds txnId for this path (see captureDeadLetter_ callers), so the
+    // real ParentPalletID must be resolved via TransferLog first.
+    var ss = getSpreadsheet_();
+    var tlReplaySh = ss.getSheetByName(TL_SHEET);
+    if (!tlReplaySh || tlReplaySh.getLastRow() < 2) {
+      throw new Error('TransferLog sheet empty or missing — cannot verify ScanStatus for TxnID: ' + txnId);
+    }
+    var tlReplayData = tlReplaySh.getDataRange().getValues();
+    var tlReplayHdrClean = tlReplayData[0].map(function(h) { return String(h).trim(); });
+    var tlReplayIdx = tlHeaderIdx_(tlReplayHdrClean);
+    var tlReplayTxnCol = tlReplayIdx['TxnID'];
+    var tlReplayParentCol = tlReplayIdx['ParentPalletID'];
+    var replayParentPalletId = '';
+    if (tlReplayTxnCol !== undefined) {
+      for (var t = 1; t < tlReplayData.length; t++) {
+        if (String(tlReplayData[t][tlReplayTxnCol] || '').trim() === txnId) {
+          replayParentPalletId = String(tlReplayData[t][tlReplayParentCol] || '').trim();
+          break;
+        }
+      }
+    }
+    if (!replayParentPalletId) {
+      throw new Error('TransferLog row not found for TxnID: ' + txnId +
+        ' — cannot verify ScanStatus');
+    }
+
+    var pmReplaySh = ss.getSheetByName(PM_SHEET);
+    if (!pmReplaySh || pmReplaySh.getLastRow() < 2) {
+      throw new Error('PalletMaster sheet empty or missing — cannot verify ScanStatus for ' + replayParentPalletId);
+    }
+    var pmReplayData = pmReplaySh.getDataRange().getValues();
+    var pmReplayHdrClean = pmReplayData[0].map(function(h) { return String(h).trim(); });
+    var pmReplayIdx = tlHeaderIdx_(pmReplayHdrClean);
+    var pmReplayPidCol = pmReplayIdx['PalletID'];
+    var pmReplayStatusCol = pmReplayIdx['ScanStatus'];
+    var replayScanStatus = null;
+    if (pmReplayPidCol !== undefined) {
+      for (var q2 = 1; q2 < pmReplayData.length; q2++) {
+        if (String(pmReplayData[q2][pmReplayPidCol] || '').trim() === replayParentPalletId) {
+          replayScanStatus = String(pmReplayData[q2][pmReplayStatusCol] || '').trim();
+          break;
+        }
+      }
+    }
+    if (replayScanStatus === null) {
+      throw new Error('PalletMaster row not found for ParentPalletID: ' + replayParentPalletId +
+        ' — cannot verify ScanStatus');
+    }
+    if (replayScanStatus !== 'CONFIRMED') {
+      throw new Error('ParentPalletID ' + replayParentPalletId + ' ScanStatus is "' + replayScanStatus +
+        '", expected CONFIRMED — pallet status changed since dead-letter was captured');
+    }
+
     var result = postTransfer311WithRetry_(payload, txnId);
     var now = Utilities.formatDate(new Date(), 'Asia/Bangkok', "yyyy-MM-dd'T'HH:mm:ss");
 
@@ -1168,6 +1227,159 @@ function TEST_t311_deadLetterRowShape() {
   return pass;
 }
 
+/**
+ * Regression test (Commit 4 fix): replayTransfer311DeadLetter_ re-reads
+ * PalletMaster.ScanStatus fresh before replaying a stored payload. Mirrors
+ * TEST_buildPayload_rejectsStaleScanStatus, but seeds a DeadLetter row with an
+ * already-serialized PayloadJSON (per TEST_t311_deadLetterRowShape's fixture
+ * shape) instead of calling buildTransfer311Payload_ — this path replays a
+ * payload built before the pallet's status went stale, so Commit 3's build-time
+ * check never runs here.
+ */
+function TEST_t311_replayRejectsStaleScanStatus() {
+  var fn = 'TEST_t311_replayRejectsStaleScanStatus';
+  var TEST_TXNID = 'ZZTEST-DL-STALESTATUS-001';
+  var TEST_PARENT = 'ZZTEST-DL-STALE-PARENT';
+  var TEST_DLID = 'DL-ZZTEST-STALESTATUS-001';
+
+  // Seed a TransferLog row — replayTransfer311DeadLetter_ must resolve
+  // ParentPalletID from here since the DL row's own PalletID column holds txnId.
+  var ss   = getSpreadsheet_();
+  var tlSh = ss.getSheetByName(TL_SHEET);
+  if (!tlSh) throw new Error(fn + ': TransferLog sheet missing');
+  var tlHdr = tlSh.getRange(1, 1, 1, tlSh.getLastColumn()).getValues()[0];
+  var tlIdx = {};
+  tlHdr.forEach(function(h, i) { tlIdx[String(h).trim()] = i; });
+
+  var tlSeedRow = new Array(tlHdr.length).fill('');
+  tlSeedRow[tlIdx['TxnID']]          = TEST_TXNID;
+  tlSeedRow[tlIdx['TxnType']]        = 'SPLIT_ISSUE';
+  tlSeedRow[tlIdx['Status']]         = 'PENDING';
+  tlSeedRow[tlIdx['Material']]       = 'ZZTEST-MAT-STALE';
+  tlSeedRow[tlIdx['IssueQty']]       = 1;
+  tlSeedRow[tlIdx['Unit']]           = 'PC';
+  tlSeedRow[tlIdx['SourceSLoc']]     = 'PW30';
+  tlSeedRow[tlIdx['Batch']]          = '0000099999';
+  tlSeedRow[tlIdx['ParentPalletID']] = TEST_PARENT;
+  tlSeedRow[tlIdx['CreatedAt']]      = new Date().toISOString();
+  tlSeedRow[tlIdx['IdempotencyKey']] = TEST_TXNID;
+  tlSh.appendRow(tlSeedRow);
+
+  // Seed a PalletMaster row with a NON-CONFIRMED ScanStatus — same stand-in
+  // (QC_COMPLETE) used by TEST_buildPayload_rejectsStaleScanStatus for "pallet
+  // reverted/excluded/superseded after the original attempt was dead-lettered".
+  var pmSh = ss.getSheetByName(PM_SHEET);
+  if (!pmSh) throw new Error(fn + ': PalletMaster sheet missing');
+  var pmHdr = pmSh.getRange(1, 1, 1, pmSh.getLastColumn()).getValues()[0];
+  var pmIdx = {};
+  pmHdr.forEach(function(h, i) { pmIdx[String(h).trim()] = i; });
+
+  var pmSeedRow = new Array(pmHdr.length).fill('');
+  pmSeedRow[pmIdx['PalletID']]   = TEST_PARENT;
+  pmSeedRow[pmIdx['Batch']]      = '0000099999';
+  pmSeedRow[pmIdx['Material']]   = 'ZZTEST-MAT-STALE';
+  pmSeedRow[pmIdx['ScanStatus']] = 'QC_COMPLETE';
+  pmSh.appendRow(pmSeedRow);
+
+  // Seed a DeadLetter row directly (per TEST_t311_deadLetterRowShape's fixture
+  // shape) — PalletID column holds TxnID for TRANSFER311 rows, ReplayStatus=OPEN
+  // so replayTransfer311DeadLetter_ will act on it.
+  var dlSh = ensureDeadLetterSheet_();
+  var dlIdx = {};
+  DL_HEADERS_.forEach(function(h, i) { dlIdx[h] = i; });
+  var dlSeedRow = DL_HEADERS_.map(function(h) {
+    switch (h) {
+      case 'DLID':          return TEST_DLID;
+      case 'CapturedAt':    return new Date();
+      case 'Path':          return 'TRANSFER311';
+      case 'PalletID':      return TEST_TXNID;
+      case 'Outcome':       return 'FAILED_PERMANENT';
+      case 'Attempts':      return 3;
+      case 'LastErrorClass': return 'BUSINESS';
+      case 'PayloadJSON':   return JSON.stringify({ test: true });
+      case 'Token':         return TEST_TXNID.replace(/-/g, '').slice(0, 24);
+      case 'ReplayStatus':  return 'OPEN';
+      default:              return '';
+    }
+  });
+  dlSh.appendRow(dlSeedRow);
+  SpreadsheetApp.flush();
+
+  var pass = true;
+  var detail = '';
+
+  try {
+    // FIXED (Commit 4): replayTransfer311DeadLetter_ now re-reads
+    // PalletMaster.ScanStatus fresh before replaying and must reject a pallet
+    // that is no longer CONFIRMED.
+    var result = replayTransfer311DeadLetter_(TEST_DLID);
+
+    if (result.ok) {
+      pass = false;
+      detail += 'UNEXPECTED SUCCESS: replay accepted despite ScanStatus=QC_COMPLETE (gap NOT closed) ';
+    } else if (!/ScanStatus/i.test(result.message || '')) {
+      pass = false;
+      detail += 'rejected, but not for the expected ScanStatus reason: ' + result.message + ' ';
+    } else {
+      detail += 'REJECTED as expected: status=' + result.status + ' ' + result.message + ' ';
+    }
+
+    // The row should remain OPEN — a stale-status rejection is a pre-flight
+    // validation failure, not a replay outcome, so it must not be marked
+    // resolved/replayed (same convention as the WRONG_PATH/INVALID guards above).
+    var dlData = dlSh.getDataRange().getValues();
+    var stillOpen = false;
+    for (var d = 1; d < dlData.length; d++) {
+      if (String(dlData[d][dlIdx['DLID']] || '').trim() === TEST_DLID) {
+        stillOpen = String(dlData[d][dlIdx['ReplayStatus']] || '').trim() === 'OPEN';
+        break;
+      }
+    }
+    if (!stillOpen) {
+      pass = false; detail += 'ReplayStatus was mutated on rejection (expected to remain OPEN) ';
+    } else {
+      detail += 'ReplayStatus remained OPEN OK ';
+    }
+  } catch (e) {
+    pass = false;
+    detail += 'UNEXPECTED EXCEPTION (replay should return, not throw, past its own try/catch): ' + e.message;
+  } finally {
+    // Cleanup TransferLog
+    try {
+      var cleanTl = tlSh.getDataRange().getValues();
+      for (var t2 = cleanTl.length - 1; t2 >= 1; t2--) {
+        if (String(cleanTl[t2][tlIdx['TxnID']] || '').trim() === TEST_TXNID) {
+          tlSh.deleteRow(t2 + 1);
+        }
+      }
+    } catch (ce) { Logger.log(fn + ' TL cleanup: ' + ce.message); }
+
+    // Cleanup PalletMaster
+    try {
+      var cleanPm = pmSh.getDataRange().getValues();
+      for (var p2 = cleanPm.length - 1; p2 >= 1; p2--) {
+        if (String(cleanPm[p2][pmIdx['PalletID']] || '').trim() === TEST_PARENT) {
+          pmSh.deleteRow(p2 + 1);
+        }
+      }
+    } catch (ce2) { Logger.log(fn + ' PM cleanup: ' + ce2.message); }
+
+    // Cleanup DeadLetter
+    try {
+      var cleanDl = dlSh.getDataRange().getValues();
+      for (var d2 = cleanDl.length - 1; d2 >= 1; d2--) {
+        if (String(cleanDl[d2][dlIdx['DLID']] || '').trim() === TEST_DLID) {
+          dlSh.deleteRow(d2 + 1);
+        }
+      }
+    } catch (ce3) { Logger.log(fn + ' DL cleanup: ' + ce3.message); }
+  }
+
+  Logger.log(pass ? '✅ ' + fn + ': ' + detail : '❌ ' + fn + ': ' + detail);
+  logEvent(fn, 'Transfer311', pass ? 'PASS' : 'FAIL', 0, detail);
+  return pass;
+}
+
 function TEST_t311_doubleCancelGuard() {
   var fn = 'TEST_t311_doubleCancelGuard';
   var pass = true;
@@ -1207,6 +1419,7 @@ function TEST_t311_runAll() {
     { name: 'ambiguousTimeoutReadsBackBeforeRetry',    run: TEST_t311_ambiguousTimeoutReadsBackBeforeRetry },
     { name: 'unknownStateNeverReposts',                run: TEST_t311_unknownStateNeverReposts },
     { name: 'deadLetterRowShape',                      run: TEST_t311_deadLetterRowShape },
+    { name: 'replayRejectsStaleScanStatus',            run: TEST_t311_replayRejectsStaleScanStatus },
     { name: 'doubleCancelGuard',                       run: TEST_t311_doubleCancelGuard }
   ];
 
