@@ -51,6 +51,20 @@ const CFG = {
     PRODUCTION_ORDERS: '/sap/opu/odata/sap/API_PRODUCTION_ORDER_2_SRV/A_ProductionOrder_2'
   },
 
+  // ---- Test-fixture MO patterns -------------------------------------------
+  // Known fake ManufacturingOrder values used by self-cleaning test fixtures
+  // (PalletExclusionTests.gs, AdminBackfill.gs, EdgeCaseFixture.gs,
+  // Phase45Tests.gs). Used by fetchOperationsForMO_ (ProductionOrders.gs) to
+  // route expected SAP 404s on these MOs to Logger.log instead of
+  // logError()'s ErrorLog sheet. Real MOs are 10-digit starting with '1'
+  // (e.g. 1000036350) — no overlap with any pattern below.
+  TEST_MO_PATTERN: [
+    /^0000098001$/,    // PalletExclusionTests.gs MO_A; reused verbatim in AdminBackfill.gs
+    /^0000098002$/,    // PalletExclusionTests.gs MO_B
+    /^000000099999$/,  // EdgeCaseFixture.gs FIXTURE_ORDER_ID
+    /^TEST-QC-MO-/     // Phase45Tests.gs TEST_QC_MO_ / TEST_QC_MO_MULTI_
+  ],
+
   // ---- Phase 3: Feature flags (stored in Script Properties, managed via Flags.gs + menu)
   // Readers: sapWriteEnabled_() / isDryRun_() / isLocalOpCumulativeEnabled_()  — ใช้ภายในโค้ด
   // Setters: flagEnable/Disable/DryRunOn/Off/LocalOpCumulative — ผูกกับ menu ⚙️ Pallet SAP Toggle

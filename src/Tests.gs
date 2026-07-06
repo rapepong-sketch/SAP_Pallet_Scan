@@ -500,7 +500,7 @@ function debugOrderRouting() {
  * @return {number} operation count, or -1 on non-2xx HTTP
  */
 function debugProbeOperationEntitySet_(orderId, label) {
-  const path = CFG.SERVICES.PRODUCTION_ORDERS + 'ProductionOrderOperation';
+  const path = CFG.SERVICES.PRODUCTION_ORDERS + 'A_ProductionOrderOperation_2';
   const params = {
     '$filter': "ManufacturingOrder eq '" + orderId + "' and Plant eq '" + CFG.PLANT + "'",
     '$format': 'json'
