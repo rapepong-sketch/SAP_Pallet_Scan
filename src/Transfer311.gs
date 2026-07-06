@@ -264,6 +264,39 @@ function buildTransfer311Payload_(txnId, destSloc) {
     throw new Error('SourceSLoc is empty for TxnID: ' + txnId);
   }
 
+  // ---- Live re-check: PalletMaster.ScanStatus must still be CONFIRMED ----
+  // Fresh read at build time — independent of the tier-2 batch-resolution lookup
+  // above, which only runs when TransferLog.Batch is empty and so cannot be relied
+  // on to have loaded this row. Closes the TOCTOU gap where a pallet's status
+  // changes (excluded, reverted, superseded) after the TransferLog row was created
+  // but before this payload is built/POSTed. Fail-closed: missing row = reject.
+  var pmScanSh = ss.getSheetByName(PM_SHEET);
+  if (!pmScanSh || pmScanSh.getLastRow() < 2) {
+    throw new Error('PalletMaster sheet empty or missing — cannot verify ScanStatus for ' + parentPalletId);
+  }
+  var pmScanData = pmScanSh.getDataRange().getValues();
+  var pmScanHdrClean = pmScanData[0].map(function(h) { return String(h).trim(); });
+  var pmScanIdx = tlHeaderIdx_(pmScanHdrClean);
+  var pmScanPidCol = pmScanIdx['PalletID'];
+  var pmScanStatusCol = pmScanIdx['ScanStatus'];
+  var liveScanStatus = null;
+  if (pmScanPidCol !== undefined) {
+    for (var q = 1; q < pmScanData.length; q++) {
+      if (String(pmScanData[q][pmScanPidCol] || '').trim() === parentPalletId) {
+        liveScanStatus = String(pmScanData[q][pmScanStatusCol] || '').trim();
+        break;
+      }
+    }
+  }
+  if (liveScanStatus === null) {
+    throw new Error('PalletMaster row not found for ParentPalletID: ' + parentPalletId +
+      ' — cannot verify ScanStatus');
+  }
+  if (liveScanStatus !== 'CONFIRMED') {
+    throw new Error('ParentPalletID ' + parentPalletId + ' ScanStatus is "' + liveScanStatus +
+      '", expected CONFIRMED — pallet status changed since TransferLog row was created');
+  }
+
   // ---- Build OData V2 dates (Asia/Bangkok) ----
   var now = new Date();
   var bangkokMs = now.getTime() +
@@ -2021,16 +2054,15 @@ function TEST_buildPayload_tier3() {
 }
 
 /**
- * TOCTOU gap probe (pre-fix): documents that buildTransfer311Payload_ does NOT
- * re-check PalletMaster.ScanStatus at build time. A TransferLog row can be
+ * Regression test (Commit 3 fix): buildTransfer311Payload_ now re-reads
+ * PalletMaster.ScanStatus fresh at build time. A TransferLog row can be
  * created while a pallet is CONFIRMED, but by the time the 311 payload is
  * built the pallet's ScanStatus may have moved off CONFIRMED (e.g. excluded,
- * superseded, or reverted) — today that still builds a valid payload.
+ * superseded, or reverted) — this test confirms that gap is now closed.
  *
- * This test asserts TODAY's actual (gap) behavior: payload build SUCCEEDS
- * despite a non-CONFIRMED ScanStatus. Once Commit 3 adds the real ScanStatus
- * re-check inside buildTransfer311Payload_, this assertion must be FLIPPED to
- * expect a thrown rejection — that is the intended regression check.
+ * Asserts the FIXED behavior: payload build must REJECT (throw) when
+ * ScanStatus is not CONFIRMED, even though the TransferLog row itself is
+ * otherwise valid (real Batch, valid TxnType/Status).
  */
 function TEST_buildPayload_rejectsStaleScanStatus() {
   var fn = 'TEST_buildPayload_rejectsStaleScanStatus';
@@ -2081,22 +2113,18 @@ function TEST_buildPayload_rejectsStaleScanStatus() {
   var detail = '';
 
   try {
-    // PRE-FIX (documented gap): buildTransfer311Payload_ reads TransferLog +
-    // PalletMaster but never re-checks PalletMaster.ScanStatus, so a pallet
-    // that is no longer CONFIRMED still builds a payload today.
-    var payload = buildTransfer311Payload_(TEST_TXNID, CFG.DEST_SLOCS[0]);
-    var items = payload.to_MaterialDocumentItem || [];
-
-    if (!items.length) {
-      pass = false;
-      detail += 'no items in payload (expected pre-fix success with 1 item) ';
-    } else {
-      detail += 'PRE-FIX GAP CONFIRMED: payload built despite ScanStatus=QC_COMPLETE ' +
-        '(not CONFIRMED). Commit 3 must flip this assertion to expect rejection. ';
-    }
-  } catch (e) {
+    // FIXED (Commit 3): buildTransfer311Payload_ now re-reads PalletMaster.ScanStatus
+    // fresh at build time and must reject a pallet that is no longer CONFIRMED.
+    buildTransfer311Payload_(TEST_TXNID, CFG.DEST_SLOCS[0]);
     pass = false;
-    detail += 'UNEXPECTED EXCEPTION (pre-fix code should not reject on ScanStatus yet): ' + e.message;
+    detail += 'UNEXPECTED SUCCESS: payload built despite ScanStatus=QC_COMPLETE (gap NOT closed) ';
+  } catch (e) {
+    if (/ScanStatus/i.test(e.message)) {
+      detail += 'REJECTED as expected: ' + e.message + ' ';
+    } else {
+      pass = false;
+      detail += 'threw, but not for the expected ScanStatus reason: ' + e.message + ' ';
+    }
   } finally {
     // Cleanup TransferLog
     try {
@@ -2132,7 +2160,8 @@ function TEST_resolveBatch_runAll() {
     { name: 'ambiguous',             run: TEST_resolveBatch_ambiguous },
     { name: 'noGrDoc',               run: TEST_resolveBatch_noGrDoc },
     { name: 'preservesLeadingZeros', run: TEST_resolveBatch_preservesLeadingZeros },
-    { name: 'buildPayload_tier3',    run: TEST_buildPayload_tier3 }
+    { name: 'buildPayload_tier3',    run: TEST_buildPayload_tier3 },
+    { name: 'buildPayload_rejectsStaleScanStatus', run: TEST_buildPayload_rejectsStaleScanStatus }
   ];
 
   var results = [];
